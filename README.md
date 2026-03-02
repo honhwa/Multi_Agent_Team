@@ -160,15 +160,23 @@ cd $HOME\Desktop\officetool
 
 ### Agent 工具调用
 
-默认开放 13 个工具：
+默认开放 21 个工具（关闭会话工具时更少）：
 
 - `run_shell`: 在工作目录下执行单条命令（禁用管道/链式操作）
 - `list_directory`: 列目录
 - `read_text_file`: 读本地文本/文档（PDF/DOCX/MSG/XLSX 自动提取文本，支持 `start_char + max_chars` 分块）
+- `search_text_in_file`: 在本地文档中搜关键词/十六进制变体，返回页码与证据片段
+- `multi_query_search`: 对同一文件并行尝试多个关键词并合并证据
+- `doc_index_build`: 构建/查看 PDF 文档索引缓存与 heading 摘要
+- `read_section_by_heading`: 按章节号或 heading 读取文档 section
+- `table_extract`: 从 PDF/XLSX 提取表格
+- `fact_check_file`: 针对文件做证据式事实核查
+- `search_codebase`: 在代码库中按关键词/正则找文件、行号与上下文
 - `copy_file`: 二进制安全复制文件（推荐用于“复制整个文件”）
 - `extract_zip`: 解压本地 zip 到指定目录（支持覆盖开关和安全限制）
 - `extract_msg_attachments`: 解包 `.msg` 邮件附件到目录（可继续读取其中 xlsx/png 等）
 - `write_text_file`: 新建/覆盖写文本文件
+- `append_text_file`: 追加写文本文件
 - `replace_in_file`: 按目标文本做替换（支持一次或多次）
 - `search_web`: 关键词联网搜索，返回候选链接与摘要（优先用于“先找链接”）
 - `fetch_web`: 联网抓取网页/JSON 文本

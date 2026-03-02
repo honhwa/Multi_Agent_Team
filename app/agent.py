@@ -69,6 +69,49 @@ class SearchTextInFileArgs(BaseModel):
     context_chars: int = Field(default=280, ge=40, le=2000)
 
 
+class MultiQuerySearchArgs(BaseModel):
+    path: str
+    queries: list[str]
+    per_query_max_matches: int = Field(default=3, ge=1, le=10)
+    context_chars: int = Field(default=280, ge=40, le=2000)
+
+
+class DocIndexBuildArgs(BaseModel):
+    path: str
+    force_rebuild: bool = False
+    max_headings: int = Field(default=400, ge=20, le=2000)
+
+
+class ReadSectionByHeadingArgs(BaseModel):
+    path: str
+    heading: str
+    max_chars: int = Field(default=12000, ge=512, le=50000)
+
+
+class TableExtractArgs(BaseModel):
+    path: str
+    query: str = ""
+    page_hint: int = Field(default=0, ge=0)
+    max_tables: int = Field(default=5, ge=1, le=20)
+    max_rows: int = Field(default=25, ge=1, le=200)
+
+
+class FactCheckFileArgs(BaseModel):
+    path: str
+    claim: str
+    queries: list[str] = Field(default_factory=list)
+    max_evidence: int = Field(default=6, ge=1, le=12)
+
+
+class SearchCodebaseArgs(BaseModel):
+    query: str
+    root: str = "."
+    max_matches: int = Field(default=20, ge=1, le=100)
+    file_glob: str = ""
+    use_regex: bool = False
+    case_sensitive: bool = False
+
+
 class CopyFileArgs(BaseModel):
     src_path: str
     dst_path: str
@@ -167,6 +210,7 @@ class OfficeAgent:
         self._StructuredTool = StructuredTool
         self._ChatOpenAI = ChatOpenAI
         self._lc_tools = self._build_langchain_tools()
+        self._lc_tool_map = {getattr(tool, "name", ""): tool for tool in self._lc_tools}
         self._model_failover_lock = threading.Lock()
         self._model_failover_state: dict[str, dict[str, int | float]] = {}
 
@@ -326,6 +370,12 @@ class OfficeAgent:
                     "read_text_file 对本地 PDF/DOCX/MSG/XLSX 会自动提取文本；"
                     "当用户在规范/协议/规格书中定位章节、命令码、opcode、寄存器或状态码时，优先使用 search_text_in_file；"
                     "search_text_in_file 会自动尝试 15h/15 h/0x15 这类十六进制变体；"
+                    "当用户说“看某一章/某一节/某个 heading”时，优先用 read_section_by_heading；"
+                    "当用户说“看表格/参数表/opcode 表”时，优先用 table_extract；"
+                    "当用户要求核事实或复核结论时，可用 fact_check_file；"
+                    "当用户要求搜代码、定位实现、找调用点时，优先用 search_codebase；"
+                    "当需要对同一文件同时尝试多个关键词时，优先用 multi_query_search；"
+                    "大 PDF 首次会建索引缓存，必要时可先调用 doc_index_build 查看 heading/缓存状态；"
                     "大文件优先用 read_text_file(start_char, max_chars) 分块读取；"
                     "当用户要求“读完/完整读取/全量分析”时，默认已授权你连续读取，"
                     "应先调用 read_text_file(path=..., start_char=0, max_chars=1000000)，"
@@ -414,6 +464,7 @@ class OfficeAgent:
         for issue in attachment_issues:
             add_trace(f"附件提示: {issue}")
         spec_lookup_request = self._looks_like_spec_lookup_request(user_message, attachment_metas)
+        evidence_required_mode = self._requires_evidence_mode(user_message, attachment_metas)
         if spec_lookup_request:
             messages.append(
                 self._SystemMessage(
@@ -428,6 +479,17 @@ class OfficeAgent:
                 )
             )
             add_trace("已启用规范文档检索模式。")
+        if evidence_required_mode:
+            messages.append(
+                self._SystemMessage(
+                    content=(
+                        "本轮已启用 evidence_required_mode。"
+                        "对于文件、规范、代码库、章节定位类任务，必须给出证据来源（如路径、页码、章节、行号、命中片段）。"
+                        "若证据不足，只能明确说明不足，不得给出无证据的确定性结论。"
+                    )
+                )
+            )
+            add_trace("已启用证据优先模式。")
 
         planner_request_detail = "\n".join(
             [
@@ -579,29 +641,30 @@ class OfficeAgent:
             if not settings.enable_tools or not tool_calls:
                 if (
                     settings.enable_tools
-                    and spec_lookup_request
+                    and evidence_required_mode
                     and auto_nudge_budget > 0
-                    and self._spec_lookup_needs_more_evidence(
+                    and self._evidence_mode_needs_more_support(
                         ai_msg=ai_msg,
                         tool_events=tool_events,
+                        spec_lookup_request=spec_lookup_request,
                     )
                 ):
                     auto_nudge_budget -= 1
-                    add_trace("检测到规范检索取证不足，后端已要求 Worker 继续检索并精读命中上下文。")
+                    add_trace("检测到证据链不足，后端已要求 Worker 继续检索并补足取证。")
                     add_debug(
                         stage="backend_warning",
-                        title="自动纠偏：补足规范检索证据",
-                        detail="规范/规格书问题尚未形成 search + read 证据链，已追加指令要求继续取证。",
+                        title="自动纠偏：补足证据链",
+                        detail="当前答案缺少足够的文件/代码/规范证据，已追加指令要求继续检索和精读。",
                     )
                     messages.append(ai_msg)
                     messages.append(
                         self._SystemMessage(
                             content=(
-                                "当前仍处于规范/规格书定位任务。"
+                                "当前仍处于证据优先任务。"
                                 "请不要直接下结论。"
-                                "若尚未调用 search_text_in_file，请先对章节名、命令码、opcode、寄存器名做检索；"
-                                "若已命中，请继续调用 read_text_file 读取命中附近上下文并基于证据回答。"
-                                "最终答案必须包含命中片段、页码提示或章节提示。"
+                                "优先使用最合适的只读工具完成取证，例如 search_text_in_file、read_section_by_heading、table_extract、search_codebase、fact_check_file。"
+                                "若已命中，请继续读取命中上下文再回答。"
+                                "最终答案必须包含路径、页码、章节、表格、行号或命中片段中的至少一种证据。"
                             )
                         )
                     )
@@ -618,7 +681,7 @@ class OfficeAgent:
                         usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
                         add_debug(
                             stage="llm_to_backend",
-                            title="Worker -> 后端编排器（规范取证补强后响应）",
+                            title="Worker -> 后端编排器（补足证据后响应）",
                             detail=(
                                 f"effective_model={effective_model}\n"
                                 f"{self._summarize_ai_response(ai_msg, raw_mode=debug_raw)}"
@@ -626,8 +689,8 @@ class OfficeAgent:
                         )
                         continue
                     except Exception as exc:
-                        add_trace(f"规范取证补强后推理失败: {exc}")
-                        add_debug(stage="llm_error", title="Worker 规范取证补强失败", detail=str(exc))
+                        add_trace(f"证据补强后推理失败: {exc}")
+                        add_debug(stage="llm_error", title="Worker 证据补强失败", detail=str(exc))
                         break
                 if (
                     settings.enable_tools
@@ -833,6 +896,44 @@ class OfficeAgent:
                 f"text_chars={len(text)}\npreview={self._shorten(text, 1200 if not debug_raw else 50000)}"
             ),
         )
+        conflict_request_detail = "\n".join(
+            [
+                f"requested_model={effective_model or requested_model}",
+                f"evidence_required_mode={evidence_required_mode}",
+                f"draft_chars={len(text)}",
+                f"draft_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
+            ]
+        )
+        add_debug(
+            stage="backend_to_llm",
+            title="后端编排器 -> Conflict Detector",
+            detail=conflict_request_detail,
+        )
+        conflict_brief, conflict_raw = self._run_answer_conflict_detector(
+            requested_model=effective_model or requested_model,
+            user_message=user_message,
+            final_text=text,
+            planner_brief=planner_brief,
+            spec_lookup_request=spec_lookup_request,
+            evidence_required_mode=evidence_required_mode,
+        )
+        conflict_effective_model = str(conflict_brief.get("effective_model") or "").strip()
+        if conflict_effective_model:
+            effective_model = conflict_effective_model
+        usage_total = self._merge_usage(usage_total, conflict_brief.get("usage") or self._empty_usage())
+        for note in self._normalize_string_list(conflict_brief.get("notes") or [], limit=3, item_limit=200):
+            add_trace(note)
+        add_debug(
+            stage="llm_to_backend",
+            title="Conflict Detector -> 后端编排器",
+            detail=(
+                f"effective_model={conflict_effective_model or effective_model or requested_model}\n"
+                f"{self._shorten(conflict_raw, 4000 if debug_raw else 1200)}"
+            ),
+        )
+        conflict_summary = str(conflict_brief.get("summary") or "").strip() or "已完成通识冲突检查。"
+        conflict_bullets = self._normalize_string_list(conflict_brief.get("concerns") or [], limit=4, item_limit=180)
+        add_panel("conflict_detector", "Conflict Detector", conflict_summary, conflict_bullets)
         reviewer_request_detail = "\n".join(
             [
                 f"requested_model={effective_model or requested_model}",
@@ -840,6 +941,7 @@ class OfficeAgent:
                 f"execution_trace_items={len(execution_trace)}",
                 f"draft_chars={len(text)}",
                 f"draft_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
+                f"evidence_required_mode={evidence_required_mode}",
             ]
         )
         add_debug(
@@ -855,6 +957,8 @@ class OfficeAgent:
             tool_events=tool_events,
             execution_trace=execution_trace,
             spec_lookup_request=spec_lookup_request,
+            evidence_required_mode=evidence_required_mode,
+            conflict_brief=conflict_brief,
         )
         reviewer_effective_model = str(reviewer_brief.get("effective_model") or "").strip()
         if reviewer_effective_model:
@@ -878,7 +982,8 @@ class OfficeAgent:
         )
         reviewer_summary = str(reviewer_brief.get("summary") or "").strip() or "已完成最终答复审阅。"
         reviewer_bullets = (
-            self._normalize_string_list(reviewer_brief.get("strengths") or [], limit=2, item_limit=180)
+            self._normalize_string_list(reviewer_brief.get("readonly_checks") or [], limit=3, item_limit=180)
+            + self._normalize_string_list(reviewer_brief.get("strengths") or [], limit=2, item_limit=180)
             + self._normalize_string_list(reviewer_brief.get("risks") or [], limit=3, item_limit=180)
             + self._normalize_string_list(reviewer_brief.get("followups") or [], limit=2, item_limit=180)
         )
@@ -904,6 +1009,8 @@ class OfficeAgent:
             planner_brief=planner_brief,
             reviewer_brief=reviewer_brief,
             tool_events=tool_events,
+            conflict_brief=conflict_brief,
+            evidence_required_mode=evidence_required_mode,
         )
         revision_effective_model = str(revision_brief.get("effective_model") or "").strip()
         if revision_effective_model:
@@ -1014,6 +1121,88 @@ class OfficeAgent:
             fallback["notes"] = [f"Planner 调用失败，已回退默认计划: {self._shorten(exc, 180)}"]
             return fallback, json.dumps({"error": str(exc)}, ensure_ascii=False)
 
+    def _run_answer_conflict_detector(
+        self,
+        *,
+        requested_model: str,
+        user_message: str,
+        final_text: str,
+        planner_brief: dict[str, Any],
+        spec_lookup_request: bool = False,
+        evidence_required_mode: bool = False,
+    ) -> tuple[dict[str, Any], str]:
+        detector_input = "\n".join(
+            [
+                f"user_message:\n{user_message.strip() or '(empty)'}",
+                f"planner_objective:\n{str(planner_brief.get('objective') or '').strip() or '(none)'}",
+                f"spec_lookup_request={str(spec_lookup_request).lower()}",
+                f"evidence_required_mode={str(evidence_required_mode).lower()}",
+                f"answer:\n{final_text.strip() or '(empty)'}",
+            ]
+        )
+        fallback = {
+            "has_conflict": False,
+            "confidence": "medium",
+            "summary": "Conflict Detector 未发现明显常识冲突。",
+            "concerns": [],
+            "suggested_checks": [],
+            "usage": self._empty_usage(),
+            "effective_model": requested_model,
+            "notes": [],
+        }
+        messages = [
+            self._SystemMessage(
+                content=(
+                    "你是 Answer Conflict Detector。"
+                    "基于通识、成熟工程知识和任务上下文，检查当前答案是否存在明显可疑点、过度确定、或与常见知识冲突。"
+                    "不要输出思维链。"
+                    "你的知识只能用于报警和建议复核，不能替代文件证据。"
+                    '只返回 JSON 对象，字段固定为 has_conflict, confidence, summary, concerns, suggested_checks。'
+                    "has_conflict 必须是 true 或 false；confidence 只能是 high, medium, low。"
+                )
+            ),
+            self._HumanMessage(content=detector_input),
+        ]
+        try:
+            ai_msg, _, effective_model, notes = self._invoke_chat_with_runner(
+                messages=messages,
+                model=requested_model,
+                max_output_tokens=900,
+                enable_tools=False,
+            )
+            raw_text = self._content_to_text(getattr(ai_msg, "content", "")).strip()
+            parsed = self._parse_json_object(raw_text)
+            if not parsed:
+                fallback["notes"] = ["Conflict Detector 未返回标准 JSON，已忽略冲突检查结果。", *notes]
+                fallback["usage"] = self._extract_usage_from_message(ai_msg)
+                fallback["effective_model"] = effective_model
+                return fallback, raw_text
+
+            has_conflict_raw = parsed.get("has_conflict")
+            if isinstance(has_conflict_raw, bool):
+                has_conflict = has_conflict_raw
+            else:
+                has_conflict = str(has_conflict_raw or "").strip().lower() in {"1", "true", "yes", "on"}
+            confidence = str(parsed.get("confidence") or "medium").strip().lower()
+            if confidence not in {"high", "medium", "low"}:
+                confidence = "medium"
+            detector = {
+                "has_conflict": has_conflict,
+                "confidence": confidence,
+                "summary": str(parsed.get("summary") or fallback["summary"]).strip() or fallback["summary"],
+                "concerns": self._normalize_string_list(parsed.get("concerns") or [], limit=4, item_limit=180),
+                "suggested_checks": self._normalize_string_list(
+                    parsed.get("suggested_checks") or [], limit=4, item_limit=180
+                ),
+                "usage": self._extract_usage_from_message(ai_msg),
+                "effective_model": effective_model,
+                "notes": notes,
+            }
+            return detector, raw_text
+        except Exception as exc:
+            fallback["notes"] = [f"Conflict Detector 调用失败，已跳过: {self._shorten(exc, 180)}"]
+            return fallback, json.dumps({"error": str(exc)}, ensure_ascii=False)
+
     def _run_reviewer(
         self,
         *,
@@ -1024,10 +1213,18 @@ class OfficeAgent:
         tool_events: list[ToolEvent],
         execution_trace: list[str],
         spec_lookup_request: bool = False,
+        evidence_required_mode: bool = False,
+        conflict_brief: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], str]:
         tool_summaries = [
             f"{idx + 1}. {tool.name}({json.dumps(tool.input or {}, ensure_ascii=False)})"
             for idx, tool in enumerate(tool_events[:10])
+        ]
+        conflict_lines = [
+            f"conflict_has_conflict={str(bool((conflict_brief or {}).get('has_conflict'))).lower()}",
+            f"conflict_summary={str((conflict_brief or {}).get('summary') or '').strip() or '(none)'}",
+            "conflict_concerns:",
+            *[f"- {item}" for item in self._normalize_string_list((conflict_brief or {}).get("concerns") or [], limit=4)],
         ]
         reviewer_input = "\n".join(
             [
@@ -1036,6 +1233,8 @@ class OfficeAgent:
                 "planner_plan:",
                 *[f"- {item}" for item in self._normalize_string_list(planner_brief.get("plan") or [], limit=6)],
                 f"task_mode={'spec_lookup' if spec_lookup_request else 'general'}",
+                f"evidence_required_mode={str(evidence_required_mode).lower()}",
+                *conflict_lines,
                 "tool_events:",
                 *(tool_summaries or ["(none)"]),
                 "execution_trace_tail:",
@@ -1054,12 +1253,15 @@ class OfficeAgent:
             "effective_model": requested_model,
             "notes": [],
         }
+        readonly_tools = self._reviewer_readonly_tool_names()
         messages = [
             self._SystemMessage(
                 content=(
                     "你是 Reviewer Agent。检查最终答复是否覆盖用户目标、是否基于已有工具证据、是否存在明显遗漏。"
                     "如果任务是 spec_lookup，那么没有 search_text_in_file + read_text_file 的取证链，"
                     "或最终答复没有引用页码/章节/命中片段时，verdict 必须是 needs_attention。"
+                    "如果 evidence_required_mode=true，那么你必须优先使用只读工具做独立复核。"
+                    "优先考虑 fact_check_file、read_section_by_heading、search_text_in_file、table_extract、search_codebase。"
                     "你还要使用自己的通识和领域知识做冲突检测："
                     "如果最终答复与广为人知的事实、常见协议知识或成熟工程常识明显冲突，"
                     "即使文案表面自洽，也必须标记为 needs_attention，并在 risks/followups 中明确要求重新取证。"
@@ -1072,17 +1274,87 @@ class OfficeAgent:
             self._HumanMessage(content=reviewer_input),
         ]
         try:
-            ai_msg, _, effective_model, notes = self._invoke_chat_with_runner(
+            usage_total = self._empty_usage()
+            notes: list[str] = []
+            reviewer_tool_names: list[str] = []
+            ai_msg, runner, effective_model, invoke_notes = self._invoke_chat_with_runner(
                 messages=messages,
                 model=requested_model,
-                max_output_tokens=900,
-                enable_tools=False,
+                max_output_tokens=1200,
+                enable_tools=True,
+                tool_names=readonly_tools,
             )
+            notes.extend(invoke_notes)
+            usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
+            nudge_budget = 1 if evidence_required_mode else 0
+            for _ in range(12):
+                tool_calls = getattr(ai_msg, "tool_calls", None) or []
+                if not tool_calls:
+                    if nudge_budget > 0 and not reviewer_tool_names:
+                        nudge_budget -= 1
+                        messages.append(ai_msg)
+                        messages.append(
+                            self._SystemMessage(
+                                content=(
+                                    "请先完成独立复核，再输出 JSON。"
+                                    "优先调用 fact_check_file；若需要精读文档章节，调用 read_section_by_heading 或 search_text_in_file。"
+                                    "如果是代码任务，优先调用 search_codebase。"
+                                )
+                            )
+                        )
+                        ai_msg, runner, effective_model, invoke_notes = self._invoke_with_runner_recovery(
+                            runner=runner,
+                            messages=messages,
+                            model=effective_model,
+                            max_output_tokens=1200,
+                            enable_tools=True,
+                            tool_names=readonly_tools,
+                        )
+                        notes.extend(invoke_notes)
+                        usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
+                        continue
+                    break
+
+                messages.append(ai_msg)
+                for call in tool_calls:
+                    name = call.get("name") or "unknown"
+                    args = call.get("args") or {}
+                    if not isinstance(args, dict):
+                        args = {}
+                    result = self.tools.execute(name, args)
+                    result_json = json.dumps(result, ensure_ascii=False)
+                    tool_payload, trim_note = self._prepare_tool_result_for_llm(
+                        name=name,
+                        arguments=args,
+                        raw_result=result,
+                        raw_json=result_json,
+                    )
+                    reviewer_tool_names.append(name)
+                    if trim_note:
+                        notes.append(trim_note)
+                    messages.append(
+                        self._ToolMessage(
+                            content=tool_payload,
+                            tool_call_id=call.get("id") or f"reviewer_{len(reviewer_tool_names)}",
+                            name=name,
+                        )
+                    )
+                ai_msg, runner, effective_model, invoke_notes = self._invoke_with_runner_recovery(
+                    runner=runner,
+                    messages=messages,
+                    model=effective_model,
+                    max_output_tokens=1200,
+                    enable_tools=True,
+                    tool_names=readonly_tools,
+                )
+                notes.extend(invoke_notes)
+                usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
+
             raw_text = self._content_to_text(getattr(ai_msg, "content", "")).strip()
             parsed = self._parse_json_object(raw_text)
             if not parsed:
                 fallback["notes"] = ["Reviewer 未返回标准 JSON，已按保守策略记录。", *notes]
-                fallback["usage"] = self._extract_usage_from_message(ai_msg)
+                fallback["usage"] = usage_total
                 fallback["effective_model"] = effective_model
                 return fallback, raw_text
 
@@ -1099,9 +1371,10 @@ class OfficeAgent:
                 "strengths": self._normalize_string_list(parsed.get("strengths") or [], limit=3, item_limit=180),
                 "risks": self._normalize_string_list(parsed.get("risks") or [], limit=4, item_limit=180),
                 "followups": self._normalize_string_list(parsed.get("followups") or [], limit=3, item_limit=180),
-                "usage": self._extract_usage_from_message(ai_msg),
+                "usage": usage_total,
                 "effective_model": effective_model,
                 "notes": notes,
+                "readonly_checks": reviewer_tool_names,
             }
             return reviewer, raw_text
         except Exception as exc:
@@ -1117,6 +1390,8 @@ class OfficeAgent:
         planner_brief: dict[str, Any],
         reviewer_brief: dict[str, Any],
         tool_events: list[ToolEvent],
+        conflict_brief: dict[str, Any] | None = None,
+        evidence_required_mode: bool = False,
     ) -> tuple[dict[str, Any], str]:
         tool_summaries = [
             f"{idx + 1}. {tool.name}({json.dumps(tool.input or {}, ensure_ascii=False)})"
@@ -1128,10 +1403,16 @@ class OfficeAgent:
                 f"planner_objective:\n{str(planner_brief.get('objective') or '').strip() or '(none)'}",
                 f"reviewer_verdict={str(reviewer_brief.get('verdict') or 'pass').strip()}",
                 f"reviewer_confidence={str(reviewer_brief.get('confidence') or 'medium').strip()}",
+                f"evidence_required_mode={str(evidence_required_mode).lower()}",
                 "reviewer_risks:",
                 *[f"- {item}" for item in self._normalize_string_list(reviewer_brief.get("risks") or [], limit=5)],
                 "reviewer_followups:",
                 *[f"- {item}" for item in self._normalize_string_list(reviewer_brief.get("followups") or [], limit=4)],
+                "reviewer_readonly_checks:",
+                *[f"- {item}" for item in self._normalize_string_list(reviewer_brief.get("readonly_checks") or [], limit=8)],
+                f"conflict_summary={str((conflict_brief or {}).get('summary') or '').strip() or '(none)'}",
+                "conflict_concerns:",
+                *[f"- {item}" for item in self._normalize_string_list((conflict_brief or {}).get("concerns") or [], limit=4)],
                 "tool_events:",
                 *(tool_summaries or ["(none)"]),
                 f"current_answer:\n{current_text.strip() or '(empty)'}",
@@ -1155,6 +1436,8 @@ class OfficeAgent:
                     "如果 Reviewer 指出与通识或领域知识存在明显冲突，而工具证据又不足，"
                     "你应把最终答复改成更保守的表述，例如说明当前证据不足、需要继续核对原文，"
                     "而不是继续维持一个可疑的确定性结论。"
+                    "如果 evidence_required_mode=true，而当前答案缺少路径、页码、章节、行号、表格或命中片段证据，"
+                    "你应优先把最终答复改成证据优先的保守版本。"
                     '只返回 JSON 对象，字段固定为 changed, summary, key_changes, final_answer。'
                     "changed 必须是 true 或 false；key_changes 最多 4 条。"
                 )
@@ -1387,6 +1670,7 @@ class OfficeAgent:
         model: str,
         max_output_tokens: int,
         enable_tools: bool,
+        tool_names: list[str] | None = None,
     ) -> tuple[Any, Any, str, list[str]]:
         candidates = self._build_model_candidates(model)
         notes: list[str] = []
@@ -1406,6 +1690,7 @@ class OfficeAgent:
                     model=candidate,
                     max_output_tokens=max_output_tokens,
                     enable_tools=enable_tools,
+                    tool_names=tool_names,
                 )
                 self._mark_model_success(candidate)
                 if candidate != model:
@@ -1433,6 +1718,7 @@ class OfficeAgent:
                 model=primary,
                 max_output_tokens=max_output_tokens,
                 enable_tools=enable_tools,
+                tool_names=tool_names,
             )
             notes.extend(invoke_notes)
             return response, runner, primary, notes
@@ -1448,6 +1734,7 @@ class OfficeAgent:
         model: str,
         max_output_tokens: int,
         enable_tools: bool,
+        tool_names: list[str] | None = None,
     ) -> tuple[Any, Any, str, list[str]]:
         try:
             return runner.invoke(messages), runner, model, []
@@ -1459,6 +1746,7 @@ class OfficeAgent:
                 model=model,
                 max_output_tokens=max_output_tokens,
                 enable_tools=enable_tools,
+                tool_names=tool_names,
             )
             prefix = f"模型 {model} 在持续推理阶段失败（{self._shorten(exc, 200)}），已自动恢复重试。"
             return recovered_msg, recovered_runner, recovered_model, [prefix, *notes]
@@ -1469,10 +1757,11 @@ class OfficeAgent:
         model: str,
         max_output_tokens: int,
         enable_tools: bool,
+        tool_names: list[str] | None = None,
     ) -> tuple[Any, Any, list[str]]:
         notes: list[str] = []
         llm = self._build_llm(model=model, max_output_tokens=max_output_tokens)
-        runner = llm.bind_tools(self._lc_tools) if enable_tools else llm
+        runner = llm.bind_tools(self._select_langchain_tools(tool_names)) if enable_tools else llm
         try:
             return runner.invoke(messages), runner, notes
         except Exception as exc:
@@ -1488,7 +1777,7 @@ class OfficeAgent:
             max_output_tokens=max_output_tokens,
             use_responses_api=fallback_use_responses,
         )
-        runner_fb = llm_fb.bind_tools(self._lc_tools) if enable_tools else llm_fb
+        runner_fb = llm_fb.bind_tools(self._select_langchain_tools(tool_names)) if enable_tools else llm_fb
         return runner_fb.invoke(messages), runner_fb, notes
 
     def _invoke_with_405_fallback(
@@ -1594,6 +1883,42 @@ class OfficeAgent:
                 func=self._search_text_in_file_tool,
             ),
             self._StructuredTool.from_function(
+                name="multi_query_search",
+                description="Run multiple file-search queries against one file and merge the matching evidence snippets.",
+                args_schema=MultiQuerySearchArgs,
+                func=self._multi_query_search_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="doc_index_build",
+                description="Build or inspect a cached PDF document index, including headings and cache status.",
+                args_schema=DocIndexBuildArgs,
+                func=self._doc_index_build_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="read_section_by_heading",
+                description="Read a document section by matching a heading or section number.",
+                args_schema=ReadSectionByHeadingArgs,
+                func=self._read_section_by_heading_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="table_extract",
+                description="Extract tables from a PDF/XLSX file, optionally narrowed by query or page hint.",
+                args_schema=TableExtractArgs,
+                func=self._table_extract_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="fact_check_file",
+                description="Check whether a file contains evidence that supports or conflicts with a claim.",
+                args_schema=FactCheckFileArgs,
+                func=self._fact_check_file_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="search_codebase",
+                description="Search code/text files under a local root and return file, line, and excerpt matches.",
+                args_schema=SearchCodebaseArgs,
+                func=self._search_codebase_tool,
+            ),
+            self._StructuredTool.from_function(
                 name="copy_file",
                 description="Copy a file (binary-safe) from src_path to dst_path in allowed roots.",
                 args_schema=CopyFileArgs,
@@ -1670,6 +1995,35 @@ class OfficeAgent:
             )
         return tools
 
+    def _select_langchain_tools(self, tool_names: list[str] | None = None) -> list[Any]:
+        if not tool_names:
+            return self._lc_tools
+        selected: list[Any] = []
+        seen: set[str] = set()
+        for name in tool_names:
+            key = str(name or "").strip()
+            if not key or key in seen:
+                continue
+            tool = self._lc_tool_map.get(key)
+            if tool is None:
+                continue
+            seen.add(key)
+            selected.append(tool)
+        return selected
+
+    def _reviewer_readonly_tool_names(self) -> list[str]:
+        return [
+            "list_directory",
+            "read_text_file",
+            "search_text_in_file",
+            "multi_query_search",
+            "doc_index_build",
+            "read_section_by_heading",
+            "table_extract",
+            "fact_check_file",
+            "search_codebase",
+        ]
+
     def _run_shell_tool(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> str:
         result = self.tools.run_shell(command=command, cwd=cwd, timeout_sec=timeout_sec)
         return json.dumps(result, ensure_ascii=False)
@@ -1690,6 +2044,67 @@ class OfficeAgent:
             query=query,
             max_matches=max_matches,
             context_chars=context_chars,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _multi_query_search_tool(
+        self, path: str, queries: list[str], per_query_max_matches: int = 3, context_chars: int = 280
+    ) -> str:
+        result = self.tools.multi_query_search(
+            path=path,
+            queries=queries,
+            per_query_max_matches=per_query_max_matches,
+            context_chars=context_chars,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _doc_index_build_tool(self, path: str, force_rebuild: bool = False, max_headings: int = 400) -> str:
+        result = self.tools.doc_index_build(path=path, force_rebuild=force_rebuild, max_headings=max_headings)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _read_section_by_heading_tool(self, path: str, heading: str, max_chars: int = 12000) -> str:
+        result = self.tools.read_section_by_heading(path=path, heading=heading, max_chars=max_chars)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _table_extract_tool(
+        self, path: str, query: str = "", page_hint: int = 0, max_tables: int = 5, max_rows: int = 25
+    ) -> str:
+        result = self.tools.table_extract(
+            path=path,
+            query=query,
+            page_hint=page_hint,
+            max_tables=max_tables,
+            max_rows=max_rows,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _fact_check_file_tool(
+        self, path: str, claim: str, queries: list[str] | None = None, max_evidence: int = 6
+    ) -> str:
+        result = self.tools.fact_check_file(
+            path=path,
+            claim=claim,
+            queries=queries or [],
+            max_evidence=max_evidence,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _search_codebase_tool(
+        self,
+        query: str,
+        root: str = ".",
+        max_matches: int = 20,
+        file_glob: str = "",
+        use_regex: bool = False,
+        case_sensitive: bool = False,
+    ) -> str:
+        result = self.tools.search_codebase(
+            query=query,
+            root=root,
+            max_matches=max_matches,
+            file_glob=file_glob,
+            use_regex=use_regex,
+            case_sensitive=case_sensitive,
         )
         return json.dumps(result, ensure_ascii=False)
 
@@ -1867,6 +2282,8 @@ class OfficeAgent:
                                 f"[附件文档: {name}] 当前为跟进轮次，为避免重复消耗 token，本轮默认仅提供路径。\n"
                                 f"{local_path_line}{file_size_line}{zip_hint_line}{msg_hint_line}"
                                 "若任务是在规范/协议中定位章节或命令码，先调用 search_text_in_file(path=该路径, query=目标关键词)；"
+                                "若用户已给出章节/heading，优先调用 read_section_by_heading(path=该路径, heading=...)；"
+                                "若用户提到表格/opcode 表，优先调用 table_extract(path=该路径, query=...)；"
                                 "随后再用 read_text_file(path=该路径, start_char=..., max_chars=...) 读取命中上下文，不要先询问用户。"
                             ),
                         }
@@ -1885,6 +2302,8 @@ class OfficeAgent:
                                 f"[附件文档: {name}] 文件较大，为避免首轮请求长时间无响应，本轮不自动注入全文。\n"
                                 f"{local_path_line}{file_size_line}{zip_hint_line}{msg_hint_line}"
                                 "若任务是在规范/协议中定位章节或命令码，先调用 search_text_in_file(path=该路径, query=目标关键词)；"
+                                "若用户已给出章节/heading，优先调用 read_section_by_heading(path=该路径, heading=...)；"
+                                "若用户提到表格/opcode 表，优先调用 table_extract(path=该路径, query=...)；"
                                 "随后再用 read_text_file(path=该路径, start_char=..., max_chars=...) 读取命中上下文后再分析，不要先询问用户。"
                             ),
                         }
@@ -2108,16 +2527,70 @@ class OfficeAgent:
         )
         return any(hint in text for hint in hints)
 
-    def _spec_lookup_needs_more_evidence(self, ai_msg: Any, tool_events: list[ToolEvent]) -> bool:
+    def _requires_evidence_mode(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
+        if attachment_metas:
+            return True
+        text = (user_message or "").strip().lower()
+        if not text:
+            return False
+        hints = (
+            "spec",
+            "specification",
+            "protocol",
+            "opcode",
+            "register",
+            "section",
+            "chapter",
+            "heading",
+            "table",
+            "pdf",
+            "docx",
+            "xlsx",
+            "codebase",
+            "repo",
+            "source code",
+            "line ",
+            "文件",
+            "附件",
+            "规范",
+            "协议",
+            "规格",
+            "章节",
+            "表格",
+            "源码",
+            "代码库",
+            "行号",
+            "路径",
+        )
+        return any(hint in text for hint in hints)
+
+    def _evidence_mode_needs_more_support(
+        self,
+        ai_msg: Any,
+        tool_events: list[ToolEvent],
+        spec_lookup_request: bool = False,
+    ) -> bool:
         content = self._content_to_text(getattr(ai_msg, "content", "")).strip().lower()
         if not content:
             return True
 
-        saw_search = any(tool.name == "search_text_in_file" for tool in tool_events)
-        saw_read = any(tool.name == "read_text_file" for tool in tool_events)
-        if not saw_search:
+        tool_names = {tool.name for tool in tool_events}
+        evidence_tool_hits = tool_names & {
+            "search_text_in_file",
+            "multi_query_search",
+            "read_text_file",
+            "read_section_by_heading",
+            "table_extract",
+            "fact_check_file",
+            "search_codebase",
+        }
+        if spec_lookup_request and "search_text_in_file" not in tool_names:
             return True
-        if not saw_read:
+        if not evidence_tool_hits:
+            return True
+        if spec_lookup_request and not (
+            {"read_text_file", "read_section_by_heading", "table_extract", "fact_check_file"} & tool_names
+        ):
             return True
 
         evidence_markers = (
@@ -2128,6 +2601,9 @@ class OfficeAgent:
             "章节",
             "命中",
             "片段",
+            "line ",
+            "行 ",
+            "路径",
             "according to",
             "在当前提取文本中",
         )
@@ -2149,6 +2625,11 @@ class OfficeAgent:
             "目录",
             "read_text_file",
             "search_text_in_file",
+            "multi_query_search",
+            "read_section_by_heading",
+            "table_extract",
+            "fact_check_file",
+            "search_codebase",
             "write_text_file",
             "append_text_file",
             "replace_in_file",

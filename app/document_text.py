@@ -25,6 +25,11 @@ def _score_extracted_text(text: str) -> int:
     return len(compact)
 
 
+def normalize_lookup_text(text: str) -> str:
+    cleaned = re.sub(r"[^\w\s./:-]+", " ", (text or "").lower())
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def _cache_key_for_path(path: Path) -> str:
     stat = path.stat()
     payload = f"{_DOC_CACHE_VERSION}|{path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}"
@@ -111,6 +116,56 @@ def _table_to_lines(table: list[list[object]] | None) -> list[str]:
             continue
         lines.append(" | ".join(cells))
     return lines
+
+
+def _looks_like_heading_line(line: str) -> bool:
+    raw = re.sub(r"\s+", " ", (line or "").strip())
+    if not raw or len(raw) < 4 or len(raw) > 160:
+        return False
+    if "...." in raw or raw.count(".") > 10:
+        return False
+    if re.match(r"^\d+$", raw):
+        return False
+    patterns = (
+        r"^\d+(?:\.\d+){0,5}\s+[A-Za-z].+",
+        r"^(?:Annex|Appendix)\s+[A-Z0-9][A-Za-z0-9.\- ]*",
+        r"^[A-Z][A-Z0-9 /&(),.-]{6,}$",
+    )
+    return any(re.match(pattern, raw) for pattern in patterns)
+
+
+def extract_heading_entries_from_pages(
+    pages: list[tuple[int, str]],
+    max_headings: int = 400,
+) -> list[dict[str, object]]:
+    headings: list[dict[str, object]] = []
+    seen: set[tuple[int, str]] = set()
+    limit = max(1, min(2000, int(max_headings)))
+    for page_num, body in pages:
+        for line_idx, line in enumerate(body.splitlines(), start=1):
+            raw = re.sub(r"\s+", " ", (line or "").strip())
+            if not _looks_like_heading_line(raw):
+                continue
+            normalized = normalize_lookup_text(raw)
+            if not normalized:
+                continue
+            key = (page_num, normalized)
+            if key in seen:
+                continue
+            seen.add(key)
+            section_match = re.match(r"^(\d+(?:\.\d+){0,5})\s+(.+)$", raw)
+            entry = {
+                "page": page_num,
+                "line_index": line_idx,
+                "heading": raw,
+                "normalized": normalized,
+                "section": section_match.group(1) if section_match else "",
+                "title": section_match.group(2).strip() if section_match else raw,
+            }
+            headings.append(entry)
+            if len(headings) >= limit:
+                return headings
+    return headings
 
 
 def _pdfplumber_page_texts(raw_pdf: bytes) -> list[tuple[int, str]]:
@@ -234,3 +289,56 @@ def extract_pdf_text_from_path(path: Path, max_chars: int) -> str:
         if reached:
             break
     return truncate_text("".join(chunks).strip(), limit)
+
+
+def clear_pdf_cache_for_path(path: Path) -> Path:
+    cache_path = _cache_path_for_pdf(path)
+    cache_path.unlink(missing_ok=True)
+    return cache_path
+
+
+def build_pdf_document_index(path: Path, force_rebuild: bool = False, max_headings: int = 400) -> dict[str, object]:
+    if force_rebuild:
+        clear_pdf_cache_for_path(path)
+    pages = extract_pdf_page_texts_from_path(path)
+    headings = extract_heading_entries_from_pages(pages, max_headings=max_headings)
+    table_pages = [page_num for page_num, body in pages if "[Extracted tables]" in body]
+    return {
+        "path": str(path.resolve()),
+        "cache_path": str(_cache_path_for_pdf(path)),
+        "cached": _cache_path_for_pdf(path).is_file(),
+        "page_count": len(pages),
+        "heading_count": len(headings),
+        "headings": headings,
+        "table_pages": table_pages,
+    }
+
+
+def extract_pdf_tables_from_path(
+    path: Path,
+    page_numbers: list[int] | None = None,
+    max_tables: int = 10,
+    max_rows: int = 40,
+) -> list[dict[str, object]]:
+    import pdfplumber  # lazy import
+
+    page_filter = set(page_numbers or [])
+    tables: list[dict[str, object]] = []
+    with pdfplumber.open(path) as pdf:
+        for idx, page in enumerate(pdf.pages, start=1):
+            if page_filter and idx not in page_filter:
+                continue
+            raw_tables = page.extract_tables() or []
+            for table in raw_tables:
+                rows = _table_to_lines(table)
+                if not rows:
+                    continue
+                tables.append(
+                    {
+                        "page": idx,
+                        "rows": rows[: max(1, min(500, int(max_rows)))],
+                    }
+                )
+                if len(tables) >= max(1, min(100, int(max_tables))):
+                    return tables
+    return tables

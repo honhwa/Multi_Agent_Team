@@ -17,7 +17,17 @@ from pathlib import Path
 from typing import Any
 
 from app.config import AppConfig
-from app.document_text import extract_pdf_page_texts_from_path, extract_pdf_text_from_bytes, extract_pdf_text_from_path
+from app.document_text import (
+    build_pdf_document_index,
+    clear_pdf_cache_for_path,
+    extract_heading_entries_from_pages,
+    extract_pdf_page_texts_from_path,
+    extract_pdf_tables_from_path,
+    extract_pdf_text_from_bytes,
+    extract_pdf_text_from_path,
+    normalize_lookup_text,
+    truncate_text,
+)
 from app.sandbox import DockerSandboxManager
 
 
@@ -555,6 +565,166 @@ def _looks_like_pdf_path(path: Path) -> bool:
         return False
 
 
+def _heading_score(query_norm: str, heading_norm: str) -> float:
+    if not query_norm or not heading_norm:
+        return 0.0
+    if query_norm == heading_norm:
+        return 10.0
+    if query_norm in heading_norm:
+        return 7.0 + len(query_norm) / max(1, len(heading_norm))
+    if heading_norm in query_norm:
+        return 6.0 + len(heading_norm) / max(1, len(query_norm))
+    query_tokens = set(query_norm.split())
+    heading_tokens = set(heading_norm.split())
+    if not query_tokens or not heading_tokens:
+        return 0.0
+    overlap = len(query_tokens & heading_tokens)
+    if not overlap:
+        return 0.0
+    return overlap / max(1, len(query_tokens | heading_tokens))
+
+
+def _find_best_heading(
+    headings: list[dict[str, object]],
+    query: str,
+) -> dict[str, object] | None:
+    query_norm = normalize_lookup_text(query)
+    best: tuple[float, dict[str, object] | None] = (0.0, None)
+    for heading in headings:
+        heading_norm = str(heading.get("normalized") or "")
+        score = _heading_score(query_norm, heading_norm)
+        if score > best[0]:
+            best = (score, heading)
+    if best[0] <= 0.0:
+        return None
+    return best[1]
+
+
+def _line_matches_heading(line: str, heading: dict[str, object]) -> bool:
+    line_norm = normalize_lookup_text(line)
+    heading_norm = str(heading.get("normalized") or "")
+    return bool(line_norm and heading_norm and _heading_score(line_norm, heading_norm) >= 6.0)
+
+
+def _extract_section_from_pdf_pages(
+    pages: list[tuple[int, str]],
+    headings: list[dict[str, object]],
+    heading_query: str,
+    max_chars: int,
+) -> dict[str, Any]:
+    match = _find_best_heading(headings, heading_query)
+    if not match:
+        return {"ok": False, "error": f"Heading not found: {heading_query}"}
+
+    ordered = sorted(headings, key=lambda item: (int(item.get("page") or 0), int(item.get("line_index") or 0)))
+    match_idx = ordered.index(match)
+    next_heading = ordered[match_idx + 1] if match_idx + 1 < len(ordered) else None
+
+    collecting = False
+    chunks: list[str] = []
+    total = 0
+    page_start = int(match.get("page") or 0)
+    page_end = page_start
+
+    for page_num, body in pages:
+        if page_num < page_start:
+            continue
+        lines = body.splitlines()
+        started_here = False
+        for line_idx, line in enumerate(lines, start=1):
+            if not collecting:
+                if page_num == page_start and _line_matches_heading(line, match):
+                    collecting = True
+                    started_here = True
+                else:
+                    continue
+            if (
+                next_heading
+                and page_num == int(next_heading.get("page") or 0)
+                and _line_matches_heading(line, next_heading)
+                and not (started_here and page_num == page_start and line_idx == int(match.get("line_index") or 0))
+            ):
+                collecting = False
+                break
+            line_text = line.rstrip()
+            if not line_text:
+                continue
+            chunks.append(line_text)
+            total += len(line_text) + 1
+            page_end = page_num
+            if total >= max_chars:
+                collecting = False
+                break
+        if not collecting and chunks:
+            break
+
+    content = truncate_text("\n".join(chunks).strip(), max(512, int(max_chars)))
+    return {
+        "ok": True,
+        "matched_heading": str(match.get("heading") or heading_query),
+        "matched_section": str(match.get("section") or ""),
+        "page_start": page_start,
+        "page_end": page_end,
+        "content": content,
+    }
+
+
+def _derive_fact_check_queries(claim: str) -> list[str]:
+    text = (claim or "").strip()
+    if not text:
+        return []
+    queries: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        normalized = _normalize_search_query(value)
+        key = normalized.lower()
+        if not normalized or key in seen:
+            return
+        seen.add(key)
+        queries.append(normalized)
+
+    for match in re.finditer(r"(?i)\b(?:0x[0-9a-f]{1,4}|[0-9a-f]{1,4}h)\b", text):
+        add(match.group(0))
+    for match in re.finditer(r'"([^"]+)"|“([^”]+)”|\'([^\']+)\'', text):
+        for group in match.groups():
+            if group:
+                add(group)
+    for match in re.finditer(r"\b\d+(?:\.\d+){1,5}\b", text):
+        add(match.group(0))
+
+    tokens = [
+        token
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9/_-]{3,}", text)
+        if token.lower() not in {"that", "with", "from", "there", "which", "this", "does", "have"}
+    ]
+    for token in tokens[:4]:
+        add(token)
+    if not queries:
+        add(text)
+    return queries[:8]
+
+
+def _is_negative_claim(claim: str) -> bool:
+    text = (claim or "").strip().lower()
+    markers = (
+        " not ",
+        " no ",
+        "none",
+        "without",
+        "does not",
+        "is not",
+        "isn't",
+        "没有",
+        "不存在",
+        "未找到",
+        "不是",
+        "不支持",
+    )
+    padded = f" {text} "
+    return any(marker in padded for marker in markers)
+
+
 def _safe_filename(name: str) -> str:
     cleaned = re.sub(r"[^\w.\-]+", "_", (name or "").strip(), flags=re.UNICODE).strip("._")
     if not cleaned:
@@ -699,6 +869,103 @@ class LocalToolExecutor:
                         "context_chars": {"type": "integer", "minimum": 40, "maximum": 2000, "default": 280},
                     },
                     "required": ["path", "query"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "multi_query_search",
+                "description": "Run multiple file-search queries against one local file and merge the evidence snippets.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "queries": {"type": "array", "items": {"type": "string"}},
+                        "per_query_max_matches": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3},
+                        "context_chars": {"type": "integer", "minimum": 40, "maximum": 2000, "default": 280},
+                    },
+                    "required": ["path", "queries"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "doc_index_build",
+                "description": "Build or inspect a cached document index for a local PDF, including headings and cache status.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "force_rebuild": {"type": "boolean", "default": False},
+                        "max_headings": {"type": "integer", "minimum": 20, "maximum": 2000, "default": 400},
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "read_section_by_heading",
+                "description": "Read a document section by matching a heading or section number and returning that section's content.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "heading": {"type": "string"},
+                        "max_chars": {"type": "integer", "minimum": 512, "maximum": 50000, "default": 12000},
+                    },
+                    "required": ["path", "heading"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "table_extract",
+                "description": "Extract tables from a local PDF or XLSX file, optionally narrowed by query or page hint.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "query": {"type": "string", "default": ""},
+                        "page_hint": {"type": "integer", "minimum": 1, "default": 0},
+                        "max_tables": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+                        "max_rows": {"type": "integer", "minimum": 1, "maximum": 200, "default": 25},
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "fact_check_file",
+                "description": "Check whether a file provides supporting evidence for a claim, using derived or provided search queries.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "claim": {"type": "string"},
+                        "queries": {"type": "array", "items": {"type": "string"}, "default": []},
+                        "max_evidence": {"type": "integer", "minimum": 1, "maximum": 12, "default": 6},
+                    },
+                    "required": ["path", "claim"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "search_codebase",
+                "description": "Search code or text files under a local root and return file, line, and context matches.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "root": {"type": "string", "default": "."},
+                        "max_matches": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+                        "file_glob": {"type": "string", "default": ""},
+                        "use_regex": {"type": "boolean", "default": False},
+                        "case_sensitive": {"type": "boolean", "default": False},
+                    },
+                    "required": ["query"],
                     "additionalProperties": False,
                 },
             },
@@ -921,6 +1188,18 @@ class LocalToolExecutor:
             return self.read_text_file(**arguments)
         if name == "search_text_in_file":
             return self.search_text_in_file(**arguments)
+        if name == "multi_query_search":
+            return self.multi_query_search(**arguments)
+        if name == "doc_index_build":
+            return self.doc_index_build(**arguments)
+        if name == "read_section_by_heading":
+            return self.read_section_by_heading(**arguments)
+        if name == "table_extract":
+            return self.table_extract(**arguments)
+        if name == "fact_check_file":
+            return self.fact_check_file(**arguments)
+        if name == "search_codebase":
+            return self.search_codebase(**arguments)
         if name == "copy_file":
             return self.copy_file(**arguments)
         if name == "extract_zip":
@@ -1350,6 +1629,328 @@ class LocalToolExecutor:
             }
         except Exception as exc:
             return {"ok": False, "error": f"search_text_in_file failed: {exc}"}
+
+    def multi_query_search(
+        self,
+        path: str,
+        queries: list[str],
+        per_query_max_matches: int = 3,
+        context_chars: int = 280,
+    ) -> dict[str, Any]:
+        try:
+            cleaned_queries = [_normalize_search_query(item) for item in (queries or []) if str(item or "").strip()]
+            if not cleaned_queries:
+                return {"ok": False, "error": "queries is empty"}
+
+            merged: list[dict[str, Any]] = []
+            seen: set[tuple[Any, ...]] = set()
+            for query in cleaned_queries[:20]:
+                result = self.search_text_in_file(
+                    path=path,
+                    query=query,
+                    max_matches=max(1, min(10, int(per_query_max_matches))),
+                    context_chars=context_chars,
+                )
+                if not bool(result.get("ok")):
+                    return result
+                for match in result.get("matches") or []:
+                    if not isinstance(match, dict):
+                        continue
+                    key = (
+                        match.get("page_hint"),
+                        match.get("start_char"),
+                        match.get("end_char"),
+                        str(match.get("matched_text") or ""),
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    merged.append(match)
+
+            return {
+                "ok": True,
+                "path": str(_resolve_source_path(self.config, path)),
+                "queries": cleaned_queries[:20],
+                "match_count": len(merged),
+                "matches": merged,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"multi_query_search failed: {exc}"}
+
+    def doc_index_build(self, path: str, force_rebuild: bool = False, max_headings: int = 400) -> dict[str, Any]:
+        try:
+            real_path = _resolve_source_path(self.config, path)
+            if not real_path.exists():
+                return {"ok": False, "error": f"Path not found: {path}"}
+            if not real_path.is_file():
+                return {"ok": False, "error": f"Not a file: {path}"}
+
+            if not _looks_like_pdf_path(real_path):
+                return {
+                    "ok": False,
+                    "error": "doc_index_build currently supports PDF files only",
+                }
+
+            if force_rebuild:
+                clear_pdf_cache_for_path(real_path)
+            index = build_pdf_document_index(real_path, force_rebuild=False, max_headings=max_headings)
+            headings = index.get("headings") or []
+            return {
+                "ok": True,
+                "path": index.get("path"),
+                "cache_path": index.get("cache_path"),
+                "cached": bool(index.get("cached")),
+                "page_count": int(index.get("page_count") or 0),
+                "heading_count": int(index.get("heading_count") or 0),
+                "table_page_count": len(index.get("table_pages") or []),
+                "headings_preview": headings[:20],
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"doc_index_build failed: {exc}"}
+
+    def read_section_by_heading(self, path: str, heading: str, max_chars: int = 12000) -> dict[str, Any]:
+        try:
+            real_path = _resolve_source_path(self.config, path)
+            if not real_path.exists():
+                return {"ok": False, "error": f"Path not found: {path}"}
+            if not real_path.is_file():
+                return {"ok": False, "error": f"Not a file: {path}"}
+
+            limit = max(512, min(50000, int(max_chars)))
+            if _looks_like_pdf_path(real_path):
+                pages = extract_pdf_page_texts_from_path(real_path)
+                headings = extract_heading_entries_from_pages(pages, max_headings=1000)
+                section = _extract_section_from_pdf_pages(pages, headings, heading, limit)
+                if not bool(section.get("ok")):
+                    return section
+                return {
+                    "ok": True,
+                    "path": str(real_path),
+                    "matched_heading": section.get("matched_heading"),
+                    "matched_section": section.get("matched_section"),
+                    "page_start": section.get("page_start"),
+                    "page_end": section.get("page_end"),
+                    "content": section.get("content"),
+                }
+
+            base = self.read_text_file(path=path, start_char=0, max_chars=1_000_000)
+            if not bool(base.get("ok")):
+                return base
+            text = str(base.get("content") or "")
+            lines = text.splitlines()
+            pages = [(1, text)]
+            headings = extract_heading_entries_from_pages(pages, max_headings=1000)
+            section = _extract_section_from_pdf_pages([(1, text)], headings, heading, limit)
+            if bool(section.get("ok")):
+                return {
+                    "ok": True,
+                    "path": str(real_path),
+                    "matched_heading": section.get("matched_heading"),
+                    "matched_section": section.get("matched_section"),
+                    "page_start": 1,
+                    "page_end": 1,
+                    "content": section.get("content"),
+                }
+            return {"ok": False, "error": f"Heading not found: {heading}", "path": str(real_path), "line_count": len(lines)}
+        except Exception as exc:
+            return {"ok": False, "error": f"read_section_by_heading failed: {exc}"}
+
+    def table_extract(
+        self,
+        path: str,
+        query: str = "",
+        page_hint: int = 0,
+        max_tables: int = 5,
+        max_rows: int = 25,
+    ) -> dict[str, Any]:
+        try:
+            real_path = _resolve_source_path(self.config, path)
+            if not real_path.exists():
+                return {"ok": False, "error": f"Path not found: {path}"}
+            if not real_path.is_file():
+                return {"ok": False, "error": f"Not a file: {path}"}
+
+            limit_tables = max(1, min(20, int(max_tables)))
+            limit_rows = max(1, min(200, int(max_rows)))
+            query_norm = _normalize_search_query(query)
+
+            if _looks_like_pdf_path(real_path):
+                candidate_pages: list[int] = []
+                if page_hint > 0:
+                    candidate_pages.append(int(page_hint))
+                if query_norm:
+                    search = self.search_text_in_file(path=path, query=query_norm, max_matches=8, context_chars=120)
+                    if bool(search.get("ok")):
+                        candidate_pages.extend(
+                            int(item.get("page_hint") or 0)
+                            for item in (search.get("matches") or [])
+                            if int(item.get("page_hint") or 0) > 0
+                        )
+                page_numbers = sorted(set(page for page in candidate_pages if page > 0)) or None
+                tables = extract_pdf_tables_from_path(
+                    real_path,
+                    page_numbers=page_numbers,
+                    max_tables=limit_tables,
+                    max_rows=limit_rows,
+                )
+                if query_norm:
+                    query_tokens = [normalize_lookup_text(query_norm)]
+                    filtered: list[dict[str, object]] = []
+                    for table in tables:
+                        rows = [str(row) for row in table.get("rows") or []]
+                        joined = normalize_lookup_text("\n".join(rows))
+                        if any(token in joined for token in query_tokens):
+                            filtered.append(table)
+                    tables = filtered
+                return {
+                    "ok": True,
+                    "path": str(real_path),
+                    "table_count": len(tables),
+                    "tables": tables[:limit_tables],
+                }
+
+            if real_path.suffix.lower() in {".xlsx", ".xlsm", ".xltx", ".xltm", ".xls"}:
+                try:
+                    from openpyxl import load_workbook  # lazy import
+                except Exception as exc:
+                    return {"ok": False, "error": f"table_extract requires openpyxl: {exc}"}
+                wb = load_workbook(filename=str(real_path), read_only=True, data_only=True)
+                try:
+                    tables: list[dict[str, Any]] = []
+                    for sheet in wb.worksheets:
+                        rows: list[str] = []
+                        for row in sheet.iter_rows(values_only=True):
+                            cells = [_xlsx_cell_to_text(cell) for cell in row]
+                            if not any(cells):
+                                continue
+                            row_line = " | ".join(cells)
+                            if query_norm and normalize_lookup_text(query_norm) not in normalize_lookup_text(row_line):
+                                continue
+                            rows.append(row_line)
+                            if len(rows) >= limit_rows:
+                                break
+                        if rows:
+                            tables.append({"sheet": sheet.title or "Sheet", "rows": rows})
+                        if len(tables) >= limit_tables:
+                            break
+                    return {"ok": True, "path": str(real_path), "table_count": len(tables), "tables": tables}
+                finally:
+                    try:
+                        wb.close()
+                    except Exception:
+                        pass
+
+            return {"ok": False, "error": "table_extract currently supports PDF/XLSX files only"}
+        except Exception as exc:
+            return {"ok": False, "error": f"table_extract failed: {exc}"}
+
+    def fact_check_file(
+        self,
+        path: str,
+        claim: str,
+        queries: list[str] | None = None,
+        max_evidence: int = 6,
+    ) -> dict[str, Any]:
+        try:
+            cleaned_claim = (claim or "").strip()
+            if not cleaned_claim:
+                return {"ok": False, "error": "claim is empty"}
+            query_list = [_normalize_search_query(item) for item in (queries or []) if str(item or "").strip()]
+            if not query_list:
+                query_list = _derive_fact_check_queries(cleaned_claim)
+            search = self.multi_query_search(
+                path=path,
+                queries=query_list,
+                per_query_max_matches=max(1, min(6, int(max_evidence))),
+                context_chars=220,
+            )
+            if not bool(search.get("ok")):
+                return search
+
+            evidence = list(search.get("matches") or [])[: max(1, min(12, int(max_evidence)))]
+            verdict = "insufficient_evidence"
+            if evidence:
+                verdict = "conflicted" if _is_negative_claim(cleaned_claim) else "supported"
+            return {
+                "ok": True,
+                "path": str(_resolve_source_path(self.config, path)),
+                "claim": cleaned_claim,
+                "queries_used": query_list,
+                "verdict": verdict,
+                "evidence_count": len(evidence),
+                "evidence": evidence,
+                "note": (
+                    "This tool checks whether the current extracted file text contains evidence related to the claim. "
+                    "A 'supported' result still requires agent judgment about relevance and exact wording."
+                ),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"fact_check_file failed: {exc}"}
+
+    def search_codebase(
+        self,
+        query: str,
+        root: str = ".",
+        max_matches: int = 20,
+        file_glob: str = "",
+        use_regex: bool = False,
+        case_sensitive: bool = False,
+    ) -> dict[str, Any]:
+        try:
+            cleaned_query = str(query or "").strip()
+            if not cleaned_query:
+                return {"ok": False, "error": "query is empty"}
+            real_root = _resolve_workspace_path(self.config, root)
+            if not real_root.exists():
+                return {"ok": False, "error": f"Path not found: {root}"}
+            if not real_root.is_dir():
+                return {"ok": False, "error": f"Not a directory: {root}"}
+
+            limit = max(1, min(100, int(max_matches)))
+            argv = ["rg", "-n", "--no-heading", "--color", "never", "--max-count", str(limit)]
+            if not use_regex:
+                argv.append("-F")
+            if case_sensitive:
+                argv.append("-s")
+            else:
+                argv.append("-i")
+            if file_glob.strip():
+                argv.extend(["-g", file_glob.strip()])
+            argv.extend([cleaned_query, str(real_root)])
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=20)
+            if proc.returncode not in {0, 1}:
+                return {"ok": False, "error": proc.stderr.strip() or proc.stdout.strip() or "rg failed"}
+
+            matches: list[dict[str, Any]] = []
+            for line in (proc.stdout or "").splitlines():
+                parts = line.split(":", 2)
+                if len(parts) != 3:
+                    continue
+                file_path, line_no_raw, text_line = parts
+                try:
+                    line_no = int(line_no_raw)
+                except Exception:
+                    line_no = 0
+                matches.append(
+                    {
+                        "path": file_path,
+                        "line": line_no,
+                        "text": text_line.strip(),
+                    }
+                )
+                if len(matches) >= limit:
+                    break
+            return {
+                "ok": True,
+                "root": str(real_root),
+                "query": cleaned_query,
+                "match_count": len(matches),
+                "matches": matches,
+            }
+        except FileNotFoundError:
+            return {"ok": False, "error": "rg not found"}
+        except Exception as exc:
+            return {"ok": False, "error": f"search_codebase failed: {exc}"}
 
     def copy_file(
         self, src_path: str, dst_path: str, overwrite: bool = True, create_dirs: bool = True
