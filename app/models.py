@@ -169,3 +169,32 @@ class SandboxDrillResponse(BaseModel):
     docker_message: str | None = None
     summary: str = ""
     steps: list[SandboxDrillStep] = Field(default_factory=list)
+
+
+class EvalRunRequest(BaseModel):
+    include_optional: bool = False
+    name_filter: str = ""
+
+
+class EvalCaseResult(BaseModel):
+    name: str
+    kind: str | None = None
+    status: Literal["passed", "failed", "skipped"]
+    reason: str | None = None
+    errors: list[str] = Field(default_factory=list)
+    payload: dict = Field(default_factory=dict)
+
+
+class EvalRunResponse(BaseModel):
+    ok: bool
+    run_id: str
+    include_optional: bool = False
+    name_filter: str = ""
+    cases_path: str = ""
+    passed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    total: int = 0
+    duration_ms: int = 0
+    summary: str = ""
+    results: list[EvalCaseResult] = Field(default_factory=list)

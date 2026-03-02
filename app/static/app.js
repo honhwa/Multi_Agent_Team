@@ -4,6 +4,7 @@ const state = {
   sendingSessionIds: new Set(),
   attachments: [],
   drilling: false,
+  evaluating: false,
 };
 const SESSION_STORAGE_KEY = "officetool.session_id";
 
@@ -15,6 +16,7 @@ const messageInput = document.getElementById("messageInput");
 const sendBtn = document.getElementById("sendBtn");
 const newSessionBtn = document.getElementById("newSessionBtn");
 const sandboxDrillBtn = document.getElementById("sandboxDrillBtn");
+const evalHarnessBtn = document.getElementById("evalHarnessBtn");
 const sessionIdView = document.getElementById("sessionIdView");
 const sessionHistoryView = document.getElementById("sessionHistoryView");
 const refreshSessionsBtn = document.getElementById("refreshSessionsBtn");
@@ -238,6 +240,11 @@ function updateSendAvailability() {
 function updateDrillAvailability() {
   if (!sandboxDrillBtn) return;
   sandboxDrillBtn.disabled = Boolean(state.drilling);
+}
+
+function updateEvalAvailability() {
+  if (!evalHarnessBtn) return;
+  evalHarnessBtn.disabled = Boolean(state.evaluating);
 }
 
 function refreshSession() {
@@ -971,6 +978,143 @@ async function runSandboxDrill() {
   }
 }
 
+function summarizeEvalResult(item) {
+  const name = String(item?.name || "unnamed");
+  const kind = String(item?.kind || "tool");
+  const status = String(item?.status || "unknown").toUpperCase();
+  const elapsed = Number(item?.payload?.elapsed_sec || 0);
+  const suffix = elapsed > 0 ? ` (${elapsed.toFixed(3)}s)` : "";
+  if (item?.status === "failed") {
+    const errors = Array.isArray(item?.errors) ? item.errors : [];
+    return `[${status}] ${name} [${kind}]${suffix} - ${errors.join("; ") || "unknown error"}`;
+  }
+  if (item?.status === "skipped") {
+    return `[${status}] ${name} [${kind}] - ${String(item?.reason || "")}`;
+  }
+  return `[${status}] ${name} [${kind}]${suffix}`;
+}
+
+async function runEvalHarness() {
+  if (state.evaluating) return;
+
+  const payload = {
+    include_optional: false,
+    name_filter: "",
+  };
+
+  state.evaluating = true;
+  updateEvalAvailability();
+  setRunStage("进行中", "开始回归测试（默认非 optional 用例）", "prepare", "working");
+  if (runPayloadView) {
+    runPayloadView.textContent = `eval harness payload:\n${formatJsonPreview(payload)}`;
+  }
+  renderRunTrace(["回归测试请求已发送。"], []);
+  renderAgentPanels([], []);
+  renderLlmFlow([
+    {
+      step: 1,
+      stage: "frontend_prepare",
+      title: "前端发起回归测试",
+      detail: "POST /api/evals/run\ninclude_optional=false",
+    },
+  ]);
+
+  try {
+    const res = await fetch("/api/evals/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const data = await res.json();
+        if (data?.detail) detail = String(data.detail);
+      } catch {}
+      throw new Error(detail);
+    }
+
+    const data = await res.json();
+    const results = Array.isArray(data?.results) ? data.results : [];
+    const failed = results.filter((item) => item?.status === "failed");
+    const skipped = results.filter((item) => item?.status === "skipped");
+    const trace = [
+      `run_id: ${data?.run_id || "-"}`,
+      `summary: ${data?.summary || "-"}`,
+      `duration_ms: ${Number(data?.duration_ms || 0)}`,
+      `cases_path: ${data?.cases_path || "-"}`,
+      "",
+      "results:",
+      ...results.map((item) => summarizeEvalResult(item)),
+    ];
+    renderRunTrace(trace, []);
+
+    const panels = [
+      {
+        role: "eval_harness",
+        title: "Regression Evals",
+        summary: data?.summary || "回归测试已完成。",
+        bullets: [
+          `passed=${Number(data?.passed || 0)}`,
+          `failed=${Number(data?.failed || 0)}`,
+          `skipped=${Number(data?.skipped || 0)}`,
+          `total=${Number(data?.total || 0)}`,
+        ],
+      },
+    ];
+    if (failed.length) {
+      panels.push({
+        role: "eval_failures",
+        title: "Failed Cases",
+        summary: `失败用例 ${failed.length} 个。`,
+        bullets: failed.slice(0, 6).map((item) => summarizeEvalResult(item)),
+      });
+    }
+    if (skipped.length) {
+      panels.push({
+        role: "eval_skips",
+        title: "Skipped Cases",
+        summary: `跳过用例 ${skipped.length} 个。`,
+        bullets: skipped.slice(0, 6).map((item) => summarizeEvalResult(item)),
+      });
+    }
+    renderAgentPanels(panels, []);
+    renderLlmFlow([
+      {
+        step: 1,
+        stage: data?.ok ? "backend_tool" : "backend_warning",
+        title: "回归测试结果",
+        detail: formatJsonPreview(data),
+      },
+    ]);
+
+    if (data?.ok) {
+      setRunStage("完成", data?.summary || "回归测试通过", "done", "done");
+      addBubble("system", `${data?.summary || "回归测试通过。"}\n可在运行面板查看逐条用例结果。`);
+    } else {
+      setRunStage("失败", data?.summary || "回归测试失败", "parse", "error");
+      addBubble("system", `${data?.summary || "回归测试失败。"}\n请查看运行面板中的 Failed Cases。`);
+    }
+  } catch (err) {
+    const msg = `回归测试请求失败: ${String(err)}`;
+    renderRunTrace([msg], []);
+    renderAgentPanels([], []);
+    renderLlmFlow([
+      {
+        step: 1,
+        stage: "frontend_error",
+        title: "回归测试失败",
+        detail: msg,
+      },
+    ]);
+    setRunStage("失败", "回归测试失败，请检查错误信息", "parse", "error");
+    addBubble("system", msg);
+  } finally {
+    state.evaluating = false;
+    updateEvalAvailability();
+  }
+}
+
 async function sendMessage() {
   const message = messageInput.value.trim();
   if (!message) return;
@@ -1214,6 +1358,10 @@ if (sandboxDrillBtn) {
   sandboxDrillBtn.addEventListener("click", runSandboxDrill);
 }
 
+if (evalHarnessBtn) {
+  evalHarnessBtn.addEventListener("click", runEvalHarness);
+}
+
 messageInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
@@ -1263,6 +1411,7 @@ if (deleteSessionBtn) {
   applyModePreset("general", false);
   setRunStage("空闲", "等待发送请求", null, "idle");
   updateDrillAvailability();
+  updateEvalAvailability();
   renderRunPayload(
     {
       session_id: null,

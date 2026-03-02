@@ -16,11 +16,15 @@ from fastapi.staticfiles import StaticFiles
 
 from app.agent import OfficeAgent
 from app.config import load_config
+from app.evals import run_regression_evals
 from app.models import (
     ChatRequest,
     ChatResponse,
     ClearStatsResponse,
     DeleteSessionResponse,
+    EvalCaseResult,
+    EvalRunRequest,
+    EvalRunResponse,
     HealthResponse,
     NewSessionResponse,
     SessionDetailResponse,
@@ -420,6 +424,39 @@ def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
         docker_message=docker_msg,
         summary=summary,
         steps=steps,
+    )
+
+
+@app.post("/api/evals/run", response_model=EvalRunResponse)
+def run_evals(req: EvalRunRequest) -> EvalRunResponse:
+    run_id = str(uuid.uuid4())
+    summary = run_regression_evals(
+        include_optional=bool(req.include_optional),
+        name_filter=str(req.name_filter or "").strip(),
+    )
+    passed = int(summary.get("passed") or 0)
+    failed = int(summary.get("failed") or 0)
+    skipped = int(summary.get("skipped") or 0)
+    total = int(summary.get("total") or 0)
+    duration_ms = int(summary.get("duration_ms") or 0)
+    summary_text = (
+        f"回归测试通过：passed={passed}, failed={failed}, skipped={skipped}, total={total}"
+        if failed == 0
+        else f"回归测试失败：passed={passed}, failed={failed}, skipped={skipped}, total={total}"
+    )
+    return EvalRunResponse(
+        ok=bool(summary.get("ok")),
+        run_id=run_id,
+        include_optional=bool(summary.get("include_optional")),
+        name_filter=str(summary.get("name_filter") or ""),
+        cases_path=str(summary.get("cases_path") or ""),
+        passed=passed,
+        failed=failed,
+        skipped=skipped,
+        total=total,
+        duration_ms=duration_ms,
+        summary=summary_text,
+        results=[EvalCaseResult(**item) for item in summary.get("results") or [] if isinstance(item, dict)],
     )
 
 
