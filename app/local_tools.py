@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import AppConfig
-from app.document_text import extract_pdf_page_texts_from_path, extract_pdf_text_from_bytes
+from app.document_text import extract_pdf_page_texts_from_path, extract_pdf_text_from_bytes, extract_pdf_text_from_path
 from app.sandbox import DockerSandboxManager
 
 
@@ -1156,8 +1156,7 @@ class LocalToolExecutor:
             if suffix == ".pdf":
                 source_format = "pdf_text_extracted"
                 try:
-                    raw_pdf = real_path.read_bytes()
-                    full_text = _extract_pdf_text_from_bytes(raw_pdf, max_chars=1_000_000)
+                    full_text = extract_pdf_text_from_path(real_path, max_chars=1_000_000)
                 except Exception as exc:
                     full_text = f"[文档解析失败: {exc}]"
             elif suffix in {".docx", ".msg", ".xlsx", ".xlsm", ".xltx", ".xltm", ".xls"}:
@@ -1183,8 +1182,7 @@ class LocalToolExecutor:
                 if head.startswith(b"%PDF-"):
                     source_format = "pdf_text_extracted"
                     try:
-                        raw = real_path.read_bytes()
-                        full_text = _extract_pdf_text_from_bytes(raw, max_chars=1_000_000)
+                        full_text = extract_pdf_text_from_path(real_path, max_chars=1_000_000)
                     except Exception as exc:
                         full_text = f"[文档解析失败: {exc}]"
                 elif head.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):

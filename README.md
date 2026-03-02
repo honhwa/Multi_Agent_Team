@@ -150,6 +150,7 @@ cd $HOME\Desktop\officetool
 
 - 支持图片：png/jpg/jpeg/webp/gif/heic/heif
 - 支持文档：txt/md/csv/json/pdf/docx/msg/xlsx（含 xlsm/xltx/xltm）及常见代码文本
+- 大型 PDF 会在首次读取后建立本地页文本缓存，后续 `read_text_file` / `search_text_in_file` 会复用缓存；缓存目录在 `app/data/document_cache/`
 - 图片直接送入多模态输入；文档会先抽取文本后送入模型
 - `.msg`（Outlook 邮件）会抽取主题/发件人/收件人/时间/正文/附件列表
 - `.xlsx` 会按工作表读取并转为结构化文本（行内以 `|` 分隔）
