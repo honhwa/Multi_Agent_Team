@@ -959,6 +959,8 @@ class OfficeAgent:
             spec_lookup_request=spec_lookup_request,
             evidence_required_mode=evidence_required_mode,
             conflict_brief=conflict_brief,
+            debug_cb=add_debug,
+            trace_cb=add_trace,
         )
         reviewer_effective_model = str(reviewer_brief.get("effective_model") or "").strip()
         if reviewer_effective_model:
@@ -982,7 +984,16 @@ class OfficeAgent:
         )
         reviewer_summary = str(reviewer_brief.get("summary") or "").strip() or "已完成最终答复审阅。"
         reviewer_bullets = (
-            self._normalize_string_list(reviewer_brief.get("readonly_checks") or [], limit=3, item_limit=180)
+            self._normalize_string_list(
+                [f"使用工具: {item}" for item in reviewer_brief.get("readonly_checks") or []],
+                limit=4,
+                item_limit=180,
+            )
+            + self._normalize_string_list(
+                [f"复核证据: {item}" for item in reviewer_brief.get("readonly_evidence") or []],
+                limit=4,
+                item_limit=200,
+            )
             + self._normalize_string_list(reviewer_brief.get("strengths") or [], limit=2, item_limit=180)
             + self._normalize_string_list(reviewer_brief.get("risks") or [], limit=3, item_limit=180)
             + self._normalize_string_list(reviewer_brief.get("followups") or [], limit=2, item_limit=180)
@@ -1215,6 +1226,8 @@ class OfficeAgent:
         spec_lookup_request: bool = False,
         evidence_required_mode: bool = False,
         conflict_brief: dict[str, Any] | None = None,
+        debug_cb: Callable[[str, str, str], None] | None = None,
+        trace_cb: Callable[[str], None] | None = None,
     ) -> tuple[dict[str, Any], str]:
         tool_summaries = [
             f"{idx + 1}. {tool.name}({json.dumps(tool.input or {}, ensure_ascii=False)})"
@@ -1277,6 +1290,7 @@ class OfficeAgent:
             usage_total = self._empty_usage()
             notes: list[str] = []
             reviewer_tool_names: list[str] = []
+            reviewer_evidence: list[str] = []
             ai_msg, runner, effective_model, invoke_notes = self._invoke_chat_with_runner(
                 messages=messages,
                 model=requested_model,
@@ -1321,6 +1335,17 @@ class OfficeAgent:
                     args = call.get("args") or {}
                     if not isinstance(args, dict):
                         args = {}
+                    if debug_cb is not None:
+                        debug_cb(
+                            "llm_to_backend",
+                            f"Reviewer -> 后端编排器（请求工具 {name}）",
+                            "\n".join(
+                                [
+                                    f"tool={name}",
+                                    f"args={self._shorten(json.dumps(args, ensure_ascii=False), 1200)}",
+                                ]
+                            ),
+                        )
                     result = self.tools.execute(name, args)
                     result_json = json.dumps(result, ensure_ascii=False)
                     tool_payload, trim_note = self._prepare_tool_result_for_llm(
@@ -1330,8 +1355,25 @@ class OfficeAgent:
                         raw_json=result_json,
                     )
                     reviewer_tool_names.append(name)
+                    evidence_summary = self._summarize_reviewer_tool_result(name=name, result=result)
+                    if evidence_summary:
+                        reviewer_evidence.append(evidence_summary)
+                        if trace_cb is not None:
+                            trace_cb(f"Reviewer 复核: {evidence_summary}")
                     if trim_note:
                         notes.append(trim_note)
+                    if debug_cb is not None:
+                        debug_cb(
+                            "backend_tool",
+                            f"后端编排器执行 Reviewer 只读工具 {name}",
+                            "\n".join(
+                                [
+                                    f"tool={name}",
+                                    f"summary={evidence_summary or '(none)'}",
+                                    f"result={self._shorten(result_json, 1800)}",
+                                ]
+                            ),
+                        )
                     messages.append(
                         self._ToolMessage(
                             content=tool_payload,
@@ -1339,6 +1381,18 @@ class OfficeAgent:
                             name=name,
                         )
                     )
+                    if debug_cb is not None:
+                        debug_cb(
+                            "backend_to_llm",
+                            f"后端编排器 -> Reviewer（工具结果 {name}）",
+                            "\n".join(
+                                [
+                                    f"tool={name}",
+                                    f"summary={evidence_summary or '(none)'}",
+                                    f"tool_payload={self._shorten(tool_payload, 1800)}",
+                                ]
+                            ),
+                        )
                 ai_msg, runner, effective_model, invoke_notes = self._invoke_with_runner_recovery(
                     runner=runner,
                     messages=messages,
@@ -1375,6 +1429,7 @@ class OfficeAgent:
                 "effective_model": effective_model,
                 "notes": notes,
                 "readonly_checks": reviewer_tool_names,
+                "readonly_evidence": reviewer_evidence,
             }
             return reviewer, raw_text
         except Exception as exc:
@@ -1410,6 +1465,11 @@ class OfficeAgent:
                 *[f"- {item}" for item in self._normalize_string_list(reviewer_brief.get("followups") or [], limit=4)],
                 "reviewer_readonly_checks:",
                 *[f"- {item}" for item in self._normalize_string_list(reviewer_brief.get("readonly_checks") or [], limit=8)],
+                "reviewer_readonly_evidence:",
+                *[
+                    f"- {item}"
+                    for item in self._normalize_string_list(reviewer_brief.get("readonly_evidence") or [], limit=8)
+                ],
                 f"conflict_summary={str((conflict_brief or {}).get('summary') or '').strip() or '(none)'}",
                 "conflict_concerns:",
                 *[f"- {item}" for item in self._normalize_string_list((conflict_brief or {}).get("concerns") or [], limit=4)],
@@ -2023,6 +2083,92 @@ class OfficeAgent:
             "fact_check_file",
             "search_codebase",
         ]
+
+    def _summarize_reviewer_tool_result(self, *, name: str, result: dict[str, Any]) -> str:
+        if not isinstance(result, dict):
+            return f"{name} 返回了非结构化结果。"
+
+        if not bool(result.get("ok")):
+            return f"{name} 失败: {self._shorten(result.get('error') or 'unknown error', 120)}"
+
+        if name == "fact_check_file":
+            verdict = str(result.get("verdict") or "unknown").strip() or "unknown"
+            evidence_count = int(result.get("evidence_count") or 0)
+            queries = self._normalize_string_list(result.get("queries_used") or [], limit=3, item_limit=40)
+            query_text = ", ".join(queries) if queries else "(none)"
+            return f"fact_check_file verdict={verdict}, evidence={evidence_count}, queries={query_text}"
+
+        if name == "search_text_in_file":
+            query = str(result.get("query") or "").strip() or "(empty)"
+            matches = list(result.get("matches") or [])
+            match_count = int(result.get("match_count") or len(matches))
+            first = matches[0] if matches else {}
+            page_hint = int(first.get("page_hint") or 0)
+            matched_text = self._shorten(first.get("matched_text") or "", 60) if first else ""
+            if page_hint > 0:
+                return f"search_text_in_file query={query}, matches={match_count}, first_page={page_hint}, first_hit={matched_text or '(none)'}"
+            return f"search_text_in_file query={query}, matches={match_count}, first_hit={matched_text or '(none)'}"
+
+        if name == "multi_query_search":
+            queries = self._normalize_string_list(result.get("queries") or [], limit=4, item_limit=40)
+            matches = list(result.get("matches") or [])
+            match_count = int(result.get("match_count") or len(matches))
+            first = matches[0] if matches else {}
+            page_hint = int(first.get("page_hint") or 0)
+            return f"multi_query_search queries={', '.join(queries) or '(none)'}, matches={match_count}, first_page={page_hint or 'n/a'}"
+
+        if name == "doc_index_build":
+            page_count = int(result.get("page_count") or 0)
+            heading_count = int(result.get("heading_count") or 0)
+            cached = bool(result.get("cached"))
+            return f"doc_index_build cached={str(cached).lower()}, pages={page_count}, headings={heading_count}"
+
+        if name == "read_section_by_heading":
+            heading = str(result.get("matched_heading") or result.get("matched_section") or "").strip() or "(not found)"
+            page_start = int(result.get("page_start") or 0)
+            page_end = int(result.get("page_end") or 0)
+            if page_start > 0:
+                return f"read_section_by_heading matched={heading}, pages={page_start}-{page_end or page_start}"
+            return f"read_section_by_heading matched={heading}"
+
+        if name == "table_extract":
+            tables = list(result.get("tables") or [])
+            table_count = int(result.get("table_count") or len(tables))
+            first = tables[0] if tables else {}
+            page = int(first.get("page") or 0)
+            rows = len(first.get("rows") or []) if isinstance(first, dict) else 0
+            if page > 0:
+                return f"table_extract tables={table_count}, first_page={page}, first_rows={rows}"
+            return f"table_extract tables={table_count}, first_rows={rows}"
+
+        if name == "search_codebase":
+            matches = list(result.get("matches") or [])
+            match_count = int(result.get("match_count") or len(matches))
+            first = matches[0] if matches else {}
+            path = str(first.get("path") or "").strip()
+            line = int(first.get("line") or 0)
+            if path:
+                return f"search_codebase matches={match_count}, first={path}:{line or '?'}"
+            return f"search_codebase matches={match_count}"
+
+        if name == "read_text_file":
+            path = str(result.get("path") or "").strip()
+            length = int(result.get("length") or 0)
+            start_char = int(result.get("start_char") or 0)
+            end_char = int(result.get("end_char") or 0)
+            truncated = bool(result.get("truncated"))
+            return (
+                f"read_text_file path={self._shorten(path, 60)}, chars={length}, "
+                f"range={start_char}-{end_char}, truncated={str(truncated).lower()}"
+            )
+
+        if name == "list_directory":
+            path = str(result.get("path") or "").strip() or "."
+            entries = result.get("entries") or []
+            count = len(entries) if isinstance(entries, list) else 0
+            return f"list_directory path={self._shorten(path, 60)}, entries={count}"
+
+        return f"{name} 已完成复核。"
 
     def _run_shell_tool(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> str:
         result = self.tools.run_shell(command=command, cwd=cwd, timeout_sec=timeout_sec)
