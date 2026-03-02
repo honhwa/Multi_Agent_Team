@@ -26,11 +26,15 @@ _STYLE_HINTS = {
 _NEWS_HINTS = (
     "news",
     "latest",
+    "recent",
     "breaking",
     "headline",
     "today",
     "score",
     "scores",
+    "最近",
+    "近期",
+    "近况",
     "新闻",
     "消息",
     "今日",
@@ -43,6 +47,17 @@ _NEWS_HINTS = (
 _ATTACHMENT_INLINE_MAX_BYTES = 1 * 1024 * 1024
 _ATTACHMENT_INLINE_MAX_CHARS_SOFT = 80000
 _FOLLOWUP_INLINE_MAX_BYTES = 256 * 1024
+_FOLLOWUP_SEARCH_HINTS = (
+    "上网查",
+    "网上查",
+    "查一下",
+    "搜一下",
+    "再查",
+    "继续查",
+    "帮我查",
+    "帮我搜",
+    "再搜",
+)
 
 
 class RunShellArgs(BaseModel):
@@ -411,9 +426,13 @@ class OfficeAgent:
                     "联网任务优先先用 search_web(query) 自动找候选链接，再用 fetch_web(url) 读正文；"
                     "如果用户要求“下载/保存文件（PDF/ZIP/图片等）”，优先使用 download_web_file，不要说只能写 UTF-8。\n"
                     "fetch_web 遇到 PDF 会尝试抽取正文文本；若用户要求原文件落盘，必须用 download_web_file。\n"
+                    "对于公众人物在公开新闻、公开活动、公开比赛、公开采访中的出现地点或行程，"
+                    "如果问题明显是在问公开报道中的活动地点（例如是否在某国参加比赛/活动），可以联网搜索并基于公开来源总结；"
+                    "只有当用户要求精确实时位置、非公开行踪、住所、酒店、私人行程或可用于跟踪个人的细粒度位置时，才按隐私高风险处理。\n"
                     "除非用户明确指定网址，不要反复要求用户先给 URL。\n"
                     "对新闻/实时信息类问题，若第一次搜索结果不足，先自动改写 query 并重试最多 2 次，"
                     "再决定是否向用户补充提问。\n"
+                    "如果当前用户消息只是“上网查一下/再查一下/搜一下”这类短跟进，默认延续最近一轮用户主题，不要假装丢失上下文重新问用户想查什么。\n"
                     "如果参数可合理推断（如标题、默认文件名、默认目录），请直接执行并在回复里说明假设；"
                     "不要因为参数不完整而连续多轮追问。\n"
                     "联网信息不足时，先自动换来源继续抓取；即使正文不完整，也先基于可访问到的标题/摘要给临时结论，"
@@ -443,6 +462,20 @@ class OfficeAgent:
             else:
                 messages.append(self._HumanMessage(content=text))
         add_trace(f"已载入最近 {min(len(history_turns), settings.max_context_turns)} 条历史消息。")
+
+        followup_topic_hint = self._build_followup_topic_hint(user_message=user_message, history_turns=history_turns)
+        planner_user_message = user_message
+        if followup_topic_hint:
+            planner_user_message = f"{user_message}\n\n[延续主题]\n{followup_topic_hint}"
+            messages.append(
+                self._SystemMessage(
+                    content=(
+                        "检测到本轮用户消息是短跟进请求。"
+                        f"默认延续最近一次用户主题：{followup_topic_hint}"
+                    )
+                )
+            )
+            add_trace(f"已识别为跟进请求，默认延续主题：{self._shorten(followup_topic_hint, 120)}")
 
         user_content, attachment_note, attachment_issues = self._build_user_content(
             user_message,
@@ -510,7 +543,7 @@ class OfficeAgent:
         )
         planner_brief, planner_raw = self._run_planner(
             requested_model=requested_model,
-            user_message=user_message,
+            user_message=planner_user_message,
             summary=summary,
             attachment_metas=attachment_metas,
             settings=settings,
@@ -1817,6 +1850,50 @@ class OfficeAgent:
             return ""
         sentence = re.split(r"(?<=[。.!?！？])\s+", cleaned, maxsplit=1)[0]
         return self._shorten(sentence or cleaned, 220)
+
+    def _build_followup_topic_hint(self, *, user_message: str, history_turns: list[dict[str, Any]]) -> str:
+        current = str(user_message or "").strip()
+        if not self._looks_like_short_followup_search(current):
+            return ""
+        for turn in reversed(history_turns):
+            if str(turn.get("role") or "") != "user":
+                continue
+            text = str(turn.get("text") or "").strip()
+            if not text:
+                continue
+            if text == current:
+                continue
+            return self._shorten(" ".join(text.split()), 280)
+        return ""
+
+    def _looks_like_short_followup_search(self, text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        if "http://" in lowered or "https://" in lowered:
+            return False
+        compact = lowered.replace(" ", "")
+        if len(compact) > 24:
+            return False
+        if not any(hint in compact for hint in _FOLLOWUP_SEARCH_HINTS):
+            return False
+        concrete_markers = (
+            ".com",
+            ".jp",
+            ".cn",
+            ".org",
+            "http",
+            "谁",
+            "什么",
+            "哪家",
+            "哪个",
+            "大谷",
+            "openai",
+            "nvme",
+        )
+        if any(marker in compact for marker in concrete_markers):
+            return False
+        return True
 
     def _split_claim_candidates(self, final_text: str) -> list[str]:
         raw = str(final_text or "").strip()
@@ -3480,6 +3557,10 @@ class OfficeAgent:
             "附件",
             "路径",
             "目录",
+            "上网",
+            "网上",
+            "查一下",
+            "搜一下",
             "read_text_file",
             "search_text_in_file",
             "multi_query_search",

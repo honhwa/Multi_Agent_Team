@@ -205,6 +205,32 @@
     }
   },
   {
+    "name": "helper_followup_search_inherits_previous_topic",
+    "kind": "helper",
+    "helper": "_build_followup_topic_hint",
+    "args": {
+      "user_message": "上网查一下",
+      "history_turns": [
+        {
+          "role": "user",
+          "text": "查一下大谷翔平最近在不在日本国内"
+        },
+        {
+          "role": "assistant",
+          "text": "先前答复错误地拒绝了这个请求。"
+        }
+      ]
+    },
+    "assert": {
+      "contains_any": {
+        "result": [
+          "大谷翔平",
+          "日本国内"
+        ]
+      }
+    }
+  },
+  {
     "name": "tool_table_extract_xlsx",
     "kind": "tool",
     "tool": "table_extract",
