@@ -51,9 +51,11 @@ const RUN_FLOW_STEPS = [
 const LLM_FLOW_STAGE_LABELS = {
   frontend_prepare: "前端组包",
   frontend_error: "前端错误",
+  backend_ingress: "后端接收输入",
   backend_to_llm: "后端 -> LLM",
   llm_to_backend: "LLM -> 后端",
   backend_tool: "后端工具执行",
+  backend_prefetch: "后端预取",
   llm_final: "LLM最终答复",
   llm_error: "LLM错误",
   backend_warning: "后端告警",

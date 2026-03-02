@@ -386,11 +386,36 @@ class OfficeAgent:
         )
         messages.append(self._HumanMessage(content=user_content))
         tool_events: list[ToolEvent] = []
+        add_debug(
+            stage="backend_ingress",
+            title="后端接收并整理用户输入",
+            detail=(
+                f"user_message_chars={len(user_message)}\n"
+                f"attachments={len(attachment_metas)}\n"
+                f"history_turns_used={min(len(history_turns), settings.max_context_turns)}\n"
+                f"user_message_preview={self._shorten(user_message, 400 if not debug_raw else 5000)}\n"
+                f"normalized_user_payload:\n{self._serialize_content_for_debug(user_content, raw_mode=debug_raw)}"
+            ),
+        )
         if attachment_metas:
             add_trace(f"已处理 {len(attachment_metas)} 个附件输入。")
         for issue in attachment_issues:
             add_trace(f"附件提示: {issue}")
 
+        planner_request_detail = "\n".join(
+            [
+                f"requested_model={requested_model}",
+                f"response_style={settings.response_style}",
+                f"attachments={len(attachment_metas)}",
+                f"history_summary_chars={len(summary.strip())}",
+                f"user_message_preview={self._shorten(user_message, 400 if not debug_raw else 5000)}",
+            ]
+        )
+        add_debug(
+            stage="backend_to_llm",
+            title="Planner -> LLM 请求",
+            detail=planner_request_detail,
+        )
         planner_brief, planner_raw = self._run_planner(
             requested_model=requested_model,
             user_message=user_message,
@@ -406,8 +431,8 @@ class OfficeAgent:
             add_trace(note)
         add_trace("多 Agent: Planner 已生成目标摘要与执行计划。")
         add_debug(
-            stage="multi_agent_planner",
-            title="Planner 结果",
+            stage="llm_to_backend",
+            title="LLM -> Planner 响应",
             detail=(
                 f"effective_model={planner_effective_model or requested_model}\n"
                 f"{self._shorten(planner_raw, 4000 if debug_raw else 1200)}"
@@ -447,8 +472,8 @@ class OfficeAgent:
                 )
             )
             add_debug(
-                stage="backend_tool",
-                title="后端自动预搜索 search_web",
+                stage="backend_prefetch",
+                title="后台预取 search_web（Worker 前置）",
                 detail=self._shorten(
                     json.dumps(prefetch_payload.get("raw_result", {}), ensure_ascii=False),
                     3200 if not debug_raw else 120000,
@@ -468,7 +493,7 @@ class OfficeAgent:
         )
         add_debug(
             stage="backend_to_llm",
-            title="后端 -> LLM 请求",
+            title="Worker -> LLM 请求",
             detail=(
                 f"model={requested_model}, enable_tools={settings.enable_tools}, max_output_tokens={settings.max_output_tokens}, "
                 f"debug_raw={debug_raw}, "
@@ -494,7 +519,7 @@ class OfficeAgent:
             usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
             add_debug(
                 stage="llm_to_backend",
-                title="LLM -> 后端 首次响应",
+                title="LLM -> Worker 首次响应",
                 detail=(
                     f"effective_model={effective_model}\n"
                     f"{self._summarize_ai_response(ai_msg, raw_mode=debug_raw)}"
@@ -617,7 +642,7 @@ class OfficeAgent:
                 add_trace(f"执行工具: {name}")
                 add_debug(
                     stage="llm_to_backend",
-                    title=f"LLM -> 后端 工具调用 {name}",
+                    title=f"LLM -> Worker 工具调用 {name}",
                     detail=f"args={self._shorten(json.dumps(arguments, ensure_ascii=False), 1200 if not debug_raw else 50000)}",
                 )
 
@@ -647,12 +672,12 @@ class OfficeAgent:
                     add_trace(trim_note)
                 add_debug(
                     stage="backend_tool",
-                    title=f"后端工具执行结果 {name}",
+                    title=f"Worker 工具执行结果 {name}",
                     detail=self._shorten(result_json, 1800 if not debug_raw else 120000),
                 )
                 add_debug(
                     stage="backend_to_llm",
-                    title=f"后端 -> LLM 工具结果 {name}",
+                    title=f"Worker -> LLM 工具结果 {name}",
                     detail=self._serialize_tool_message_for_debug(
                         name=name,
                         tool_call_id=call_id,
@@ -677,7 +702,7 @@ class OfficeAgent:
                 usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
                 add_debug(
                     stage="llm_to_backend",
-                    title="LLM -> 后端 后续响应",
+                    title="LLM -> Worker 后续响应",
                     detail=(
                         f"effective_model={effective_model}\n"
                         f"{self._summarize_ai_response(ai_msg, raw_mode=debug_raw)}"
@@ -723,11 +748,25 @@ class OfficeAgent:
         )
         add_debug(
             stage="llm_final",
-            title="LLM 最终输出",
+            title="Worker 最终草稿",
             detail=(
                 f"effective_model={effective_model}\n"
                 f"text_chars={len(text)}\npreview={self._shorten(text, 1200 if not debug_raw else 50000)}"
             ),
+        )
+        reviewer_request_detail = "\n".join(
+            [
+                f"requested_model={effective_model or requested_model}",
+                f"tool_events={len(tool_events)}",
+                f"execution_trace_items={len(execution_trace)}",
+                f"draft_chars={len(text)}",
+                f"draft_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
+            ]
+        )
+        add_debug(
+            stage="backend_to_llm",
+            title="Reviewer -> LLM 请求",
+            detail=reviewer_request_detail,
         )
         reviewer_brief, reviewer_raw = self._run_reviewer(
             requested_model=effective_model or requested_model,
@@ -750,8 +789,8 @@ class OfficeAgent:
         else:
             add_trace(f"多 Agent: Reviewer 完成审阅，confidence={reviewer_confidence}。")
         add_debug(
-            stage="multi_agent_reviewer",
-            title="Reviewer 结果",
+            stage="llm_to_backend",
+            title="LLM -> Reviewer 响应",
             detail=(
                 f"effective_model={reviewer_effective_model or effective_model or requested_model}\n"
                 f"{self._shorten(reviewer_raw, 4000 if debug_raw else 1200)}"
@@ -764,6 +803,20 @@ class OfficeAgent:
             + self._normalize_string_list(reviewer_brief.get("followups") or [], limit=2, item_limit=180)
         )
         add_panel("reviewer", "Reviewer", reviewer_summary, reviewer_bullets)
+        revision_request_detail = "\n".join(
+            [
+                f"requested_model={effective_model or requested_model}",
+                f"reviewer_verdict={reviewer_verdict}",
+                f"reviewer_confidence={reviewer_confidence}",
+                f"current_text_chars={len(text)}",
+                f"current_text_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
+            ]
+        )
+        add_debug(
+            stage="backend_to_llm",
+            title="Revision -> LLM 请求",
+            detail=revision_request_detail,
+        )
         revision_brief, revision_raw = self._run_revision(
             requested_model=effective_model or requested_model,
             user_message=user_message,
@@ -786,8 +839,8 @@ class OfficeAgent:
         else:
             add_trace("多 Agent: Revision 未修改最终答复。")
         add_debug(
-            stage="multi_agent_revision",
-            title="Revision 结果",
+            stage="llm_to_backend",
+            title="LLM -> Revision 响应",
             detail=(
                 f"effective_model={revision_effective_model or effective_model or requested_model}\n"
                 f"{self._shorten(revision_raw, 4000 if debug_raw else 1200)}"
@@ -2073,8 +2126,9 @@ class OfficeAgent:
         for idx, msg in enumerate(messages, start=1):
             role = type(msg).__name__
             content = getattr(msg, "content", "")
-            lines.append(f"[{idx}] {role}")
-            lines.append(self._shorten(self._serialize_content_for_debug(content, raw_mode=raw_mode), max_content))
+            lines.append(f"msg {idx} | {role}")
+            rendered = self._shorten(self._serialize_content_for_debug(content, raw_mode=raw_mode), max_content)
+            lines.append(self._indent_block(rendered, prefix="  "))
             lines.append("")
         return "\n".join(lines).strip()
 
@@ -2087,10 +2141,10 @@ class OfficeAgent:
         lines: list[str] = []
         for idx, item in enumerate(content, start=1):
             if isinstance(item, str):
-                lines.append(f"{idx}. {item}")
+                lines.append(f"part {idx} | {item}")
                 continue
             if not isinstance(item, dict):
-                lines.append(f"{idx}. {str(item)}")
+                lines.append(f"part {idx} | {str(item)}")
                 continue
 
             item_type = item.get("type")
@@ -2100,14 +2154,14 @@ class OfficeAgent:
                 if isinstance(url, str) and url.startswith("data:"):
                     if raw_mode:
                         preview = self._shorten(url, 1200)
-                        lines.append(f"{idx}. image_url(data_url_len={len(url)}) preview={preview}")
+                        lines.append(f"part {idx} | image_url(data_url_len={len(url)}) preview={preview}")
                     else:
-                        lines.append(f"{idx}. image_url(data_url_len={len(url)}) [omitted]")
+                        lines.append(f"part {idx} | image_url(data_url_len={len(url)}) [omitted]")
                 else:
-                    lines.append(f"{idx}. {json.dumps(item, ensure_ascii=False, default=str)}")
+                    lines.append(f"part {idx} | {json.dumps(item, ensure_ascii=False, default=str)}")
                 continue
 
-            lines.append(f"{idx}. {json.dumps(item, ensure_ascii=False, default=str)}")
+            lines.append(f"part {idx} | {json.dumps(item, ensure_ascii=False, default=str)}")
         return "\n".join(lines)
 
     def _summarize_ai_response(self, ai_msg: Any, raw_mode: bool = False) -> str:
@@ -2129,7 +2183,7 @@ class OfficeAgent:
                 if not isinstance(args, dict):
                     args = {}
                 lines.append(
-                    f"{idx}. {name}(args={self._shorten(json.dumps(args, ensure_ascii=False), 600)})"
+                    f"call {idx} | {name}(args={self._shorten(json.dumps(args, ensure_ascii=False), 600)})"
                 )
 
         text = self._content_to_text(getattr(ai_msg, "content", ""))
@@ -2139,6 +2193,12 @@ class OfficeAgent:
         if not lines:
             lines.append("empty response content")
         return "\n".join(lines)
+
+    def _indent_block(self, text: Any, prefix: str = "  ") -> str:
+        raw = str(text or "")
+        if not raw:
+            return ""
+        return "\n".join(f"{prefix}{line}" if line else prefix.rstrip() for line in raw.splitlines())
 
     def _serialize_tool_message_for_debug(
         self,
