@@ -683,7 +683,7 @@ class OfficeAgent:
         )
         add_debug(
             stage="backend_to_llm" if route.get("source") == "llm_router" else "backend_router",
-            title="后端编排器 -> Router" if route.get("source") == "llm_router" else "后端规则 Router",
+            title="Backend -> Router" if route.get("source") == "llm_router" else "Backend 规则 Router",
             detail=(
                 f"route={json.dumps(route, ensure_ascii=False)}\n"
                 f"raw={self._shorten(router_raw, 2400 if not debug_raw else 120000)}"
@@ -782,7 +782,7 @@ class OfficeAgent:
             )
             add_debug(
                 stage="backend_to_llm",
-                title="后端编排器 -> Planner",
+                title="Coordinator -> Planner",
                 detail=planner_request_detail,
             )
             planner_brief, planner_raw = self._run_planner(
@@ -801,7 +801,7 @@ class OfficeAgent:
             add_trace("多 Agent: Planner 已生成目标摘要与执行计划。")
             add_debug(
                 stage="llm_to_backend",
-                title="Planner -> 后端编排器",
+                title="Planner -> Coordinator",
                 detail=(
                     f"effective_model={planner_effective_model or requested_model}\n"
                     f"{self._shorten(planner_raw, 4000 if debug_raw else 1200)}"
@@ -829,7 +829,7 @@ class OfficeAgent:
             specialist_label = _SPECIALIST_LABELS.get(specialist, specialist)
             add_debug(
                 stage="backend_to_llm",
-                title=f"后端编排器 -> {specialist_label}",
+                title=f"Coordinator -> {specialist_label}",
                 detail=(
                     f"model={self.config.summary_model or requested_model}\n"
                     f"task_type={route.get('task_type')}\n"
@@ -853,7 +853,7 @@ class OfficeAgent:
             add_trace(f"多 Agent: {specialist_label} 已生成专门简报。")
             add_debug(
                 stage="llm_to_backend",
-                title=f"{specialist_label} -> 后端编排器",
+                title=f"{specialist_label} -> Coordinator",
                 detail=(
                     f"effective_model={specialist_model or self.config.summary_model or requested_model}\n"
                     f"{self._shorten(specialist_raw, 4000 if debug_raw else 1200)}"
@@ -927,7 +927,7 @@ class OfficeAgent:
         )
         add_debug(
             stage="backend_to_llm",
-            title="后端编排器 -> Worker",
+            title="Coordinator -> Worker",
             detail=(
                 f"model={requested_model}, enable_tools={self._coordinator_tools_enabled(execution_state)}, max_output_tokens={settings.max_output_tokens}, "
                 f"tool_mode={execution_state.tool_mode}, "
@@ -989,11 +989,82 @@ class OfficeAgent:
             )
             return next_msg, next_runner, next_model, failover_notes
 
+        def append_tool_result_message(
+            *,
+            name: str,
+            arguments: dict[str, Any],
+            result: dict[str, Any],
+            call_id: str,
+            synthetic: bool = False,
+        ) -> None:
+            nonlocal worker_citation_candidates
+            result_json = json.dumps(result, ensure_ascii=False)
+            if synthetic:
+                add_trace(f"Coordinator 根据 {name} 上下文自动补充工具读取。")
+                add_debug(
+                    stage="backend_coordinator",
+                    title="Coordinator 自动扩展工具链",
+                    detail=(
+                        f"tool={name}\n"
+                        f"args={self._shorten(json.dumps(arguments, ensure_ascii=False), 1200 if not debug_raw else 50000)}"
+                    ),
+                )
+            else:
+                add_trace(f"执行工具: {name}")
+                add_debug(
+                    stage="llm_to_backend",
+                    title=f"Worker -> Coordinator（请求工具 {name}）",
+                    detail=f"args={self._shorten(json.dumps(arguments, ensure_ascii=False), 1200 if not debug_raw else 50000)}",
+                )
+
+            add_tool_event(
+                ToolEvent(
+                    name=name,
+                    input=arguments,
+                    output_preview=result_json[:1200],
+                )
+            )
+
+            tool_message_payload, trim_note = self._prepare_tool_result_for_llm(
+                name=name,
+                arguments=arguments,
+                raw_result=result,
+                raw_json=result_json,
+            )
+            messages.append(
+                self._ToolMessage(
+                    content=tool_message_payload,
+                    tool_call_id=call_id,
+                    name=name,
+                )
+            )
+            if trim_note:
+                add_trace(trim_note)
+            add_debug(
+                stage="backend_tool",
+                title=f"Coordinator 执行工具结果 {name}",
+                detail=self._shorten(result_json, 1800 if not debug_raw else 120000),
+            )
+            add_debug(
+                stage="backend_to_llm",
+                title=f"Coordinator -> Worker（工具结果 {name}）",
+                detail=self._serialize_tool_message_for_debug(
+                    name=name,
+                    tool_call_id=call_id,
+                    content=tool_message_payload,
+                    raw_mode=debug_raw,
+                ),
+            )
+            worker_citation_candidates = self._merge_citation_candidates(
+                worker_citation_candidates,
+                self._extract_citations_from_tool_result(name=name, arguments=arguments, result=result),
+            )
+
         add_trace("开始模型推理。")
 
         try:
             ai_msg, runner, effective_model, failover_notes = invoke_worker_turn(
-                title="Worker -> 后端编排器（首次响应）",
+                title="Worker -> Coordinator（首次响应）",
                 model=requested_model,
             )
             usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
@@ -1102,7 +1173,7 @@ class OfficeAgent:
                     )
                     try:
                         ai_msg, runner, effective_model, failover_notes = invoke_worker_turn(
-                            title="Worker -> 后端编排器（升级工具链后响应）",
+                            title="Worker -> Coordinator（升级工具链后响应）",
                             model=effective_model,
                         )
                         usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
@@ -1139,7 +1210,7 @@ class OfficeAgent:
                     )
                     try:
                         ai_msg, runner, effective_model, failover_notes = invoke_worker_turn(
-                            title="Worker -> 后端编排器（纠正代码命中否认后响应）",
+                            title="Worker -> Coordinator（纠正代码命中否认后响应）",
                             model=effective_model,
                             current_runner=runner,
                         )
@@ -1180,7 +1251,7 @@ class OfficeAgent:
                     )
                     try:
                         ai_msg, runner, effective_model, failover_notes = invoke_worker_turn(
-                            title="Worker -> 后端编排器（补足证据后响应）",
+                            title="Worker -> Coordinator（补足证据后响应）",
                             model=effective_model,
                             current_runner=runner,
                         )
@@ -1298,7 +1369,7 @@ class OfficeAgent:
                                 )
                             )
                         ai_msg, runner, effective_model, failover_notes = invoke_worker_turn(
-                            title="Worker -> 后端编排器（自动纠偏后响应）",
+                            title="Worker -> Coordinator（自动纠偏后响应）",
                             model=effective_model,
                             current_runner=None if rerun_needs_rebind else runner,
                         )
@@ -1311,79 +1382,6 @@ class OfficeAgent:
                 break
 
             messages.append(ai_msg)
-            def append_tool_result_message(
-                *,
-                name: str,
-                arguments: dict[str, Any],
-                result: dict[str, Any],
-                call_id: str,
-                synthetic: bool = False,
-            ) -> None:
-                nonlocal worker_citation_candidates
-                result_json = json.dumps(result, ensure_ascii=False)
-                if synthetic:
-                    add_trace(
-                        f"Coordinator 根据 {name} 上下文自动补充工具读取。"
-                    )
-                    add_debug(
-                        stage="backend_coordinator",
-                        title="Coordinator 自动扩展工具链",
-                        detail=(
-                            f"tool={name}\n"
-                            f"args={self._shorten(json.dumps(arguments, ensure_ascii=False), 1200 if not debug_raw else 50000)}"
-                        ),
-                    )
-                else:
-                    add_trace(f"执行工具: {name}")
-                    add_debug(
-                        stage="llm_to_backend",
-                        title=f"Worker -> 后端编排器（请求工具 {name}）",
-                        detail=f"args={self._shorten(json.dumps(arguments, ensure_ascii=False), 1200 if not debug_raw else 50000)}",
-                    )
-
-                add_tool_event(
-                    ToolEvent(
-                        name=name,
-                        input=arguments,
-                        output_preview=result_json[:1200],
-                    )
-                )
-
-                tool_message_payload, trim_note = self._prepare_tool_result_for_llm(
-                    name=name,
-                    arguments=arguments,
-                    raw_result=result,
-                    raw_json=result_json,
-                )
-                messages.append(
-                    self._ToolMessage(
-                        content=tool_message_payload,
-                        tool_call_id=call_id,
-                        name=name,
-                    )
-                )
-                if trim_note:
-                    add_trace(trim_note)
-                add_debug(
-                    stage="backend_tool",
-                    title=f"Worker 工具执行结果 {name}",
-                    detail=self._shorten(result_json, 1800 if not debug_raw else 120000),
-                )
-                add_debug(
-                    stage="backend_to_llm",
-                    title=f"后端编排器 -> Worker（工具结果 {name}）",
-                    detail=self._serialize_tool_message_for_debug(
-                        name=name,
-                        tool_call_id=call_id,
-                        content=tool_message_payload,
-                        raw_mode=debug_raw,
-                    ),
-                )
-                worker_citation_candidates = self._merge_citation_candidates(
-                    worker_citation_candidates,
-                    self._extract_citations_from_tool_result(name=name, arguments=arguments, result=result),
-                )
-
             batch_has_read_text_call = any(str(call.get("name") or "") == "read_text_file" for call in tool_calls)
             for call in tool_calls:
                 name = call.get("name") or "unknown"
@@ -1424,7 +1422,7 @@ class OfficeAgent:
                 if pruned > 0:
                     add_trace(f"已裁剪旧工具上下文 {pruned} 条，降低上下文膨胀。")
                 ai_msg, runner, effective_model, failover_notes = invoke_worker_turn(
-                    title="Worker -> 后端编排器（后续响应）",
+                    title="Worker -> Coordinator（后续响应）",
                     model=effective_model,
                     current_runner=runner,
                 )
@@ -1506,174 +1504,237 @@ class OfficeAgent:
             "readonly_evidence": [],
         }
         if route.get("use_reviewer"):
-            if route.get("use_conflict_detector"):
-                conflict_request_detail = "\n".join(
+            reviewer_rerun_budget = 1 if self._coordinator_tools_enabled(execution_state) else 0
+            while True:
+                if route.get("use_conflict_detector"):
+                    conflict_request_detail = "\n".join(
+                        [
+                            f"requested_model={effective_model or requested_model}",
+                            f"evidence_required_mode={evidence_required_mode}",
+                            f"web_tools_used={str(self._summarize_validation_context(tool_events)['web_tools_used']).lower()}",
+                            f"web_tools_success={str(self._summarize_validation_context(tool_events)['web_tools_success']).lower()}",
+                            f"draft_chars={len(text)}",
+                            f"draft_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
+                        ]
+                    )
+                    add_debug(
+                        stage="backend_to_llm",
+                        title="Coordinator -> Conflict Detector",
+                        detail=conflict_request_detail,
+                    )
+                    conflict_brief, conflict_raw = self._run_answer_conflict_detector(
+                        requested_model=effective_model or requested_model,
+                        user_message=user_message,
+                        final_text=text,
+                        planner_brief=planner_brief,
+                        tool_events=tool_events,
+                        spec_lookup_request=spec_lookup_request,
+                        evidence_required_mode=evidence_required_mode,
+                    )
+                    conflict_effective_model = str(conflict_brief.get("effective_model") or "").strip()
+                    if conflict_effective_model:
+                        effective_model = conflict_effective_model
+                    usage_total = self._merge_usage(usage_total, conflict_brief.get("usage") or self._empty_usage())
+                    for note in self._normalize_string_list(conflict_brief.get("notes") or [], limit=3, item_limit=200):
+                        add_trace(note)
+                    add_debug(
+                        stage="llm_to_backend",
+                        title="Conflict Detector -> Coordinator",
+                        detail=(
+                            f"effective_model={conflict_effective_model or effective_model or requested_model}\n"
+                            f"{self._shorten(conflict_raw, 4000 if debug_raw else 1200)}"
+                        ),
+                    )
+                    conflict_summary = str(conflict_brief.get("summary") or "").strip() or "已完成通识冲突检查。"
+                    conflict_bullets = self._normalize_string_list(conflict_brief.get("concerns") or [], limit=4, item_limit=180)
+                    add_panel("conflict_detector", "Conflict Detector", conflict_summary, conflict_bullets)
+                else:
+                    add_trace("Router 已跳过 Conflict Detector。")
+
+                reviewer_request_detail = "\n".join(
                     [
                         f"requested_model={effective_model or requested_model}",
-                        f"evidence_required_mode={evidence_required_mode}",
-                        f"web_tools_used={str(self._summarize_validation_context(tool_events)['web_tools_used']).lower()}",
-                        f"web_tools_success={str(self._summarize_validation_context(tool_events)['web_tools_success']).lower()}",
+                        f"tool_events={len(tool_events)}",
+                        f"execution_trace_items={len(execution_trace)}",
                         f"draft_chars={len(text)}",
                         f"draft_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
+                        f"evidence_required_mode={evidence_required_mode}",
                     ]
                 )
                 add_debug(
                     stage="backend_to_llm",
-                    title="后端编排器 -> Conflict Detector",
-                    detail=conflict_request_detail,
+                    title="Coordinator -> Reviewer",
+                    detail=reviewer_request_detail,
                 )
-                conflict_brief, conflict_raw = self._run_answer_conflict_detector(
+                reviewer_brief, reviewer_raw = self._run_reviewer(
                     requested_model=effective_model or requested_model,
                     user_message=user_message,
                     final_text=text,
                     planner_brief=planner_brief,
                     tool_events=tool_events,
+                    execution_trace=execution_trace,
                     spec_lookup_request=spec_lookup_request,
                     evidence_required_mode=evidence_required_mode,
-                )
-                conflict_effective_model = str(conflict_brief.get("effective_model") or "").strip()
-                if conflict_effective_model:
-                    effective_model = conflict_effective_model
-                usage_total = self._merge_usage(usage_total, conflict_brief.get("usage") or self._empty_usage())
-                for note in self._normalize_string_list(conflict_brief.get("notes") or [], limit=3, item_limit=200):
-                    add_trace(note)
-                add_debug(
-                    stage="llm_to_backend",
-                    title="Conflict Detector -> 后端编排器",
-                    detail=(
-                        f"effective_model={conflict_effective_model or effective_model or requested_model}\n"
-                        f"{self._shorten(conflict_raw, 4000 if debug_raw else 1200)}"
-                    ),
-                )
-                conflict_summary = str(conflict_brief.get("summary") or "").strip() or "已完成通识冲突检查。"
-                conflict_bullets = self._normalize_string_list(conflict_brief.get("concerns") or [], limit=4, item_limit=180)
-                add_panel("conflict_detector", "Conflict Detector", conflict_summary, conflict_bullets)
-            else:
-                add_trace("Router 已跳过 Conflict Detector。")
-
-            reviewer_request_detail = "\n".join(
-                [
-                    f"requested_model={effective_model or requested_model}",
-                    f"tool_events={len(tool_events)}",
-                    f"execution_trace_items={len(execution_trace)}",
-                    f"draft_chars={len(text)}",
-                    f"draft_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
-                    f"evidence_required_mode={evidence_required_mode}",
-                ]
-            )
-            add_debug(
-                stage="backend_to_llm",
-                title="后端编排器 -> Reviewer",
-                detail=reviewer_request_detail,
-            )
-            reviewer_brief, reviewer_raw = self._run_reviewer(
-                requested_model=effective_model or requested_model,
-                user_message=user_message,
-                final_text=text,
-                planner_brief=planner_brief,
-                tool_events=tool_events,
-                execution_trace=execution_trace,
-                spec_lookup_request=spec_lookup_request,
-                evidence_required_mode=evidence_required_mode,
-                conflict_brief=conflict_brief,
-                debug_cb=add_debug,
-                trace_cb=add_trace,
-            )
-            reviewer_effective_model = str(reviewer_brief.get("effective_model") or "").strip()
-            if reviewer_effective_model:
-                effective_model = reviewer_effective_model
-            usage_total = self._merge_usage(usage_total, reviewer_brief.get("usage") or self._empty_usage())
-            for note in self._normalize_string_list(reviewer_brief.get("notes") or [], limit=4, item_limit=200):
-                add_trace(note)
-            reviewer_verdict = str(reviewer_brief.get("verdict") or "pass").strip().lower()
-            reviewer_confidence = str(reviewer_brief.get("confidence") or "medium").strip().lower()
-            if reviewer_verdict == "block":
-                add_trace(f"多 Agent: Reviewer 判定阻断，需要大幅修订，confidence={reviewer_confidence}。")
-            elif reviewer_verdict == "warn":
-                add_trace(f"多 Agent: Reviewer 判定可保留但需补强，confidence={reviewer_confidence}。")
-            else:
-                add_trace(f"多 Agent: Reviewer 通过，confidence={reviewer_confidence}。")
-            add_debug(
-                stage="llm_to_backend",
-                title="Reviewer -> 后端编排器",
-                detail=(
-                    f"effective_model={reviewer_effective_model or effective_model or requested_model}\n"
-                    f"{self._shorten(reviewer_raw, 4000 if debug_raw else 1200)}"
-                ),
-            )
-            reviewer_summary = str(reviewer_brief.get("summary") or "").strip() or "已完成最终答复审阅。"
-            reviewer_bullets = (
-                self._normalize_string_list(
-                    [f"判定: {reviewer_verdict}"],
-                    limit=1,
-                    item_limit=80,
-                )
-                + self._normalize_string_list(
-                    [f"使用工具: {item}" for item in reviewer_brief.get("readonly_checks") or []],
-                    limit=4,
-                    item_limit=180,
-                )
-                + self._normalize_string_list(
-                    [f"复核证据: {item}" for item in reviewer_brief.get("readonly_evidence") or []],
-                    limit=4,
-                    item_limit=200,
-                )
-                + self._normalize_string_list(reviewer_brief.get("strengths") or [], limit=2, item_limit=180)
-                + self._normalize_string_list(reviewer_brief.get("risks") or [], limit=3, item_limit=180)
-                + self._normalize_string_list(reviewer_brief.get("followups") or [], limit=2, item_limit=180)
-            )
-            add_panel("reviewer", "Reviewer", reviewer_summary, reviewer_bullets)
-            if route.get("use_revision"):
-                revision_request_detail = "\n".join(
-                    [
-                        f"requested_model={effective_model or requested_model}",
-                        f"reviewer_verdict={reviewer_verdict}",
-                        f"reviewer_confidence={reviewer_confidence}",
-                        f"current_text_chars={len(text)}",
-                        f"current_text_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
-                    ]
-                )
-                add_debug(
-                    stage="backend_to_llm",
-                    title="后端编排器 -> Revision",
-                    detail=revision_request_detail,
-                )
-                revision_brief, revision_raw = self._run_revision(
-                    requested_model=effective_model or requested_model,
-                    user_message=user_message,
-                    current_text=text,
-                    planner_brief=planner_brief,
-                    reviewer_brief=reviewer_brief,
-                    tool_events=tool_events,
                     conflict_brief=conflict_brief,
-                    evidence_required_mode=evidence_required_mode,
+                    debug_cb=add_debug,
+                    trace_cb=add_trace,
                 )
-                revision_effective_model = str(revision_brief.get("effective_model") or "").strip()
-                if revision_effective_model:
-                    effective_model = revision_effective_model
-                usage_total = self._merge_usage(usage_total, revision_brief.get("usage") or self._empty_usage())
-                for note in self._normalize_string_list(revision_brief.get("notes") or [], limit=4, item_limit=200):
+                reviewer_effective_model = str(reviewer_brief.get("effective_model") or "").strip()
+                if reviewer_effective_model:
+                    effective_model = reviewer_effective_model
+                usage_total = self._merge_usage(usage_total, reviewer_brief.get("usage") or self._empty_usage())
+                for note in self._normalize_string_list(reviewer_brief.get("notes") or [], limit=4, item_limit=200):
                     add_trace(note)
-                revised_text = str(revision_brief.get("final_answer") or "").strip()
-                revision_changed = bool(revision_brief.get("changed")) and bool(revised_text)
-                if revision_changed:
-                    text = revised_text
-                    add_trace("多 Agent: Revision 已应用到最终答复。")
+                reviewer_verdict = str(reviewer_brief.get("verdict") or "pass").strip().lower()
+                reviewer_confidence = str(reviewer_brief.get("confidence") or "medium").strip().lower()
+                if reviewer_verdict == "block":
+                    add_trace(f"多 Agent: Reviewer 判定阻断，需要大幅修订，confidence={reviewer_confidence}。")
+                elif reviewer_verdict == "warn":
+                    add_trace(f"多 Agent: Reviewer 判定可保留但需补强，confidence={reviewer_confidence}。")
                 else:
-                    add_trace("多 Agent: Revision 未修改最终答复。")
+                    add_trace(f"多 Agent: Reviewer 通过，confidence={reviewer_confidence}。")
                 add_debug(
                     stage="llm_to_backend",
-                    title="Revision -> 后端编排器",
+                    title="Reviewer -> Coordinator",
                     detail=(
-                        f"effective_model={revision_effective_model or effective_model or requested_model}\n"
-                        f"{self._shorten(revision_raw, 4000 if debug_raw else 1200)}"
+                        f"effective_model={reviewer_effective_model or effective_model or requested_model}\n"
+                        f"{self._shorten(reviewer_raw, 4000 if debug_raw else 1200)}"
                     ),
                 )
-                revision_summary = str(revision_brief.get("summary") or "").strip() or "已完成最终润色与修订判断。"
-                revision_bullets = self._normalize_string_list(revision_brief.get("key_changes") or [], limit=4, item_limit=180)
-                add_panel("revision", "Revision", revision_summary, revision_bullets)
-            else:
-                add_trace("Router 已跳过 Revision。")
+                reviewer_summary = str(reviewer_brief.get("summary") or "").strip() or "已完成最终答复审阅。"
+                reviewer_bullets = (
+                    self._normalize_string_list(
+                        [f"判定: {reviewer_verdict}"],
+                        limit=1,
+                        item_limit=80,
+                    )
+                    + self._normalize_string_list(
+                        [f"使用工具: {item}" for item in reviewer_brief.get("readonly_checks") or []],
+                        limit=4,
+                        item_limit=180,
+                    )
+                    + self._normalize_string_list(
+                        [f"复核证据: {item}" for item in reviewer_brief.get("readonly_evidence") or []],
+                        limit=4,
+                        item_limit=200,
+                    )
+                    + self._normalize_string_list(reviewer_brief.get("strengths") or [], limit=2, item_limit=180)
+                    + self._normalize_string_list(reviewer_brief.get("risks") or [], limit=3, item_limit=180)
+                    + self._normalize_string_list(reviewer_brief.get("followups") or [], limit=2, item_limit=180)
+                )
+                add_panel("reviewer", "Reviewer", reviewer_summary, reviewer_bullets)
+
+                followup_reads = self._coordinator_collect_truncated_read_requests(tool_events, limit=2)
+                if (
+                    reviewer_rerun_budget > 0
+                    and followup_reads
+                    and self._coordinator_should_rerun_worker_after_reviewer(
+                        route=route,
+                        reviewer_brief=reviewer_brief,
+                        tool_events=tool_events,
+                    )
+                ):
+                    reviewer_rerun_budget -= 1
+                    add_trace("Reviewer 指出当前证据仍是局部读取，Coordinator 已继续读取后续分块并回流给 Worker。")
+                    add_debug(
+                        stage="backend_coordinator",
+                        title="Coordinator 根据 Reviewer 回流 Worker",
+                        detail=(
+                            f"reviewer_verdict={reviewer_verdict}\n"
+                            f"followup_reads={json.dumps(followup_reads, ensure_ascii=False)}"
+                        ),
+                    )
+                    for idx, synthetic_call in enumerate(followup_reads, start=1):
+                        synthetic_name = str(synthetic_call.get("name") or "").strip()
+                        synthetic_args = (
+                            synthetic_call.get("args") if isinstance(synthetic_call.get("args"), dict) else {}
+                        )
+                        if not synthetic_name or not synthetic_args:
+                            continue
+                        synthetic_result = self.tools.execute(synthetic_name, synthetic_args)
+                        append_tool_result_message(
+                            name=synthetic_name,
+                            arguments=synthetic_args,
+                            result=synthetic_result,
+                            call_id=f"reviewer_followup_{idx}",
+                            synthetic=True,
+                        )
+                    messages.append(ai_msg)
+                    messages.append(
+                        self._SystemMessage(
+                            content=(
+                                "Reviewer 已确认你已经命中了目标，但当前证据还是局部片段。"
+                                "Coordinator 已继续读取后续代码上下文。"
+                                "不要再说未命中、不要再要求用户确认是否继续读取。"
+                                "请直接基于现有 search_codebase 命中与新增 read_text_file 内容，给出目标函数的解释。"
+                            )
+                        )
+                    )
+                    ai_msg, runner, effective_model, failover_notes = invoke_worker_turn(
+                        title="Worker -> Coordinator（根据 Reviewer 继续取证）",
+                        model=effective_model,
+                        current_runner=runner,
+                    )
+                    usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
+                    text = self._content_to_text(getattr(ai_msg, "content", ""))
+                    if not text.strip():
+                        text = "模型未返回可见文本。"
+                    continue
+
+                if route.get("use_revision"):
+                    revision_request_detail = "\n".join(
+                        [
+                            f"requested_model={effective_model or requested_model}",
+                            f"reviewer_verdict={reviewer_verdict}",
+                            f"reviewer_confidence={reviewer_confidence}",
+                            f"current_text_chars={len(text)}",
+                            f"current_text_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
+                        ]
+                    )
+                    add_debug(
+                        stage="backend_to_llm",
+                        title="Coordinator -> Revision",
+                        detail=revision_request_detail,
+                    )
+                    revision_brief, revision_raw = self._run_revision(
+                        requested_model=effective_model or requested_model,
+                        user_message=user_message,
+                        current_text=text,
+                        planner_brief=planner_brief,
+                        reviewer_brief=reviewer_brief,
+                        tool_events=tool_events,
+                        conflict_brief=conflict_brief,
+                        evidence_required_mode=evidence_required_mode,
+                    )
+                    revision_effective_model = str(revision_brief.get("effective_model") or "").strip()
+                    if revision_effective_model:
+                        effective_model = revision_effective_model
+                    usage_total = self._merge_usage(usage_total, revision_brief.get("usage") or self._empty_usage())
+                    for note in self._normalize_string_list(revision_brief.get("notes") or [], limit=4, item_limit=200):
+                        add_trace(note)
+                    revised_text = str(revision_brief.get("final_answer") or "").strip()
+                    revision_changed = bool(revision_brief.get("changed")) and bool(revised_text)
+                    if revision_changed:
+                        text = revised_text
+                        add_trace("多 Agent: Revision 已应用到最终答复。")
+                    else:
+                        add_trace("多 Agent: Revision 未修改最终答复。")
+                    add_debug(
+                        stage="llm_to_backend",
+                        title="Revision -> Coordinator",
+                        detail=(
+                            f"effective_model={revision_effective_model or effective_model or requested_model}\n"
+                            f"{self._shorten(revision_raw, 4000 if debug_raw else 1200)}"
+                        ),
+                    )
+                    revision_summary = str(revision_brief.get("summary") or "").strip() or "已完成最终润色与修订判断。"
+                    revision_bullets = self._normalize_string_list(
+                        revision_brief.get("key_changes") or [], limit=4, item_limit=180
+                    )
+                    add_panel("revision", "Revision", revision_summary, revision_bullets)
+                else:
+                    add_trace("Router 已跳过 Revision。")
+                break
         else:
             add_trace("Router 已跳过 Conflict Detector / Reviewer / Revision。")
 
@@ -1720,7 +1781,7 @@ class OfficeAgent:
         )
         add_debug(
             stage="backend_to_llm",
-            title="后端编排器 -> Structurer",
+            title="Coordinator -> Structurer",
             detail=structurer_request_detail,
         )
         answer_bundle, structurer_raw = self._run_answer_structurer(
@@ -1732,7 +1793,7 @@ class OfficeAgent:
         )
         add_debug(
             stage="llm_to_backend",
-            title="Structurer -> 后端编排器",
+            title="Structurer -> Coordinator",
             detail=self._shorten(structurer_raw, 4000 if debug_raw else 1200),
         )
         add_panel(
@@ -2076,7 +2137,7 @@ class OfficeAgent:
                     if debug_cb is not None:
                         debug_cb(
                             "llm_to_backend",
-                            f"Reviewer -> 后端编排器（请求工具 {name}）",
+                            f"Reviewer -> Coordinator（请求工具 {name}）",
                             "\n".join(
                                 [
                                     f"tool={name}",
@@ -2103,7 +2164,7 @@ class OfficeAgent:
                     if debug_cb is not None:
                         debug_cb(
                             "backend_tool",
-                            f"后端编排器执行 Reviewer 只读工具 {name}",
+                            f"Coordinator 执行 Reviewer 只读工具 {name}",
                             "\n".join(
                                 [
                                     f"tool={name}",
@@ -2122,7 +2183,7 @@ class OfficeAgent:
                     if debug_cb is not None:
                         debug_cb(
                             "backend_to_llm",
-                            f"后端编排器 -> Reviewer（工具结果 {name}）",
+                            f"Coordinator -> Reviewer（工具结果 {name}）",
                             "\n".join(
                                 [
                                     f"tool={name}",
@@ -2929,6 +2990,110 @@ class OfficeAgent:
             "no matching code",
         )
         return any(pattern in lowered for pattern in patterns)
+
+    def _reviewer_requests_more_evidence(self, reviewer_brief: dict[str, Any]) -> bool:
+        lines = [
+            str(reviewer_brief.get("summary") or "").strip(),
+            *self._normalize_string_list(reviewer_brief.get("risks") or [], limit=6, item_limit=220),
+            *self._normalize_string_list(reviewer_brief.get("followups") or [], limit=6, item_limit=220),
+            *self._normalize_string_list(reviewer_brief.get("readonly_evidence") or [], limit=6, item_limit=220),
+        ]
+        lowered = " ".join(line.lower() for line in lines if line).strip()
+        if not lowered:
+            return False
+        patterns = (
+            "继续读取",
+            "继续读",
+            "继续取证",
+            "需要更多上下文",
+            "上下文不足",
+            "未读完整",
+            "还没读完",
+            "只读了一部分",
+            "仅读取了部分",
+            "需要继续查看",
+            "需要继续向后读取",
+            "read more",
+            "need more context",
+            "partial read",
+            "partial context",
+            "insufficient context",
+            "continue reading",
+        )
+        return any(pattern in lowered for pattern in patterns)
+
+    def _coordinator_collect_truncated_read_requests(
+        self,
+        tool_events: list[ToolEvent],
+        *,
+        limit: int = 2,
+    ) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for event in reversed(tool_events):
+            if str(getattr(event, "name", "") or "") != "read_text_file":
+                continue
+            preview = str(getattr(event, "output_preview", "") or "")
+            parsed = self._parse_json_object(preview) or self._parse_loose_object_literal(preview)
+            if not isinstance(parsed, dict) or not bool(parsed.get("ok")):
+                continue
+            if not bool(parsed.get("has_more") or parsed.get("truncated")):
+                continue
+            args = getattr(event, "input", None) if isinstance(getattr(event, "input", None), dict) else {}
+            path = str((args or {}).get("path") or parsed.get("path") or "").strip()
+            if not path:
+                continue
+            try:
+                next_start = int(parsed.get("end_char") or 0)
+            except Exception:
+                next_start = 0
+            try:
+                total_length = int(parsed.get("total_length") or 0)
+            except Exception:
+                total_length = 0
+            try:
+                next_max = int((args or {}).get("max_chars") or parsed.get("length") or 0)
+            except Exception:
+                next_max = 0
+            next_max = max(4000, min(next_max or 24000, 50000))
+            if total_length and next_start >= total_length:
+                continue
+            key = f"{path}:{next_start}"
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                {
+                    "name": "read_text_file",
+                    "args": {
+                        "path": path,
+                        "start_char": max(0, next_start),
+                        "max_chars": next_max,
+                    },
+                }
+            )
+            if len(out) >= max(1, int(limit)):
+                break
+        return out
+
+    def _coordinator_should_rerun_worker_after_reviewer(
+        self,
+        *,
+        route: dict[str, Any],
+        reviewer_brief: dict[str, Any],
+        tool_events: list[ToolEvent],
+    ) -> bool:
+        verdict = str(reviewer_brief.get("verdict") or "pass").strip().lower()
+        if verdict not in {"warn", "block"}:
+            return False
+        task_type = str(route.get("task_type") or "").strip()
+        truncated_reads = self._coordinator_collect_truncated_read_requests(tool_events, limit=1)
+        wants_more = self._reviewer_requests_more_evidence(reviewer_brief)
+        if task_type == "code_lookup":
+            return bool(truncated_reads) and (wants_more or self._tool_events_have_code_hits(tool_events))
+        if task_type in {"evidence_lookup", "attachment_tooling"}:
+            return bool(truncated_reads) and wants_more
+        return False
 
     def _coordinator_init_state(
         self,

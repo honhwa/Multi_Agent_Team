@@ -1052,6 +1052,104 @@
     }
   },
   {
+    "name": "helper_reviewer_requests_more_evidence_detected",
+    "kind": "helper",
+    "helper": "_reviewer_requests_more_evidence",
+    "args": {
+      "reviewer_brief": {
+        "verdict": "block",
+        "summary": "已经找到声明，但当前上下文只读了一部分，仍需要继续读取后续代码。",
+        "risks": [
+          "当前代码上下文不足。"
+        ],
+        "followups": [
+          "继续向后读取，直到覆盖目标函数。"
+        ]
+      }
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
+    "name": "helper_coordinator_collect_truncated_read_requests",
+    "kind": "helper",
+    "helper": "_coordinator_collect_truncated_read_requests",
+    "args": {
+      "tool_events": [
+        {
+          "__type": "ToolEvent",
+          "name": "read_text_file",
+          "input": {
+            "path": "/Users/dalizhou/Desktop/new_validation_agent/app/agent.py",
+            "start_char": 0,
+            "max_chars": 12000
+          },
+          "output_preview": "{\"ok\": true, \"path\": \"/Users/dalizhou/Desktop/new_validation_agent/app/agent.py\", \"start_char\": 0, \"end_char\": 12000, \"total_length\": 50000, \"has_more\": true, \"truncated\": true}"
+        }
+      ]
+    },
+    "assert": {
+      "equals": {
+        "result.0.name": "read_text_file",
+        "result.0.args.start_char": 12000
+      },
+      "contains": {
+        "result.0.args.path": [
+          "/Users/dalizhou/Desktop/new_validation_agent/app/agent.py"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_coordinator_should_rerun_worker_after_reviewer",
+    "kind": "helper",
+    "helper": "_coordinator_should_rerun_worker_after_reviewer",
+    "args": {
+      "route": {
+        "task_type": "code_lookup"
+      },
+      "reviewer_brief": {
+        "verdict": "block",
+        "summary": "已经找到声明，但当前上下文只读了一部分，仍需要继续读取后续代码。",
+        "risks": [
+          "当前代码上下文不足。"
+        ],
+        "followups": [
+          "继续向后读取，直到覆盖目标函数。"
+        ]
+      },
+      "tool_events": [
+        {
+          "__type": "ToolEvent",
+          "name": "search_codebase",
+          "input": {
+            "root": "workbench",
+            "query": "handle_route"
+          },
+          "output_preview": "{\"ok\": true, \"match_count\": 1, \"matches\": [{\"path\": \"/Users/dalizhou/Desktop/new_validation_agent/app/agent.py\", \"line\": 1000}]}"
+        },
+        {
+          "__type": "ToolEvent",
+          "name": "read_text_file",
+          "input": {
+            "path": "/Users/dalizhou/Desktop/new_validation_agent/app/agent.py",
+            "start_char": 0,
+            "max_chars": 12000
+          },
+          "output_preview": "{\"ok\": true, \"path\": \"/Users/dalizhou/Desktop/new_validation_agent/app/agent.py\", \"start_char\": 0, \"end_char\": 12000, \"total_length\": 50000, \"has_more\": true, \"truncated\": true}"
+        }
+      ]
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
     "name": "tool_table_extract_xlsx",
     "kind": "tool",
     "tool": "table_extract",
