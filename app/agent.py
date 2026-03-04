@@ -2141,6 +2141,16 @@ class OfficeAgent:
             reviewer_brief=reviewer_result,
             conflict_brief=conflict_result,
         )
+        if (
+            not finalized_citations
+            and not self._is_evidence_verification_mode(
+                route=route,
+                evidence_required_mode=evidence_required_mode,
+                spec_lookup_request=spec_lookup_request,
+            )
+        ):
+            answer_bundle["claims"] = []
+            answer_bundle["warnings"] = []
         if not route.get("use_structurer"):
             clear_role_activity()
             return (
@@ -2193,7 +2203,7 @@ class OfficeAgent:
             "structurer",
             current="structurer",
             phase="结构化整理",
-            detail=f"整理 {len(finalized_citations)} 条 citations",
+            detail=f"整理 {len(finalized_citations)} 条 citations（证据来源）",
         )
         structurer_context = self._make_role_context(
             "structurer",
@@ -2216,8 +2226,11 @@ class OfficeAgent:
             "Structured Output",
             structurer_result.summary or str(answer_bundle.get("summary") or "").strip() or "已生成结构化答案与证据链。",
             self._normalize_string_list(
-                [f"claims={len(answer_bundle.get('claims') or [])}", f"citations={len(answer_bundle.get('citations') or [])}"]
-                + [f"warning: {item}" for item in (answer_bundle.get("warnings") or [])],
+                [
+                    f"assertions（关键结论）={len(answer_bundle.get('claims') or [])}",
+                    f"citations（证据来源）={len(answer_bundle.get('citations') or [])}",
+                ]
+                + [f"warning（风险提示）: {item}" for item in (answer_bundle.get("warnings") or [])],
                 limit=6,
                 item_limit=180,
             ),
@@ -3331,6 +3344,18 @@ class OfficeAgent:
 
     def _should_emit_answer_bundle(self, citations: list[dict[str, Any]]) -> bool:
         return bool(citations)
+
+    def _is_evidence_verification_mode(
+        self,
+        *,
+        route: dict[str, Any],
+        evidence_required_mode: bool,
+        spec_lookup_request: bool,
+    ) -> bool:
+        if evidence_required_mode or spec_lookup_request:
+            return True
+        task_type = str(route.get("task_type") or "").strip().lower()
+        return task_type in {"evidence_lookup", "attachment_tooling", "web_research"}
 
     def _citation_kind(self, citation: dict[str, Any]) -> str:
         kind = str(citation.get("kind") or "").strip().lower()
@@ -5330,7 +5355,7 @@ class OfficeAgent:
                 lines.append(f"   snippet: {self._shorten(snippet, 220)}")
         warning = str(result.get("warning") or "").strip()
         if warning:
-            lines.append(f"warning: {warning}")
+            lines.append(f"warning（风险提示）: {warning}")
         return "\n".join(lines)[:6000]
 
     def _looks_like_understanding_request(self, user_message: str) -> bool:

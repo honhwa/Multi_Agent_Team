@@ -188,7 +188,7 @@ const ROLE_DEFS = [
     title: "Structurer",
     kindKey: "agent",
     kindLabel: "Agent",
-    blurb: "整理结构化证据包与 claims。",
+    blurb: "整理结构化证据包与 assertions（关键结论）。",
     colors: { accent: "#3f7f9b", accent2: "#9fcbe0" },
   },
 ];
@@ -597,7 +597,7 @@ function appendCitationSection(wrap, titleText, citations, noteText = "") {
     if (warning) {
       const warningNode = document.createElement("div");
       warningNode.className = "answer-bundle-warning";
-      warningNode.textContent = `warning: ${warning}`;
+      warningNode.textContent = `warning（风险提示）: ${warning}`;
       item.appendChild(warningNode);
     }
     section.appendChild(item);
@@ -624,7 +624,7 @@ function buildAnswerBundleNode(bundle) {
     section.className = "answer-bundle-section";
     const title = document.createElement("div");
     title.className = "answer-bundle-title";
-    title.textContent = "Claims";
+    title.textContent = "Assertions（关键结论）";
     section.appendChild(title);
     claims.slice(0, 5).forEach((claim, idx) => {
       const item = document.createElement("div");
@@ -652,8 +652,8 @@ function buildAnswerBundleNode(bundle) {
 
   const citations = Array.isArray(bundle?.citations) ? bundle.citations : [];
   const { evidence, candidates } = partitionAnswerCitations(citations);
-  appendCitationSection(wrap, evidence.length ? "Evidence" : "Sources", evidence);
-  appendCitationSection(wrap, "Search Candidates", candidates, "这些链接仅是搜索候选，尚未抓取正文。");
+  appendCitationSection(wrap, "Citations（证据来源）", evidence);
+  appendCitationSection(wrap, "Search Candidates（候选来源）", candidates, "这些链接仅是搜索候选，尚未抓取正文。");
 
   const warnings = Array.isArray(bundle?.warnings) ? bundle.warnings : [];
   if (warnings.length) {
@@ -661,7 +661,7 @@ function buildAnswerBundleNode(bundle) {
     section.className = "answer-bundle-section";
     const title = document.createElement("div");
     title.className = "answer-bundle-title";
-    title.textContent = "Warnings";
+    title.textContent = "Warnings（风险提示）";
     section.appendChild(title);
     warnings.slice(0, 5).forEach((warning) => {
       const item = document.createElement("div");
@@ -1349,11 +1349,13 @@ function renderAnswerBundle(bundle = {}) {
 
   const claims = Array.isArray(bundle?.claims) ? bundle.claims : [];
   if (claims.length) {
-    lines.push("claims:");
+    lines.push("assertions（关键结论）:");
     claims.slice(0, 5).forEach((claim, idx) => {
       const ids = Array.isArray(claim?.citation_ids) ? claim.citation_ids.join(", ") : "";
       lines.push(`${idx + 1}. ${String(claim?.statement || "").trim()}`);
-      lines.push(`   status=${String(claim?.status || "supported")} confidence=${String(claim?.confidence || "medium")} citations=${ids || "(none)"}`);
+      lines.push(
+        `   status=${String(claim?.status || "supported")} confidence=${String(claim?.confidence || "medium")} citations（证据来源）=${ids || "(none)"}`
+      );
     });
     lines.push("");
   }
@@ -1372,16 +1374,16 @@ function renderAnswerBundle(bundle = {}) {
       if (citation?.url) lines.push(`  url: ${citation.url}`);
       if (citation?.path) lines.push(`  path: ${citation.path}`);
       if (citation?.excerpt) lines.push(`  excerpt: ${String(citation.excerpt).trim()}`);
-      if (citation?.warning) lines.push(`  warning: ${citation.warning}`);
+      if (citation?.warning) lines.push(`  warning（风险提示）: ${citation.warning}`);
     });
     lines.push("");
   };
-  appendCitationLines(evidence.length ? "evidence" : "citations", evidence);
-  appendCitationLines("search_candidates", candidates, "候选链接，尚未抓取正文");
+  appendCitationLines("citations（证据来源）", evidence);
+  appendCitationLines("search_candidates（候选来源）", candidates, "候选链接，尚未抓取正文");
 
   const warnings = Array.isArray(bundle?.warnings) ? bundle.warnings : [];
   if (warnings.length) {
-    lines.push("warnings:");
+    lines.push("warnings（风险提示）:");
     warnings.slice(0, 5).forEach((warning, idx) => lines.push(`${idx + 1}. ${String(warning || "")}`));
   }
 
