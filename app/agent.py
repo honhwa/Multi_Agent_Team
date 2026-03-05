@@ -1340,8 +1340,9 @@ class OfficeAgent:
         for _ in range(execution_state.max_attempts):
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
             if self._coordinator_tools_enabled(execution_state) and not tool_calls:
+                ai_content_text = self._content_to_text(getattr(ai_msg, "content", ""))
                 inferred_tool_call = self._infer_bare_tool_call_from_text(
-                    self._content_to_text(getattr(ai_msg, "content", "")),
+                    ai_content_text,
                     task_type=str(route.get("task_type") or ""),
                 )
                 if inferred_tool_call:
@@ -1358,6 +1359,40 @@ class OfficeAgent:
                             f"{self._shorten(json.dumps(inferred_tool_call.get('args') or {}, ensure_ascii=False), 1200 if not debug_raw else 50000)}"
                         ),
                     )
+                elif auto_nudge_budget > 0 and self._looks_like_bare_tool_arguments_text(ai_content_text):
+                    auto_nudge_budget -= 1
+                    add_trace("检测到 Worker 直接输出了工具参数 JSON（未形成正式 tool_call），Coordinator 已要求其改为有效工具调用后继续。")
+                    add_debug(
+                        stage="backend_warning",
+                        title="自动纠偏：裸 JSON 参数但未触发工具",
+                        detail=(
+                            "Worker 输出了工具参数样式 JSON（可能参数缺失，如 query 为空），"
+                            "后端已追加系统指令，要求改为正式 tool_call 并继续执行。"
+                        ),
+                    )
+                    messages.append(ai_msg)
+                    messages.append(
+                        self._SystemMessage(
+                            content=(
+                                "你刚刚输出了工具参数 JSON，但没有发出正式 tool_call。"
+                                "请不要把 JSON 直接回复给用户。"
+                                "如果参数不完整（例如 query 为空），先补全参数；"
+                                "随后必须发出有效 tool_call 并继续执行。"
+                            )
+                        )
+                    )
+                    try:
+                        ai_msg, runner, effective_model, failover_notes = invoke_worker_turn(
+                            title="Worker -> Coordinator（纠正裸 JSON 参数后响应）",
+                            model=effective_model,
+                            current_runner=runner,
+                        )
+                        usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
+                        continue
+                    except Exception as exc:
+                        add_trace(f"纠正裸 JSON 参数后推理失败: {exc}")
+                        add_debug(stage="llm_error", title="Worker 裸 JSON 参数纠偏失败", detail=str(exc))
+                        break
             if not self._coordinator_tools_enabled(execution_state) or not tool_calls:
                 if (
                     not self._coordinator_tools_enabled(execution_state)
@@ -3103,7 +3138,8 @@ class OfficeAgent:
             cleaned = re.sub(r"(?is)[^。；\n]*workbench[^。；\n]*(?:可直接访问|直接访问|访问目录)[^。；\n]*[。；]?", "", cleaned)
 
         inferred_bare_tool = self._infer_bare_tool_call_from_text(cleaned)
-        if inferred_bare_tool:
+        bare_tool_like_json = self._looks_like_bare_tool_arguments_text(cleaned)
+        if inferred_bare_tool or bare_tool_like_json:
             cleaned = ""
 
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
@@ -3112,7 +3148,7 @@ class OfficeAgent:
                 return "已按你直接粘贴的原始文本内容理解，不需要额外提供本地文件路径。请继续指定你要我解释的结构、字段或结论。"
             if local_access_succeeded and (had_path_denial or had_permission_gate or had_internal_meta):
                 return "我已经能访问你授权的本地路径，不需要你重复提供路径或再次授权。请直接继续说明要看的函数、文件或上下文，我会继续读取并给出结果。"
-            if inferred_bare_tool and self._request_likely_requires_tools(user_message, attachment_metas):
+            if (inferred_bare_tool or bare_tool_like_json) and self._request_likely_requires_tools(user_message, attachment_metas):
                 return "我已经开始按当前路径和目标继续搜索，不需要你额外确认目录权限或工具格式。"
             return original
         return cleaned
@@ -3428,6 +3464,20 @@ class OfficeAgent:
         current = str(user_message or "").strip()
         short_followup_search = self._looks_like_short_followup_search(current)
         short_execution_ack = self._looks_like_short_followup_execution_ack(current)
+
+        # Inline code/test payloads in follow-up turns often carry raw content only.
+        # If prior user turn is clearly "modify/generate code", inherit that intent.
+        current_is_inline_code_payload = self._looks_like_inline_code_payload(current)
+        if current_is_inline_code_payload and not self._looks_like_code_generation_request(current, []):
+            for turn in reversed(history_turns):
+                role = str(turn.get("role") or "").strip().lower()
+                text = str(turn.get("text") or "").strip()
+                if role != "user" or not text or text == current:
+                    continue
+                compact_text = " ".join(text.split())
+                if self._looks_like_code_generation_request(text, []) or self._looks_like_local_code_lookup_request(text, []):
+                    return self._shorten(compact_text, 280)
+
         if not short_followup_search and not short_execution_ack:
             return ""
         for turn in reversed(history_turns):
@@ -5287,6 +5337,40 @@ class OfficeAgent:
                 "inferred": True,
             }
         return None
+
+    def _looks_like_bare_tool_arguments_text(self, text: str) -> bool:
+        parsed = self._parse_json_object(text) or self._parse_loose_object_literal(text)
+        if not isinstance(parsed, dict) or not parsed:
+            return False
+        keys = {str(key).strip().lower() for key in parsed.keys() if str(key).strip()}
+        if not keys:
+            return False
+        known_keys = {
+            "tool",
+            "name",
+            "args",
+            "query",
+            "root",
+            "path",
+            "start_char",
+            "max_chars",
+            "max_matches",
+            "context_chars",
+            "file_glob",
+            "use_regex",
+            "case_sensitive",
+            "max_entries",
+        }
+        # Bare tool-args payloads are typically tiny dicts made of known arg keys.
+        if not keys.issubset(known_keys):
+            return False
+        if "args" in keys and ("tool" in keys or "name" in keys):
+            return True
+        if {"query", "root"} & keys:
+            return True
+        if "path" in keys and ({"query", "start_char", "max_chars", "max_entries"} & keys):
+            return True
+        return False
 
     def _auto_prefetch_web(self, user_message: str, enable_tools: bool) -> dict[str, Any] | None:
         if not enable_tools:
