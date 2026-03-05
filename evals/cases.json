@@ -424,7 +424,8 @@
     "assert": {
       "equals": {
         "task_type": "simple_understanding",
-        "specialists.0": "summarizer",
+        "specialists.0": "file_reader",
+        "specialists.1": "summarizer",
         "use_planner": false,
         "use_worker_tools": false,
         "use_reviewer": false,
