@@ -7308,6 +7308,30 @@ class OfficeAgent:
             "可直接访问的目录",
             "可访问的目录",
             "是不是可访问",
+            "请确认我可以读取",
+            "请确认我能读取",
+            "请确认可以读取",
+            "请确认可读取",
+            "请确认我可以访问",
+            "请确认我可以查看",
+            "请确认可访问",
+            "请确认可以访问",
+            "可否读取",
+            "能否读取",
+            "读取下面两个路径",
+            "读取以下两个路径",
+            "读取下列路径",
+            "预览内容不完整",
+            "预览不完整",
+            "内容不完整（截断",
+            "内容不完整(截断",
+            "preview is incomplete",
+            "preview was truncated",
+            "content preview is truncated",
+            "please confirm i can read",
+            "can i read the following",
+            "need to read the full file",
+            "need to read the full document",
             "is workbench directly accessible",
             "is it directly accessible",
         )
@@ -7374,6 +7398,10 @@ class OfficeAgent:
             "absolute path",
             "full path",
         )
+        if re.search(r"请确认.{0,24}(?:读取|访问|查看).{0,24}(?:路径|文件|附件)", text):
+            return True
+        if re.search(r"confirm.{0,30}(?:read|access|open).{0,30}(?:path|file|attachment)", text):
+            return True
         if not any(p in text for p in patterns):
             return False
         # Heuristic: avoid over-triggering on normal questions by requiring mention of files/reading.
