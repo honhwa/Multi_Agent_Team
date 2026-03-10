@@ -86,6 +86,29 @@ _FOLLOWUP_EXECUTION_ACK_HINTS = (
     "继续搜",
     "搜吧",
     "查吧",
+    "写入",
+    "写入吧",
+    "开始写入",
+    "继续写入",
+    "执行写入",
+    "应用",
+    "应用吧",
+    "应用修改",
+    "套用",
+    "替换",
+    "替换吧",
+    "更新",
+    "更新吧",
+    "保存",
+    "保存吧",
+    "落盘",
+    "覆盖写入",
+    "apply",
+    "apply it",
+    "apply changes",
+    "write it",
+    "save it",
+    "update it",
 )
 _FOLLOWUP_REFERENCE_HINTS = (
     "这个",
@@ -695,6 +718,9 @@ class OfficeAgent:
                     "不要用“用户未要求附件”作为理由跳过附件解析。\n"
                     "用户上传附件时会提供本地路径，处理附件文件请优先使用该路径，不要凭空猜路径。\n"
                     "改写或新建文件优先使用 replace_in_file/write_text_file（大内容可分块配合 append_text_file），尽量使用绝对路径。\n"
+                    "如果上一轮你已经给出“预览代码/草稿”，而本轮用户只说“写入/应用/替换”，"
+                    "默认按上一轮预览内容原样写入（包含注释、空行和缩进）；"
+                    "除非用户明确要求改动，否则不要私自删改注释。\n"
                     "当 execution_mode=docker 且调用 run_shell 时，/workspace 与 /allowed/* 是主机目录挂载；"
                     "必须基于工具返回的 host_cwd（以及 mount_mappings）向用户报告主机绝对路径。\n"
                     "禁止回复“文件只在沙箱里所以无法给路径”。\n"
@@ -790,6 +816,23 @@ class OfficeAgent:
                 )
             )
             add_trace("已识别为工具链续执行确认，忽略上一轮 assistant 的错误限制话术。")
+        force_write_from_preview = self._should_force_write_from_previous_preview(
+            user_message=user_message,
+            history_turns=history_turns,
+            attachment_metas=attachment_metas,
+        )
+        if force_write_from_preview:
+            messages.append(
+                self._SystemMessage(
+                    content=(
+                        "检测到用户要求将上一条代码预览直接写入。"
+                        "若上一条 assistant 已提供代码块，请把该预览作为写入基线，"
+                        "保留注释、空行与缩进；"
+                        "只有当用户本轮明确提出改动时，才在该基线上做局部修改后写入。"
+                    )
+                )
+            )
+            add_trace("已识别为“预览后写入”跟进，Coordinator 要求 Worker 复用上一版代码预览写入。")
 
         user_content, attachment_note, attachment_issues = self._build_user_content(
             user_message,
@@ -3758,6 +3801,41 @@ class OfficeAgent:
             return False
         return compact in _FOLLOWUP_EXECUTION_ACK_HINTS
 
+    def _looks_like_write_or_edit_action(self, text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        write_hints = (
+            "写入",
+            "落盘",
+            "保存",
+            "覆盖写入",
+            "覆盖",
+            "替换",
+            "更新",
+            "改成",
+            "改为",
+            "改一下",
+            "修一下",
+            "修复",
+            "修改",
+            "apply",
+            "patch",
+            "write back",
+            "overwrite",
+            "save",
+            "update",
+            "replace",
+            "edit",
+        )
+        if any(hint in lowered for hint in write_hints):
+            return True
+        if re.search(r"(?:把|将).{0,40}(?:改成|改为|替换成|替换为|更新为)", lowered):
+            return True
+        if re.search(r"(?:replace|update|edit).{0,40}(?:with|to)", lowered):
+            return True
+        return False
+
     def _looks_like_explicit_tool_confirmation(self, text: str) -> bool:
         lowered = str(text or "").strip().lower()
         if not lowered:
@@ -3767,6 +3845,8 @@ class OfficeAgent:
             return True
         if len(compact) > 220:
             return False
+        if self._looks_like_write_or_edit_action(lowered) and len(compact) <= 48:
+            return True
 
         confirm_hints = (
             "确认",
@@ -3788,6 +3868,10 @@ class OfficeAgent:
             "查",
             "修改",
             "修复",
+            "写入",
+            "替换",
+            "更新",
+            "保存",
             "定位",
             "打开",
             "查看",
@@ -3795,6 +3879,10 @@ class OfficeAgent:
             "search",
             "scan",
             "modify",
+            "replace",
+            "update",
+            "write",
+            "save",
             "edit",
             "open",
         )
@@ -3809,6 +3897,45 @@ class OfficeAgent:
         if re.search(r"(?:confirm|proceed).{0,30}(?:read|search|execute|modify|open)", lowered):
             return True
         return False
+
+    def _has_recent_assistant_code_preview(self, history_turns: list[dict[str, Any]], *, max_messages: int = 6) -> bool:
+        seen = 0
+        for turn in reversed(history_turns):
+            role = str(turn.get("role") or "").strip().lower()
+            if role != "assistant":
+                continue
+            text = str(turn.get("text") or "").strip()
+            if not text:
+                continue
+            seen += 1
+            if re.search(r"```[A-Za-z0-9_+.-]*\n[\s\S]{20,}?```", text):
+                return True
+            if seen >= max(1, int(max_messages)):
+                break
+        return False
+
+    def _should_force_write_from_previous_preview(
+        self,
+        *,
+        user_message: str,
+        history_turns: list[dict[str, Any]],
+        attachment_metas: list[dict[str, Any]],
+    ) -> bool:
+        if attachment_metas:
+            return False
+        current = str(user_message or "").strip()
+        if not current:
+            return False
+        if self._looks_like_inline_code_payload(current):
+            return False
+        if not self._looks_like_write_or_edit_action(current):
+            return False
+        compact = re.sub(r"[\s\"'`“”‘’.,!?，。！？、;；:：()\[\]{}<>《》【】/\\|-]+", "", current.lower())
+        if not compact:
+            return False
+        if len(compact) > 80:
+            return False
+        return self._has_recent_assistant_code_preview(history_turns)
 
     def _looks_like_context_dependent_followup(self, text: str) -> bool:
         lowered = str(text or "").strip().lower()
@@ -4011,6 +4138,7 @@ class OfficeAgent:
             "梳理",
             "看看",
             "看下",
+            "看一下",
             "look for",
             "find",
             "search",
@@ -4048,6 +4176,10 @@ class OfficeAgent:
             "改写",
             "修改",
             "修复",
+            "替换",
+            "更新",
+            "写入",
+            "保存",
             "generate",
             "create",
             "write",
@@ -4058,6 +4190,9 @@ class OfficeAgent:
             "rewrite",
             "modify",
             "fix",
+            "replace",
+            "update",
+            "edit",
         )
         code_target_hints = (
             "代码",
@@ -4070,6 +4205,13 @@ class OfficeAgent:
             "测试",
             "单元测试",
             "模块",
+            "变量",
+            "参数",
+            "字段",
+            "头文件",
+            "header",
+            ".h",
+            ".hpp",
             "plugin",
             "component",
             "page",
@@ -4129,6 +4271,10 @@ class OfficeAgent:
                 "改写",
                 "修改",
                 "修复",
+                "替换",
+                "更新",
+                "写入",
+                "保存",
                 "generate",
                 "create",
                 "write",
@@ -4139,6 +4285,9 @@ class OfficeAgent:
                 "rewrite",
                 "modify",
                 "fix",
+                "replace",
+                "update",
+                "edit",
             )
         ):
             return False
@@ -4491,10 +4640,22 @@ class OfficeAgent:
             "当前界面没有显示任何可用的文件读取工具",
             "当前没有可用的文件读取工具",
             "无法继续，因为当前界面没有显示任何可用的文件读取工具",
+            "当前会话没有任何写入本地文件的工具",
+            "没有任何写入本地文件的工具",
+            "没有可用的写入工具",
+            "当前没有写入工具",
+            "没有文件写入工具",
+            "写入工具不可用",
+            "无法写入本地文件",
             "file reading tools are not available",
             "no file reading tool is available",
             "no file read tools available",
             "no file tools available",
+            "no local file write tool is available",
+            "no local file writing tools",
+            "no write tools available",
+            "write tool is not available",
+            "cannot write local files",
         )
         return any(pattern in raw for pattern in patterns)
 
@@ -6222,6 +6383,35 @@ class OfficeAgent:
             )
         )
         request_requires_tools = self._request_likely_requires_tools(user_message, attachment_metas)
+        local_code_lookup_request = self._looks_like_local_code_lookup_request(user_message, attachment_metas)
+        grounded_generation_hints = (
+            "参考",
+            "参照",
+            "对照",
+            "基于现有",
+            "按现有",
+            "沿用",
+            "按这个目录",
+            "在这个目录",
+            "在该目录",
+            "按这个文件",
+            "参考目录",
+            "reference",
+            "based on",
+            "according to",
+            "existing code",
+            "existing file",
+        )
+        grounded_code_generation_context = (
+            has_attachments
+            or inline_document_payload
+            or spec_lookup_request
+            or evidence_required
+            or local_code_lookup_request
+            or self._message_has_explicit_local_path(user_message)
+            or self._has_file_like_lookup_token(text)
+            or any(hint in text for hint in grounded_generation_hints)
+        )
 
         fallback = {
             "task_type": "standard",
@@ -6242,7 +6432,7 @@ class OfficeAgent:
         }
 
         if self._looks_like_code_generation_request(user_message, attachment_metas):
-            if has_attachments or inline_document_payload or spec_lookup_request or evidence_required:
+            if grounded_code_generation_context:
                 return self._normalize_route_decision(
                     {
                         "task_type": "grounded_code_generation",
@@ -6428,7 +6618,7 @@ class OfficeAgent:
                 settings=settings,
             )
 
-        if self._looks_like_local_code_lookup_request(user_message, attachment_metas):
+        if local_code_lookup_request:
             return self._normalize_route_decision(
                 {
                     "task_type": "code_lookup",
@@ -6749,7 +6939,7 @@ class OfficeAgent:
         if task_type == "grounded_code_generation":
             return (
                 "本轮属于基于附件、原文或现有代码的生成/改写任务。"
-                "先读取相关附件或上下文，再按约束直接实现。"
+                "先读取相关附件或上下文，必要时先定位目标文件，再按约束实现并写入。"
                 "不要把答案改写成事实审计或证据仲裁格式。"
             )
         if task_type == "code_generation":
@@ -8092,6 +8282,19 @@ class OfficeAgent:
             "write_text_file",
             "append_text_file",
             "replace_in_file",
+            "写入",
+            "替换",
+            "更新",
+            "改成",
+            "改为",
+            "保存",
+            "落盘",
+            "apply",
+            "patch",
+            "write back",
+            "overwrite",
+            "replace",
+            "update",
             "run_shell",
             "search_web",
             "fetch_web",
@@ -8114,6 +8317,8 @@ class OfficeAgent:
             "citation",
         )
         if any(hint in text for hint in direct_hints):
+            return True
+        if self._looks_like_write_or_edit_action(text):
             return True
         if self._has_file_like_lookup_token(text):
             return True
@@ -8235,6 +8440,16 @@ class OfficeAgent:
             "with extension",
             "full filename",
             "exact filename",
+            "请粘贴原文",
+            "请贴原文",
+            "请把原文贴",
+            "请提供原文",
+            "请把代码贴出来",
+            "请贴出完整代码",
+            "请贴出原始代码",
+            "paste the original",
+            "paste the full code",
+            "provide the original text",
         )
         if not request_requires_tools and not has_attachments:
             return any(p in text for p in general_gate_patterns)
