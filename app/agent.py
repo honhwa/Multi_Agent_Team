@@ -16,7 +16,7 @@ from app.attachments import extract_document_text, image_to_data_url_with_meta, 
 from app.config import AppConfig
 from app.local_tools import LocalToolExecutor
 from app.models import AgentPanel, ChatSettings, ToolEvent
-from app.role_runtime import RoleContext, RoleResult, RoleSpec
+from app.role_runtime import RoleContext, RoleResult, RoleSpec, RunState
 
 
 _STYLE_HINTS = {
@@ -549,6 +549,11 @@ class OfficeAgent:
         worker_citation_candidates: list[dict[str, Any]] = []
         answer_bundle: dict[str, Any] = {"summary": "", "claims": [], "citations": [], "warnings": []}
         usage_total = self._empty_usage()
+        run_state: RunState | None = None
+        role_node_seq: dict[str, int] = {}
+        role_instance_seq: dict[str, int] = {}
+        coordinator_node_id = ""
+        coordinator_instance_id = ""
         allowed_roots_text = ", ".join(str(p) for p in self.config.allowed_roots)
         session_tools_hint = (
             "当用户提到“之前/上次会话里说过什么”时，可调用 list_sessions 和 read_session_history 主动检索历史，不要先让用户手工找 session_id。\n"
@@ -651,12 +656,28 @@ class OfficeAgent:
                 )
             emit_agent_state()
 
-        def clear_role_activity() -> None:
+        def clear_role_activity(*, final_status: str | None = None, summary_text: str = "") -> None:
             nonlocal current_role
             for role_key in list(active_roles):
                 _upsert_role_state(role_key, status="seen")
             active_roles.clear()
             current_role = None
+            if run_state is not None and run_state.ended_at <= 0 and final_status:
+                normalized = str(final_status or "").strip().lower()
+                if normalized not in {"completed", "failed", "cancelled"}:
+                    normalized = "completed"
+                complete_role_instance(
+                    coordinator_instance_id,
+                    summary_text=summary_text or f"final_status={normalized}",
+                )
+                run_state.finish(status=normalized)  # type: ignore[arg-type]
+                add_trace(
+                    "Runtime: "
+                    + self._shorten(
+                        json.dumps(run_state.snapshot_compact(), ensure_ascii=False),
+                        280,
+                    )
+                )
             emit_agent_state()
 
         def add_panel(role: str, title: str, summary_text: str, bullets: list[str] | None = None) -> None:
@@ -677,6 +698,61 @@ class OfficeAgent:
                     return
             agent_panels.append(payload)
             emit_agent_state()
+
+        def begin_role_instance(
+            role: str,
+            *,
+            parent_node_id: str | None = None,
+            phase: str = "",
+            tool_mode: str = "",
+            meta: dict[str, Any] | None = None,
+        ) -> tuple[str, str]:
+            nonlocal run_state
+            if run_state is None:
+                return "", ""
+            role_key = str(role or "").strip().lower()
+            if not role_key:
+                return "", ""
+            role_node_seq[role_key] = role_node_seq.get(role_key, 0) + 1
+            role_instance_seq[role_key] = role_instance_seq.get(role_key, 0) + 1
+            node_id = f"{role_key}:{role_node_seq[role_key]}"
+            parent_id = parent_node_id or run_state.root_node_id
+            run_state.add_node(
+                node_id=node_id,
+                role=role_key,
+                role_kind=str(_ROLE_KINDS.get(role_key, "agent")),  # type: ignore[arg-type]
+                parent_node_id=parent_id,
+                phase=phase,
+                meta=meta or {},
+            )
+            instance_id = f"{role_key}#{role_instance_seq[role_key]}"
+            run_state.start_instance(
+                instance_id=instance_id,
+                role=role_key,
+                node_id=node_id,
+                sequence=role_instance_seq[role_key],
+                tool_mode=tool_mode,
+                meta=meta or {},
+            )
+            return node_id, instance_id
+
+        def complete_role_instance(instance_id: str, *, summary_text: str = "") -> None:
+            nonlocal run_state
+            if run_state is None or not instance_id:
+                return
+            run_state.complete_instance(instance_id, summary=summary_text)
+
+        def fail_role_instance(instance_id: str, *, error_text: str = "") -> None:
+            nonlocal run_state
+            if run_state is None or not instance_id:
+                return
+            run_state.fail_instance(instance_id, error=error_text)
+
+        def add_run_event(kind: str, **payload: Any) -> None:
+            nonlocal run_state
+            if run_state is None:
+                return
+            run_state.add_event(kind, **payload)
 
         messages: list[Any] = [
             self._SystemMessage(
@@ -991,6 +1067,44 @@ class OfficeAgent:
                 },
                 ensure_ascii=False,
             )
+        run_state = RunState.create(
+            run_id=f"run_{int(time.time() * 1000)}_{os.getpid()}",
+            session_id=str(session_id or ""),
+            task_type=str(route.get("task_type") or "standard"),
+            root_role="router",
+            root_role_kind="hybrid",
+            meta={
+                "requested_model": requested_model,
+                "execution_mode": requested_execution_mode,
+            },
+        )
+        add_run_event(
+            "route_selected",
+            task_type=str(route.get("task_type") or "standard"),
+            complexity=str(route.get("complexity") or "medium"),
+            source=str(route.get("source") or "rules"),
+            use_worker_tools=bool(route.get("use_worker_tools")),
+        )
+        router_node_id, router_instance_id = begin_role_instance(
+            "router",
+            parent_node_id=run_state.root_node_id,
+            phase="route",
+            meta={"source": str(route.get("source") or "rules")},
+        )
+        complete_role_instance(
+            router_instance_id,
+            summary_text=(
+                f"task_type={str(route.get('task_type') or 'standard')}, "
+                f"complexity={str(route.get('complexity') or 'medium')}"
+            ),
+        )
+        coordinator_node_id, coordinator_instance_id = begin_role_instance(
+            "coordinator",
+            parent_node_id=router_node_id or run_state.root_node_id,
+            phase="orchestrate",
+            tool_mode=execution_state.tool_mode,
+            meta={"tool_mode": execution_state.tool_mode},
+        )
         execution_plan[:] = self._build_execution_plan(
             attachment_metas=attachment_metas,
             settings=settings,
@@ -1116,6 +1230,11 @@ class OfficeAgent:
         )
         planner_raw = planner_result.raw_text
         if route.get("use_planner"):
+            planner_node_id, planner_instance_id = begin_role_instance(
+                "planner",
+                parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
+                phase="plan",
+            )
             set_role_activity("coordinator", "planner", current="planner", phase="规划", detail="整理目标与执行计划")
             planner_request_detail = "\n".join(
                 [
@@ -1140,6 +1259,16 @@ class OfficeAgent:
             for note in planner_result.notes:
                 add_trace(note)
             add_trace("多 Role: Planner 已生成目标摘要与执行计划。")
+            complete_role_instance(
+                planner_instance_id,
+                summary_text=str(planner_result.summary or "planner_ready"),
+            )
+            add_run_event(
+                "planner_completed",
+                node_id=planner_node_id,
+                verdict="ok",
+                model=planner_effective_model or requested_model,
+            )
             add_debug(
                 stage="llm_to_backend",
                 title="Planner -> Coordinator",
@@ -1168,11 +1297,17 @@ class OfficeAgent:
                 )
         else:
             add_trace("Router 已跳过 Planner。")
+            add_run_event("planner_skipped", reason="route_use_planner_false")
 
         specialist_prefetch_query = planner_user_message
         specialist_system_hints: list[str] = []
         for specialist in self._normalize_specialists(route.get("specialists") or []):
             specialist_label = _SPECIALIST_LABELS.get(specialist, specialist)
+            specialist_node_id, specialist_instance_id = begin_role_instance(
+                specialist,
+                parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
+                phase="specialist_brief",
+            )
             set_role_activity(
                 "coordinator",
                 specialist,
@@ -1208,6 +1343,17 @@ class OfficeAgent:
             for note in specialist_result.notes:
                 add_trace(note)
                 add_trace(f"多 Role: {specialist_label} 已生成专门简报。")
+            complete_role_instance(
+                specialist_instance_id,
+                summary_text=str(specialist_result.summary or f"{specialist_label} ready"),
+            )
+            add_run_event(
+                "specialist_completed",
+                role=specialist,
+                node_id=specialist_node_id,
+                model=specialist_model or self.config.summary_model or requested_model,
+                bullet_count=len(specialist_result.payload.get("bullets") or []),
+            )
             add_debug(
                 stage="llm_to_backend",
                 title=f"{specialist_label} -> Coordinator",
@@ -1331,6 +1477,13 @@ class OfficeAgent:
             execution_state.attempts += 1
             execution_state.status = "worker_running"
             execution_state.transitions.append(f"invoke:{execution_state.tool_mode}")
+            worker_node_id, worker_instance_id = begin_role_instance(
+                "worker",
+                parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
+                phase=f"attempt_{execution_state.attempts}",
+                tool_mode=execution_state.tool_mode,
+                meta={"attempt": execution_state.attempts},
+            )
             set_role_activity(
                 "coordinator",
                 "worker",
@@ -1344,24 +1497,45 @@ class OfficeAgent:
                 self._coordinator_summary(execution_state),
                 self._coordinator_panel_bullets(execution_state),
             )
-            if current_runner is None:
-                next_msg, next_runner, next_model, failover_notes = self._invoke_chat_with_runner(
-                    messages=messages,
-                    model=model,
-                    max_output_tokens=settings.max_output_tokens,
-                    enable_tools=self._coordinator_tools_enabled(execution_state),
+            try:
+                if current_runner is None:
+                    next_msg, next_runner, next_model, failover_notes = self._invoke_chat_with_runner(
+                        messages=messages,
+                        model=model,
+                        max_output_tokens=settings.max_output_tokens,
+                        enable_tools=self._coordinator_tools_enabled(execution_state),
+                    )
+                else:
+                    next_msg, next_runner, next_model, failover_notes = self._invoke_with_runner_recovery(
+                        runner=current_runner,
+                        messages=messages,
+                        model=model,
+                        max_output_tokens=settings.max_output_tokens,
+                        enable_tools=self._coordinator_tools_enabled(execution_state),
+                    )
+            except Exception as exc:
+                fail_role_instance(worker_instance_id, error_text=self._shorten(exc, 220))
+                add_run_event(
+                    "worker_attempt_failed",
+                    node_id=worker_node_id,
+                    attempt=execution_state.attempts,
+                    error=self._shorten(exc, 220),
                 )
-            else:
-                next_msg, next_runner, next_model, failover_notes = self._invoke_with_runner_recovery(
-                    runner=current_runner,
-                    messages=messages,
-                    model=model,
-                    max_output_tokens=settings.max_output_tokens,
-                    enable_tools=self._coordinator_tools_enabled(execution_state),
-                )
+                raise
             for note in failover_notes:
                 add_trace(note)
             execution_state.status = "worker_returned"
+            complete_role_instance(
+                worker_instance_id,
+                summary_text=f"model={next_model}, tool_mode={execution_state.tool_mode}",
+            )
+            add_run_event(
+                "worker_attempt_completed",
+                node_id=worker_node_id,
+                attempt=execution_state.attempts,
+                model=next_model,
+                tool_mode=execution_state.tool_mode,
+            )
             add_panel(
                 "coordinator",
                 "Coordinator",
@@ -1440,6 +1614,13 @@ class OfficeAgent:
                     output_preview=result_json[:1200],
                 )
             )
+            add_run_event(
+                "tool_executed",
+                tool=name,
+                ok=bool(result.get("ok")) if isinstance(result, dict) else False,
+                synthetic=bool(synthetic),
+                call_id=call_id,
+            )
 
             tool_message_payload, trim_note = self._prepare_tool_result_for_llm(
                 name=name,
@@ -1494,7 +1675,7 @@ class OfficeAgent:
         except Exception as exc:
             add_trace(f"模型请求失败: {exc}")
             add_debug(stage="llm_error", title="Worker 模型调用失败", detail=str(exc))
-            clear_role_activity()
+            clear_role_activity(final_status="failed", summary_text="worker_initial_invoke_failed")
             return (
                 f"请求模型失败: {exc}",
                 tool_events,
@@ -1944,7 +2125,7 @@ class OfficeAgent:
             except Exception as exc:
                 add_trace(f"工具后续推理失败: {exc}")
                 add_debug(stage="llm_error", title="Worker 工具后续推理失败", detail=str(exc))
-                clear_role_activity()
+                clear_role_activity(final_status="failed", summary_text="worker_followup_invoke_failed")
                 return (
                     f"工具执行后续推理失败: {exc}",
                     tool_events,
@@ -2055,6 +2236,11 @@ class OfficeAgent:
             reviewer_rerun_budget = max_reviewer_reruns if self._coordinator_tools_enabled(execution_state) else 0
             while True:
                 if route.get("use_conflict_detector"):
+                    conflict_node_id, conflict_instance_id = begin_role_instance(
+                        "conflict_detector",
+                        parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
+                        phase="review_conflict_check",
+                    )
                     set_role_activity(
                         "coordinator",
                         "conflict_detector",
@@ -2098,6 +2284,16 @@ class OfficeAgent:
                     if conflict_effective_model:
                         effective_model = conflict_effective_model
                     usage_total = self._merge_usage(usage_total, conflict_result.usage or self._empty_usage())
+                    complete_role_instance(
+                        conflict_instance_id,
+                        summary_text=str(conflict_result.summary or "conflict_checked"),
+                    )
+                    add_run_event(
+                        "conflict_detector_completed",
+                        node_id=conflict_node_id,
+                        has_conflict=bool(conflict_result.payload.get("has_conflict")),
+                        confidence=str(conflict_result.payload.get("confidence") or "medium"),
+                    )
                     for note in conflict_result.notes:
                         add_trace(note)
                     add_debug(
@@ -2120,6 +2316,11 @@ class OfficeAgent:
                     current="reviewer",
                     phase="最终审阅",
                     detail="检查覆盖度、证据链与交付风险",
+                )
+                reviewer_node_id, reviewer_instance_id = begin_role_instance(
+                    "reviewer",
+                    parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
+                    phase="final_review",
                 )
                 reviewer_request_detail = "\n".join(
                     [
@@ -2165,6 +2366,16 @@ class OfficeAgent:
                 if reviewer_effective_model:
                     effective_model = reviewer_effective_model
                 usage_total = self._merge_usage(usage_total, reviewer_result.usage or self._empty_usage())
+                complete_role_instance(
+                    reviewer_instance_id,
+                    summary_text=str(reviewer_result.summary or "reviewed"),
+                )
+                add_run_event(
+                    "reviewer_completed",
+                    node_id=reviewer_node_id,
+                    verdict=str(reviewer_result.payload.get("verdict") or "pass"),
+                    confidence=str(reviewer_result.payload.get("confidence") or "medium"),
+                )
                 for note in reviewer_result.notes:
                     add_trace(note)
                 reviewer_verdict = str(reviewer_result.payload.get("verdict") or "pass").strip().lower()
@@ -2305,6 +2516,11 @@ class OfficeAgent:
                     continue
 
                 if route.get("use_revision"):
+                    revision_node_id, revision_instance_id = begin_role_instance(
+                        "revision",
+                        parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
+                        phase="final_revision",
+                    )
                     set_role_activity(
                         "coordinator",
                         "revision",
@@ -2350,6 +2566,15 @@ class OfficeAgent:
                     if revision_effective_model:
                         effective_model = revision_effective_model
                     usage_total = self._merge_usage(usage_total, revision_result.usage or self._empty_usage())
+                    complete_role_instance(
+                        revision_instance_id,
+                        summary_text=str(revision_result.summary or "revision_done"),
+                    )
+                    add_run_event(
+                        "revision_completed",
+                        node_id=revision_node_id,
+                        changed=bool(revision_result.payload.get("changed")),
+                    )
                     for note in revision_result.notes:
                         add_trace(note)
                     revised_text = str(revision_result.payload.get("final_answer") or "").strip()
@@ -2421,7 +2646,7 @@ class OfficeAgent:
             answer_bundle["claims"] = []
             answer_bundle["warnings"] = []
         if not route.get("use_structurer"):
-            clear_role_activity()
+            clear_role_activity(final_status="completed", summary_text="completed_without_structurer")
             return (
                 text,
                 tool_events,
@@ -2438,7 +2663,7 @@ class OfficeAgent:
                 effective_model,
             )
         if not self._should_emit_answer_bundle(finalized_citations):
-            clear_role_activity()
+            clear_role_activity(final_status="completed", summary_text="completed_without_answer_bundle")
             return (
                 text,
                 tool_events,
@@ -2474,6 +2699,11 @@ class OfficeAgent:
             phase="结构化整理",
             detail=f"整理 {len(finalized_citations)} 条 citations（证据来源）",
         )
+        structurer_node_id, structurer_instance_id = begin_role_instance(
+            "structurer",
+            parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
+            phase="bundle_answer",
+        )
         structurer_context = self._make_role_context(
             "structurer",
             requested_model=effective_model or requested_model,
@@ -2485,6 +2715,16 @@ class OfficeAgent:
         structurer_result = self._run_answer_structurer_role(context=structurer_context)
         answer_bundle = structurer_result.payload
         structurer_raw = structurer_result.raw_text
+        complete_role_instance(
+            structurer_instance_id,
+            summary_text=str(structurer_result.summary or "structured"),
+        )
+        add_run_event(
+            "structurer_completed",
+            node_id=structurer_node_id,
+            claim_count=len(answer_bundle.get("claims") or []),
+            citation_count=len(answer_bundle.get("citations") or []),
+        )
         add_debug(
             stage="llm_to_backend",
             title="Structurer -> Coordinator",
@@ -2504,7 +2744,7 @@ class OfficeAgent:
                 item_limit=180,
             ),
         )
-        clear_role_activity()
+        clear_role_activity(final_status="completed", summary_text="completed_with_structured_bundle")
         return (
             text,
             tool_events,
@@ -4761,6 +5001,138 @@ class OfficeAgent:
             return "Fixer 生成问题修复简报。"
         return f"{_SPECIALIST_LABELS.get(specialist, specialist)} 生成专门简报。"
 
+    def _specialist_contract(self, specialist: str, *, initial_triage_request: bool = False) -> dict[str, Any]:
+        key = str(specialist or "").strip().lower()
+        if key == "researcher":
+            return {
+                "bullet_limit": 4,
+                "query_limit": 4,
+                "allow_queries": True,
+                "scope": "生成联网取证策略与检索关键词，不直接下最终结论。",
+                "stop_rules": [
+                    "不要直接替 Worker 给最终答案。",
+                    "不要编造来源或未抓取证据。",
+                ],
+            }
+        if key == "file_reader":
+            return {
+                "bullet_limit": 4,
+                "query_limit": 4,
+                "allow_queries": True,
+                "scope": "生成文件定位与精读策略，不直接输出最终结论。",
+                "stop_rules": [
+                    "先定位命中再建议精读，不要泛读整库。",
+                    "不要把缺失路径当作最终结论。",
+                ],
+            }
+        if key == "summarizer":
+            return {
+                "bullet_limit": 5 if initial_triage_request else 4,
+                "query_limit": 0,
+                "allow_queries": False,
+                "scope": "生成回答组织建议与重点提炼，不直接输出最终答复。",
+                "stop_rules": [
+                    "不要停留在能力确认话术。",
+                    "不要改写成证据审计风格。",
+                ],
+            }
+        if key == "fixer":
+            return {
+                "bullet_limit": 4,
+                "query_limit": 2,
+                "allow_queries": False,
+                "scope": "生成修复优先级与变更建议，不直接改写最终输出。",
+                "stop_rules": [
+                    "不要执行写入动作。",
+                    "不要跳过风险说明。",
+                ],
+            }
+        return {
+            "bullet_limit": 4,
+            "query_limit": 2,
+            "allow_queries": False,
+            "scope": "生成专门简报，支持 Worker 执行。",
+            "stop_rules": ["不要直接输出最终答案。"],
+        }
+
+    def _build_specialist_input_payload(
+        self,
+        *,
+        specialist: str,
+        context: RoleContext,
+        route_summary: str,
+        payload_preview: str,
+        contract: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "specialist": str(specialist or "").strip().lower(),
+            "effective_user_request": context.primary_user_request or "(empty)",
+            "raw_user_message": context.user_message.strip() or "(empty)",
+            "history_summary": context.history_summary.strip() or "(none)",
+            "route": route_summary,
+            "attachments": self._summarize_attachment_metas_for_agents(context.attachment_metas),
+            "context_preview": payload_preview or "(empty)",
+            "scope": str(contract.get("scope") or "").strip(),
+            "stop_rules": self._normalize_string_list(contract.get("stop_rules") or [], limit=3, item_limit=120),
+        }
+
+    def _normalize_specialist_brief_payload(
+        self,
+        *,
+        specialist: str,
+        parsed: dict[str, Any],
+        fallback: dict[str, Any],
+        usage: dict[str, int],
+        effective_model: str,
+        notes: list[str],
+        contract: dict[str, Any],
+        initial_triage_request: bool = False,
+    ) -> dict[str, Any]:
+        bullet_limit = max(1, int(contract.get("bullet_limit") or 4))
+        query_limit = max(0, int(contract.get("query_limit") or 0))
+        allow_queries = bool(contract.get("allow_queries"))
+        brief = {
+            "role": specialist,
+            "summary": str(parsed.get("summary") or fallback["summary"]).strip() or fallback["summary"],
+            "bullets": self._normalize_string_list(
+                parsed.get("bullets") or fallback["bullets"],
+                limit=bullet_limit,
+                item_limit=180,
+            ),
+            "worker_hint": str(parsed.get("worker_hint") or fallback["worker_hint"]).strip() or fallback["worker_hint"],
+            "queries": (
+                self._normalize_string_list(parsed.get("queries") or [], limit=query_limit, item_limit=80)
+                if allow_queries and query_limit > 0
+                else []
+            ),
+            "scope": str(parsed.get("scope") or fallback.get("scope") or contract.get("scope") or "").strip(),
+            "stop_rules": self._normalize_string_list(
+                parsed.get("stop_rules") or fallback.get("stop_rules") or contract.get("stop_rules") or [],
+                limit=3,
+                item_limit=120,
+            ),
+            "usage": usage,
+            "effective_model": effective_model,
+            "notes": notes,
+        }
+        if specialist == "summarizer" and initial_triage_request:
+            brief["bullets"] = self._normalize_string_list(
+                [
+                    "不要只回答“能理解/可以看懂”。",
+                    "首次回复先给一句结论，再给 3 到 5 条具体发现。",
+                    "优先提取主题、entry 含义、主要问题、时间线或状态变化。",
+                    *self._normalize_string_list(brief.get("bullets") or [], limit=4, item_limit=180),
+                ],
+                limit=5,
+                item_limit=180,
+            )
+            worker_hint = str(brief.get("worker_hint") or "").strip()
+            brief["worker_hint"] = (
+                "如果用户只是先确认你能不能理解内容，也要直接给高信息量摘要，不要停留在能力确认。"
+                + (f" {worker_hint}" if worker_hint else "")
+            ).strip()
+        return brief
+
     def _specialist_fallback(
         self,
         *,
@@ -4769,6 +5141,7 @@ class OfficeAgent:
         attachment_metas: list[dict[str, Any]],
         initial_triage_request: bool = False,
     ) -> dict[str, Any]:
+        contract = self._specialist_contract(specialist, initial_triage_request=initial_triage_request)
         attachment_summary = self._summarize_attachment_metas_for_agents(attachment_metas)
         if specialist == "researcher":
             return {
@@ -4780,6 +5153,8 @@ class OfficeAgent:
                 ],
                 "worker_hint": "先围绕时间、地点、事件三件事取证，再给结论，避免只基于搜索摘要。",
                 "queries": [],
+                "scope": str(contract.get("scope") or ""),
+                "stop_rules": self._normalize_string_list(contract.get("stop_rules") or [], limit=3, item_limit=120),
                 "usage": self._empty_usage(),
                 "effective_model": requested_model,
                 "notes": [],
@@ -4794,6 +5169,8 @@ class OfficeAgent:
                 ],
                 "worker_hint": "文件任务先做定位，再精读命中附近内容，不要泛读整份文档。",
                 "queries": [],
+                "scope": str(contract.get("scope") or ""),
+                "stop_rules": self._normalize_string_list(contract.get("stop_rules") or [], limit=3, item_limit=120),
                 "usage": self._empty_usage(),
                 "effective_model": requested_model,
                 "notes": [],
@@ -4813,6 +5190,8 @@ class OfficeAgent:
                         "不要把回答停留在能力确认或流程说明上。"
                     ),
                     "queries": [],
+                    "scope": str(contract.get("scope") or ""),
+                    "stop_rules": self._normalize_string_list(contract.get("stop_rules") or [], limit=3, item_limit=120),
                     "usage": self._empty_usage(),
                     "effective_model": requested_model,
                     "notes": [],
@@ -4826,6 +5205,8 @@ class OfficeAgent:
                 ],
                 "worker_hint": "直接总结当前消息和附件内容，不要解释内部流程，也不要假装缺少工具。",
                 "queries": [],
+                "scope": str(contract.get("scope") or ""),
+                "stop_rules": self._normalize_string_list(contract.get("stop_rules") or [], limit=3, item_limit=120),
                 "usage": self._empty_usage(),
                 "effective_model": requested_model,
                 "notes": [],
@@ -4836,6 +5217,8 @@ class OfficeAgent:
             "bullets": [],
             "worker_hint": "",
             "queries": [],
+            "scope": str(contract.get("scope") or ""),
+            "stop_rules": self._normalize_string_list(contract.get("stop_rules") or [], limit=3, item_limit=120),
             "usage": self._empty_usage(),
             "effective_model": requested_model,
             "notes": [],
@@ -4868,10 +5251,11 @@ class OfficeAgent:
     def _run_specialist_with_context(self, *, context: RoleContext) -> RoleResult:
         specialist = context.role
         initial_triage_request = self._looks_like_initial_content_triage_request(context.user_message)
+        contract = self._specialist_contract(specialist, initial_triage_request=initial_triage_request)
         spec = self._make_role_spec(
             specialist,
             description=f"{_SPECIALIST_LABELS.get(specialist, specialist)} 专门简报生成。",
-            output_keys=["summary", "bullets", "worker_hint", "queries"],
+            output_keys=["summary", "bullets", "worker_hint", "queries", "scope", "stop_rules"],
         )
         fallback = self._specialist_fallback(
             specialist=specialist,
@@ -4894,16 +5278,14 @@ class OfficeAgent:
             },
             ensure_ascii=False,
         )
-        specialist_input = "\n".join(
-            [
-                f"effective_user_request:\n{context.primary_user_request or '(empty)'}",
-                f"user_message:\n{context.user_message.strip() or '(empty)'}",
-                f"history_summary:\n{context.history_summary.strip() or '(none)'}",
-                f"route:\n{route_summary}",
-                f"attachments:\n{self._summarize_attachment_metas_for_agents(context.attachment_metas)}",
-                f"context_preview:\n{payload_preview or '(empty)'}",
-            ]
+        specialist_input_payload = self._build_specialist_input_payload(
+            specialist=specialist,
+            context=context,
+            route_summary=route_summary,
+            payload_preview=payload_preview,
+            contract=contract,
         )
+        specialist_input = json.dumps(specialist_input_payload, ensure_ascii=False, indent=2)
 
         if specialist == "researcher":
             system_prompt = (
@@ -4912,8 +5294,9 @@ class OfficeAgent:
                 "如果 raw user_message 只是短跟进或纠偏，而 effective_user_request 延续了完整目标，"
                 "必须以 effective_user_request 作为主要分析目标。"
                 "聚焦：搜索角度、来源优先级、需要核对的时间/地点/人物关系。"
-                '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries。'
-                "bullets 最多 4 条，queries 最多 3 条。"
+                f"scope 固定围绕：{str(contract.get('scope') or '').strip()} "
+                '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries, scope, stop_rules。'
+                "bullets 最多 4 条，queries 最多 4 条，stop_rules 最多 3 条。"
             )
         elif specialist == "file_reader":
             system_prompt = (
@@ -4922,19 +5305,21 @@ class OfficeAgent:
                 "如果 raw user_message 只是短跟进或纠偏，而 effective_user_request 延续了完整目标，"
                 "必须以 effective_user_request 作为主要阅读目标。"
                 "聚焦：应优先看的文件、章节、关键词、命中策略。"
-                '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries。'
-                "bullets 最多 4 条，queries 最多 4 条。"
+                f"scope 固定围绕：{str(contract.get('scope') or '').strip()} "
+                '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries, scope, stop_rules。'
+                "bullets 最多 4 条，queries 最多 4 条，stop_rules 最多 3 条。"
             )
         elif specialist == "summarizer":
-            bullet_limit = 5 if initial_triage_request else 4
+            bullet_limit = max(1, int(contract.get("bullet_limit") or 4))
             system_prompt = (
                 "你是 Summarizer 专门角色。"
                 "你的职责是为简单理解任务生成内容提炼简报，而不是输出最终答复。"
                 "如果 raw user_message 只是短跟进或纠偏，而 effective_user_request 延续了完整目标，"
                 "必须以 effective_user_request 作为主要整理目标。"
                 "聚焦：用户真正要的结论、重点信息、回答组织方式。"
-                '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries。'
-                f"bullets 最多 {bullet_limit} 条；如果不需要 queries，就返回空数组。"
+                f"scope 固定围绕：{str(contract.get('scope') or '').strip()} "
+                '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries, scope, stop_rules。'
+                f"bullets 最多 {bullet_limit} 条；queries 必须返回空数组；stop_rules 最多 3 条。"
             )
             if initial_triage_request:
                 system_prompt += (
@@ -4948,7 +5333,8 @@ class OfficeAgent:
         else:
             system_prompt = (
                 "你是专门角色。"
-                '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries。'
+                f"scope 固定围绕：{str(contract.get('scope') or '').strip()} "
+                '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries, scope, stop_rules。'
             )
 
         messages = [
@@ -4970,36 +5356,16 @@ class OfficeAgent:
                 fallback["usage"] = usage
                 fallback["effective_model"] = effective_model
                 return self._make_role_result(spec, context, fallback, raw_text)
-            brief = {
-                "role": specialist,
-                "summary": str(parsed.get("summary") or fallback["summary"]).strip() or fallback["summary"],
-                "bullets": self._normalize_string_list(
-                    parsed.get("bullets") or fallback["bullets"],
-                    limit=5 if specialist == "summarizer" and initial_triage_request else 4,
-                    item_limit=180,
-                ),
-                "worker_hint": str(parsed.get("worker_hint") or fallback["worker_hint"]).strip() or fallback["worker_hint"],
-                "queries": self._normalize_string_list(parsed.get("queries") or [], limit=4, item_limit=80),
-                "usage": usage,
-                "effective_model": effective_model,
-                "notes": notes,
-            }
-            if specialist == "summarizer" and initial_triage_request:
-                brief["bullets"] = self._normalize_string_list(
-                    [
-                        "不要只回答“能理解/可以看懂”。",
-                        "首次回复先给一句结论，再给 3 到 5 条具体发现。",
-                        "优先提取主题、entry 含义、主要问题、时间线或状态变化。",
-                        *self._normalize_string_list(brief.get("bullets") or [], limit=4, item_limit=180),
-                    ],
-                    limit=5,
-                    item_limit=180,
-                )
-                worker_hint = str(brief.get("worker_hint") or "").strip()
-                brief["worker_hint"] = (
-                    "如果用户只是先确认你能不能理解内容，也要直接给高信息量摘要，不要停留在能力确认。"
-                    + (f" {worker_hint}" if worker_hint else "")
-                ).strip()
+            brief = self._normalize_specialist_brief_payload(
+                specialist=specialist,
+                parsed=parsed,
+                fallback=fallback,
+                usage=usage,
+                effective_model=effective_model,
+                notes=notes,
+                contract=contract,
+                initial_triage_request=initial_triage_request,
+            )
             return self._make_role_result(spec, context, brief, raw_text)
         except Exception as exc:
             fallback["notes"] = [f"{_SPECIALIST_LABELS[specialist]} 调用失败，已回退默认简报: {self._shorten(exc, 180)}"]
@@ -5014,14 +5380,21 @@ class OfficeAgent:
         bullets = self._normalize_string_list(brief_payload.get("bullets") or [], limit=5, item_limit=180)
         worker_hint = str(brief_payload.get("worker_hint") or "").strip()
         queries = self._normalize_string_list(brief_payload.get("queries") or [], limit=4, item_limit=80)
+        scope = str(brief_payload.get("scope") or "").strip()
+        stop_rules = self._normalize_string_list(brief_payload.get("stop_rules") or [], limit=3, item_limit=120)
         if summary:
             lines.append(f"摘要: {summary}")
+        if scope:
+            lines.append(f"范围: {scope}")
         if bullets:
             lines.append("要点:")
             lines.extend(f"- {item}" for item in bullets)
         if queries:
             lines.append("建议关键词/查询:")
             lines.extend(f"- {item}" for item in queries)
+        if stop_rules:
+            lines.append("边界:")
+            lines.extend(f"- {item}" for item in stop_rules)
         if worker_hint:
             lines.append(f"执行提示: {worker_hint}")
         return "\n".join(lines) if len(lines) > 1 else ""
