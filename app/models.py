@@ -229,6 +229,7 @@ class HealthResponse(BaseModel):
     kernel_last_upgrade_run: dict[str, object] = Field(default_factory=dict)
     kernel_last_repair_run: dict[str, object] = Field(default_factory=dict)
     kernel_last_patch_worker_run: dict[str, object] = Field(default_factory=dict)
+    kernel_last_package_run: dict[str, object] = Field(default_factory=dict)
     kernel_selected_modules: dict[str, str] = Field(default_factory=dict)
     kernel_module_health: dict[str, dict[str, object]] = Field(default_factory=dict)
     kernel_runtime_files: dict[str, str] = Field(default_factory=dict)
@@ -283,6 +284,15 @@ class KernelShadowPatchWorkerRequest(BaseModel):
     promote_if_healthy: bool | None = None
 
 
+class KernelShadowPackageRequest(BaseModel):
+    labels: list[str] = Field(default_factory=list)
+    package_note: str = ""
+    source_run_id: str | None = None
+    repair_run_id: str | None = None
+    patch_worker_run_id: str | None = None
+    runtime_profile: str = ""
+
+
 class KernelRuntimeResponse(BaseModel):
     ok: bool
     detail: str = ""
@@ -302,6 +312,7 @@ class KernelRuntimeResponse(BaseModel):
     kernel_last_upgrade_run: dict[str, object] = Field(default_factory=dict)
     kernel_last_repair_run: dict[str, object] = Field(default_factory=dict)
     kernel_last_patch_worker_run: dict[str, object] = Field(default_factory=dict)
+    kernel_last_package_run: dict[str, object] = Field(default_factory=dict)
     kernel_selected_modules: dict[str, str] = Field(default_factory=dict)
     kernel_module_health: dict[str, dict[str, object]] = Field(default_factory=dict)
     kernel_runtime_files: dict[str, str] = Field(default_factory=dict)

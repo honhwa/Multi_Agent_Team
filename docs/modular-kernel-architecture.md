@@ -121,6 +121,8 @@ flowchart TD
 - `last_repair_run`
 - `repair_runs`
 - `repair_workspaces`
+- `last_package_run`
+- `package_runs`
 
 这意味着：
 
@@ -190,6 +192,7 @@ flowchart TD
 当前实现里，自修复还会先生成模块级 patch 工作区和 `repair_task.json`。
 后续无论是人工修还是 agent 修，都应该只处理 `repair_workspaces` 里的模块副本，而不是直接改 live 模块目录。
 如果 patch worker 产出的模块副本通过了验证，shadow manifest 会临时挂到这个 `path:` 模块副本上继续验证；确认无误后再决定是否 promote。
+下一步正式上线前，应该先把这个 `path:` 模块副本打包成正式版本模块（例如 `router_rules@3.0.0`），再让 shadow manifest 切换到正式版本引用。
 
 ### 6. 版本化和可观测性
 

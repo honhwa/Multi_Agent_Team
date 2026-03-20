@@ -899,6 +899,39 @@ class OfficeAgent:
                 "patch_worker_runs": runtime.list_patch_worker_runs(limit=5),
             }
 
+    def _debug_kernel_shadow_package_path_router(self) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-package-") as tmp_dir:
+            root = Path(tmp_dir).resolve()
+            runtime_dir = root / "runtime"
+            modules_dir = root / "modules"
+            shutil.copytree(self.config.modules_dir, modules_dir)
+            cfg = replace(
+                self.config,
+                modules_dir=modules_dir,
+                runtime_dir=runtime_dir,
+                active_manifest_path=runtime_dir / "active_manifest.json",
+                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
+                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
+                module_health_path=runtime_dir / "module_health.json",
+            )
+            runtime = build_kernel_runtime(cfg)
+            source_router_dir = modules_dir / "router_rules" / "v1"
+            stage = runtime.stage_shadow_manifest(overrides={"router": f"path:{source_router_dir}"})
+            package_run = runtime.package_shadow_modules(
+                labels=["router"],
+                package_note="debug package path router",
+                source_run_id="synthetic-upgrade",
+                patch_worker_run_id="synthetic-patch",
+                runtime_profile="patch_worker",
+            )
+            return {
+                "stage": stage,
+                "package_run": package_run,
+                "last_package_run": runtime.read_last_package_run(),
+                "package_runs": runtime.list_package_runs(limit=5),
+                "shadow_manifest_after": runtime.load_shadow_manifest().to_dict(),
+            }
+
     def _module_registry(self):
         return self._kernel_runtime.registry
 

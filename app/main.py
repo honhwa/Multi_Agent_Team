@@ -33,6 +33,7 @@ from app.models import (
     KernelManifestUpdateRequest,
     KernelShadowPipelineRequest,
     KernelShadowAutoRepairRequest,
+    KernelShadowPackageRequest,
     KernelShadowPatchWorkerRequest,
     KernelShadowReplayRequest,
     KernelRuntimeResponse,
@@ -248,6 +249,7 @@ def health() -> HealthResponse:
         kernel_last_upgrade_run=dict(kernel_health.get("last_upgrade_run") or {}),
         kernel_last_repair_run=dict(kernel_health.get("last_repair_run") or {}),
         kernel_last_patch_worker_run=dict(kernel_health.get("last_patch_worker_run") or {}),
+        kernel_last_package_run=dict(kernel_health.get("last_package_run") or {}),
         kernel_selected_modules=dict(kernel_health.get("selected_modules") or {}),
         kernel_module_health=dict(kernel_health.get("module_health") or {}),
         kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
@@ -288,6 +290,7 @@ def _kernel_runtime_response(
         kernel_last_upgrade_run=dict(kernel_health.get("last_upgrade_run") or {}),
         kernel_last_repair_run=dict(kernel_health.get("last_repair_run") or {}),
         kernel_last_patch_worker_run=dict(kernel_health.get("last_patch_worker_run") or {}),
+        kernel_last_package_run=dict(kernel_health.get("last_package_run") or {}),
         kernel_selected_modules=dict(kernel_health.get("selected_modules") or {}),
         kernel_module_health=dict(kernel_health.get("module_health") or {}),
         kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
@@ -367,6 +370,27 @@ def kernel_patch_worker_history(limit: int = 10) -> KernelRuntimeResponse:
         ok=True,
         detail="最近 patch worker runs。",
         patch_worker={"patch_worker_runs": summary},
+    )
+
+
+@app.get("/api/kernel/packages", response_model=KernelRuntimeResponse)
+def kernel_package_history(limit: int = 10) -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    runs = runtime.list_package_runs(limit=limit)
+    summary = [
+        {
+            "run_id": str(item.get("run_id") or ""),
+            "ok": bool(item.get("ok")),
+            "packaged_count": len(item.get("packaged_modules") or []) if isinstance(item.get("packaged_modules"), list) else 0,
+            "packaged_labels": list(item.get("packaged_labels") or []) if isinstance(item.get("packaged_labels"), list) else [],
+            "finished_at": str(item.get("finished_at") or ""),
+        }
+        for item in runs
+    ]
+    return _kernel_runtime_response(
+        ok=True,
+        detail="最近 package runs。",
+        pipeline={"package_runs": summary},
     )
 
 
@@ -612,6 +636,26 @@ def kernel_shadow_patch_worker(req: KernelShadowPatchWorkerRequest) -> KernelRun
         replay=replay,
         pipeline=pipeline,
         patch_worker=patch_worker,
+    )
+
+
+@app.post("/api/kernel/shadow/package", response_model=KernelRuntimeResponse)
+def kernel_shadow_package(req: KernelShadowPackageRequest) -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    package_run = runtime.package_shadow_modules(
+        labels=req.labels,
+        package_note=req.package_note,
+        source_run_id=str(req.source_run_id or ""),
+        repair_run_id=str(req.repair_run_id or ""),
+        patch_worker_run_id=str(req.patch_worker_run_id or ""),
+        runtime_profile=req.runtime_profile,
+    )
+    validation = package_run.get("validation") if isinstance(package_run.get("validation"), dict) else runtime.validate_shadow_manifest()
+    return _kernel_runtime_response(
+        ok=bool(package_run.get("ok")),
+        detail="shadow modules 已打包为正式版本。" if package_run.get("ok") else "shadow modules 打包失败。",
+        validation=validation,
+        pipeline={"package_run": package_run},
     )
 
 

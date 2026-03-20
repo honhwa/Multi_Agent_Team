@@ -28,6 +28,10 @@ class ModuleManifest:
     kind: str
     entrypoint: str
     capabilities: tuple[str, ...] = ()
+    depends_on: tuple[str, ...] = ()
+    runtime_profile: str = ""
+    source_ref: str = ""
+    packaged_at: str = ""
     path: Path | None = None
 
 
@@ -118,6 +122,7 @@ def write_active_manifest(path: Path, manifest: ActiveModuleManifest) -> None:
 def read_module_manifest(path: Path) -> ModuleManifest:
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
     capabilities = tuple(str(item).strip() for item in raw.get("capabilities") or [] if str(item).strip())
+    depends_on = tuple(str(item).strip() for item in raw.get("depends_on") or [] if str(item).strip())
     return ModuleManifest(
         id=str(raw.get("id") or "").strip(),
         version=str(raw.get("version") or "").strip(),
@@ -125,5 +130,37 @@ def read_module_manifest(path: Path) -> ModuleManifest:
         kind=str(raw.get("kind") or "").strip(),
         entrypoint=str(raw.get("entrypoint") or "").strip(),
         capabilities=capabilities,
+        depends_on=depends_on,
+        runtime_profile=str(raw.get("runtime_profile") or "").strip(),
+        source_ref=str(raw.get("source_ref") or "").strip(),
+        packaged_at=str(raw.get("packaged_at") or "").strip(),
         path=path,
     )
+
+
+def render_module_manifest_toml(manifest: ModuleManifest) -> str:
+    lines = [
+        f'id = "{manifest.id}"',
+        f'version = "{manifest.version}"',
+        f'api_version = "{manifest.api_version}"',
+        f'kind = "{manifest.kind}"',
+        f'entrypoint = "{manifest.entrypoint}"',
+    ]
+    if manifest.capabilities:
+        caps = ", ".join(json.dumps(str(item), ensure_ascii=False) for item in manifest.capabilities)
+        lines.append(f"capabilities = [{caps}]")
+    if manifest.depends_on:
+        deps = ", ".join(json.dumps(str(item), ensure_ascii=False) for item in manifest.depends_on)
+        lines.append(f"depends_on = [{deps}]")
+    if manifest.runtime_profile:
+        lines.append(f'runtime_profile = "{manifest.runtime_profile}"')
+    if manifest.source_ref:
+        lines.append(f'source_ref = "{manifest.source_ref}"')
+    if manifest.packaged_at:
+        lines.append(f'packaged_at = "{manifest.packaged_at}"')
+    return "\n".join(lines) + "\n"
+
+
+def write_module_manifest(path: Path, manifest: ModuleManifest) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_module_manifest_toml(manifest), encoding="utf-8")

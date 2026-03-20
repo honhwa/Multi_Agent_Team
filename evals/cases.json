@@ -2418,6 +2418,43 @@
     }
   },
   {
+    "name": "helper_debug_kernel_shadow_package_path_router",
+    "kind": "helper",
+    "helper": "_debug_kernel_shadow_package_path_router",
+    "args": {},
+    "assert": {
+      "equals": {
+        "stage.ok": true,
+        "package_run.ok": true,
+        "package_run.validation.ok": true,
+        "package_run.promote_check.ok": true,
+        "last_package_run.ok": true
+      },
+      "contains": {
+        "package_run.packaged_modules.0.label": [
+          "router"
+        ],
+        "package_run.packaged_modules.0.packaged_ref": [
+          "router_rules@"
+        ],
+        "package_run.packaged_modules.0.runtime_profile": [
+          "patch_worker"
+        ],
+        "shadow_manifest_after.router": [
+          "router_rules@"
+        ],
+        "package_runs.0.run_id": [
+          "-"
+        ]
+      },
+      "not_contains": {
+        "shadow_manifest_after.router": [
+          "path:"
+        ]
+      }
+    }
+  },
+  {
     "name": "tool_doc_index_build_external_nvme_pdf",
     "kind": "tool",
     "tool": "doc_index_build",

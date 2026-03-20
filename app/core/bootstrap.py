@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from app.config import AppConfig
 from app.core.module_loader import ModuleLoader
+from app.core.module_packager import ModulePackager
 from app.core.module_manifest import ActiveModuleManifest, write_active_manifest
 from app.core.module_registry import KernelModuleRegistry
 from app.core.module_types import ModuleHealthSnapshot, ModuleRuntimeContext
@@ -122,6 +123,12 @@ class KernelRuntime:
     def _last_patch_worker_run_path(self) -> Path:
         return self.context.runtime_dir / "last_patch_worker_run.json"
 
+    def _package_runs_dir(self) -> Path:
+        return self.context.runtime_dir / "package_runs"
+
+    def _last_package_run_path(self) -> Path:
+        return self.context.runtime_dir / "last_package_run.json"
+
     def _write_json(self, path: Path, payload: dict[str, object]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_suffix(path.suffix + ".tmp")
@@ -209,6 +216,21 @@ class KernelRuntime:
                 break
         return out
 
+    def read_last_package_run(self) -> dict[str, object]:
+        return self._read_json_dict(self._last_package_run_path())
+
+    def list_package_runs(self, *, limit: int = 20) -> list[dict[str, object]]:
+        max_items = max(1, min(200, int(limit)))
+        files = sorted(self._package_runs_dir().glob("*.json"), key=lambda path: path.name, reverse=True)
+        out: list[dict[str, object]] = []
+        for path in files:
+            payload = self._read_json_dict(path)
+            if payload:
+                out.append(payload)
+            if len(out) >= max_items:
+                break
+        return out
+
     def _pipeline_run_id(self) -> str:
         return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid4().hex[:8]
 
@@ -265,6 +287,29 @@ class KernelRuntime:
             if ref:
                 return (raw, ref)
         return None
+
+    def _all_manifest_labels(self, manifest: ActiveModuleManifest) -> list[str]:
+        return [
+            "router",
+            "policy",
+            "attachment_context",
+            "finalizer",
+            "tool_registry",
+            *[f"provider:{mode}" for mode in sorted(manifest.providers)],
+        ]
+
+    def _set_manifest_ref_for_label(self, manifest: ActiveModuleManifest, *, label: str, ref: str) -> None:
+        raw = str(label or "").strip()
+        ref_text = str(ref or "").strip()
+        if not raw or not ref_text:
+            return
+        if raw.startswith("provider:"):
+            mode = raw.split(":", 1)[1].strip()
+            if mode:
+                manifest.providers[mode] = ref_text
+            return
+        if raw in {"router", "policy", "attachment_context", "finalizer", "tool_registry"}:
+            setattr(manifest, raw, ref_text)
 
     def _module_kind_for_label(self, label: str) -> str:
         raw = str(label or "").strip()
@@ -387,6 +432,105 @@ class KernelRuntime:
         if label in {"router", "policy", "attachment_context", "finalizer", "tool_registry"}:
             return {label: path_ref}
         return {}
+
+    def package_shadow_modules(
+        self,
+        *,
+        labels: list[str] | None = None,
+        package_note: str = "",
+        source_run_id: str = "",
+        repair_run_id: str = "",
+        patch_worker_run_id: str = "",
+        runtime_profile: str = "",
+    ) -> dict[str, object]:
+        run_id = self._pipeline_run_id()
+        started_at = datetime.now(timezone.utc).isoformat()
+        shadow_manifest = self.load_shadow_manifest()
+        requested_labels = [str(item).strip() for item in (labels or []) if str(item).strip()]
+        if not requested_labels:
+            requested_labels = self._all_manifest_labels(shadow_manifest)
+
+        path_labels: list[str] = []
+        for label in requested_labels:
+            ref = self._manifest_ref_for_label(label, shadow_manifest.to_dict())
+            if ref.startswith("path:"):
+                path_labels.append(label)
+
+        if not path_labels:
+            payload = {
+                "ok": False,
+                "run_id": run_id,
+                "started_at": started_at,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "reason": "no_path_modules_to_package",
+                "requested_labels": requested_labels,
+                "shadow_manifest": shadow_manifest.to_dict(),
+            }
+            self._write_json(self._package_runs_dir() / f"{run_id}.json", payload)
+            self._write_json(self._last_package_run_path(), payload)
+            return payload
+
+        packager = ModulePackager(self.context)
+        packaged_modules: list[dict[str, object]] = []
+        updated_manifest = ActiveModuleManifest(
+            router=shadow_manifest.router,
+            policy=shadow_manifest.policy,
+            attachment_context=shadow_manifest.attachment_context,
+            finalizer=shadow_manifest.finalizer,
+            tool_registry=shadow_manifest.tool_registry,
+            providers=dict(shadow_manifest.providers),
+        )
+        manifest_snapshot = shadow_manifest.to_dict()
+
+        for label in path_labels:
+            ref = self._manifest_ref_for_label(label, manifest_snapshot)
+            kind = self._module_kind_for_label(label)
+            if not kind:
+                continue
+            reference = self.loader.resolve_ref(ref, expected_kind=kind)
+            dependency_refs = [
+                f"{other_label}={self._manifest_ref_for_label(other_label, manifest_snapshot)}"
+                for other_label in self._all_manifest_labels(shadow_manifest)
+                if other_label != label
+            ]
+            package_meta = packager.package_reference(
+                reference=reference,
+                source_ref=ref,
+                depends_on=dependency_refs,
+                runtime_profile=runtime_profile,
+                package_note=package_note,
+                metadata={
+                    "label": label,
+                    "source_run_id": source_run_id,
+                    "repair_run_id": repair_run_id,
+                    "patch_worker_run_id": patch_worker_run_id,
+                    "shadow_manifest": manifest_snapshot,
+                },
+            )
+            packaged_ref = str(package_meta.get("packaged_ref") or "").strip()
+            self._set_manifest_ref_for_label(updated_manifest, label=label, ref=packaged_ref)
+            package_meta["label"] = label
+            packaged_modules.append(package_meta)
+
+        self.write_shadow_manifest(updated_manifest)
+        validation = self.validate_shadow_manifest()
+        promote_check = self.shadow_promote_check()
+        payload = {
+            "ok": bool(packaged_modules) and bool(validation.get("ok")),
+            "run_id": run_id,
+            "started_at": started_at,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "requested_labels": requested_labels,
+            "packaged_labels": path_labels,
+            "packaged_modules": packaged_modules,
+            "shadow_manifest_before": manifest_snapshot,
+            "shadow_manifest_after": updated_manifest.to_dict(),
+            "validation": validation,
+            "promote_check": promote_check,
+        }
+        self._write_json(self._package_runs_dir() / f"{run_id}.json", payload)
+        self._write_json(self._last_package_run_path(), payload)
+        return payload
 
     def _build_contract_check(self, *, label: str, ok: bool, kind: str, detail: str = "", **extra: object) -> dict[str, object]:
         payload: dict[str, object] = {
