@@ -596,6 +596,25 @@ class OfficeAgent:
             "runtime_files": dict(snapshot.runtime_files),
         }
 
+    def _debug_tool_registry_snapshot(self) -> dict[str, Any]:
+        registry = self._module_registry()
+        module = getattr(registry, "tool_registry", None)
+        selected_ref = str((registry.selected_refs or {}).get("tool_registry") or "")
+        if module is None or not hasattr(module, "describe_tools"):
+            return {
+                "selected_ref": selected_ref,
+                "tool_count": len(self._lc_tools),
+                "tools": [
+                    {"name": str(getattr(tool, "name", "") or ""), "description": str(getattr(tool, "description", "") or "")[:200]}
+                    for tool in self._lc_tools
+                ],
+            }
+        payload = module.describe_tools(agent=self)
+        if isinstance(payload, dict):
+            payload.setdefault("selected_ref", selected_ref)
+            return payload
+        return {"selected_ref": selected_ref, "tool_count": len(self._lc_tools)}
+
     def _debug_kernel_shadow_upgrade_flow(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
         with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-") as tmp_dir:
             runtime_dir = Path(tmp_dir).resolve()
@@ -676,6 +695,70 @@ class OfficeAgent:
             return {
                 "stage": stage,
                 "smoke": smoke,
+            }
+
+    def _debug_kernel_shadow_replay(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-replay-") as tmp_dir:
+            runtime_dir = Path(tmp_dir).resolve()
+            cfg = replace(
+                self.config,
+                runtime_dir=runtime_dir,
+                active_manifest_path=runtime_dir / "active_manifest.json",
+                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
+                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
+                module_health_path=runtime_dir / "module_health.json",
+            )
+            runtime = build_kernel_runtime(cfg)
+            runtime.stage_shadow_manifest(overrides={"router": str(target_router_ref)})
+            replay_record = {
+                "run_id": "synthetic-replay",
+                "session_id": "synthetic-session",
+                "message": "把数据整理成表格",
+                "settings": {"enable_tools": True, "response_style": "short"},
+                "summary_before": "",
+                "history_turns_before": [],
+                "attachment_metas": [],
+                "route_state_input": {},
+            }
+            replay = runtime.run_shadow_replay(replay_record=replay_record)
+            return {"replay": replay}
+
+    def _debug_kernel_shadow_pipeline(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-pipeline-") as tmp_dir:
+            runtime_dir = Path(tmp_dir).resolve()
+            cfg = replace(
+                self.config,
+                runtime_dir=runtime_dir,
+                active_manifest_path=runtime_dir / "active_manifest.json",
+                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
+                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
+                module_health_path=runtime_dir / "module_health.json",
+            )
+            runtime = build_kernel_runtime(cfg)
+            stage = runtime.stage_shadow_manifest(overrides={"router": str(target_router_ref)})
+            validation = runtime.validate_shadow_manifest()
+            smoke = runtime.run_shadow_smoke(user_message="给我今天的新闻", validate_provider=False)
+            replay = runtime.run_shadow_replay(
+                replay_record={
+                    "run_id": "synthetic-pipeline",
+                    "session_id": "synthetic-session",
+                    "message": "给我今天的新闻",
+                    "settings": {"enable_tools": True, "response_style": "short"},
+                    "summary_before": "",
+                    "history_turns_before": [],
+                    "attachment_metas": [],
+                    "route_state_input": {},
+                }
+            )
+            promotion = runtime.promote_shadow_manifest()
+            rollback = runtime.rollback_active_manifest()
+            return {
+                "stage": stage,
+                "validation": validation,
+                "smoke": smoke,
+                "replay": replay,
+                "promotion": promotion,
+                "rollback": rollback,
             }
 
     def _module_registry(self):

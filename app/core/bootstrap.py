@@ -219,6 +219,108 @@ class KernelRuntime:
         self._write_json(self._last_shadow_run_path(), payload)
         return payload
 
+    def run_shadow_replay(self, *, replay_record: dict[str, object]) -> dict[str, object]:
+        from app.agent import OfficeAgent
+        from app.models import ChatSettings
+
+        shadow_manifest = self.load_shadow_manifest()
+        validation = self.supervisor.validate_manifest(shadow_manifest)
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid4().hex[:8]
+        run_dir = self.context.runtime_dir / "shadow_runs" / f"replay-{run_id}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        payload: dict[str, object] = {
+            "ok": False,
+            "run_id": run_id,
+            "source_run_id": str(replay_record.get("run_id") or ""),
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "shadow_manifest": shadow_manifest.to_dict(),
+            "validation": validation,
+            "runtime_dir": str(run_dir),
+        }
+        if not validation.get("ok"):
+            payload["error"] = "shadow_manifest_invalid"
+            self._write_json(run_dir / "replay_result.json", payload)
+            self._write_json(self._last_shadow_run_path(), payload)
+            return payload
+
+        smoke_config = replace(
+            self.supervisor._config,
+            runtime_dir=run_dir,
+            active_manifest_path=run_dir / "active_manifest.json",
+            shadow_manifest_path=run_dir / "shadow_manifest.json",
+            rollback_pointer_path=run_dir / "rollback_pointer.json",
+            module_health_path=run_dir / "module_health.json",
+        )
+        write_active_manifest(smoke_config.active_manifest_path, shadow_manifest)
+        write_active_manifest(smoke_config.shadow_manifest_path, shadow_manifest)
+
+        try:
+            shadow_runtime = build_kernel_runtime(smoke_config)
+            shadow_agent = OfficeAgent(smoke_config, kernel_runtime=shadow_runtime)
+            settings_payload = replay_record.get("settings")
+            settings = ChatSettings(**settings_payload) if isinstance(settings_payload, dict) else ChatSettings()
+            attachment_metas = replay_record.get("attachment_metas")
+            history_turns_before = replay_record.get("history_turns_before")
+            route_state_input = replay_record.get("route_state_input")
+            result = shadow_agent.run_chat(
+                history_turns=list(history_turns_before) if isinstance(history_turns_before, list) else [],
+                summary=str(replay_record.get("summary_before") or ""),
+                user_message=str(replay_record.get("message") or replay_record.get("message_preview") or ""),
+                attachment_metas=list(attachment_metas) if isinstance(attachment_metas, list) else [],
+                settings=settings,
+                session_id=str(replay_record.get("session_id") or ""),
+                route_state=dict(route_state_input) if isinstance(route_state_input, dict) else {},
+                progress_cb=None,
+            )
+            (
+                text,
+                tool_events,
+                _attachment_note,
+                execution_plan,
+                execution_trace,
+                pipeline_hooks,
+                _debug_flow,
+                _agent_panels,
+                active_roles,
+                current_role,
+                _role_states,
+                answer_bundle,
+                token_usage,
+                effective_model,
+                route_state,
+            ) = result
+            payload.update(
+                {
+                    "ok": True,
+                    "effective_model": effective_model,
+                    "text_preview": str(text or "")[:600],
+                    "tool_event_count": len(tool_events),
+                    "execution_plan": execution_plan,
+                    "execution_trace": execution_trace[-10:],
+                    "pipeline_hook_count": len(pipeline_hooks),
+                    "active_roles": active_roles,
+                    "current_role": current_role,
+                    "answer_bundle": answer_bundle,
+                    "token_usage": token_usage,
+                    "route_state": route_state,
+                    "selected_modules": dict(shadow_runtime.registry.selected_refs),
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+        except Exception as exc:
+            payload.update(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+
+        self._write_json(run_dir / "replay_result.json", payload)
+        self._write_json(self._last_shadow_run_path(), payload)
+        return payload
+
 
 def build_kernel_runtime(config: AppConfig) -> KernelRuntime:
     context = ModuleRuntimeContext(

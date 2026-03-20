@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import queue
@@ -30,6 +31,8 @@ from app.models import (
     EvalRunResponse,
     HealthResponse,
     KernelManifestUpdateRequest,
+    KernelShadowPipelineRequest,
+    KernelShadowReplayRequest,
     KernelRuntimeResponse,
     KernelShadowSmokeRequest,
     NewSessionResponse,
@@ -216,6 +219,7 @@ def health() -> HealthResponse:
     docker_ok, docker_msg = agent.tools.docker_status()
     auth_summary = OpenAIAuthManager(config).auth_summary()
     kernel_health = build_kernel_health_payload(get_kernel_runtime())
+    tool_registry = agent._debug_tool_registry_snapshot()
     return HealthResponse(
         ok=True,
         app_version=APP_VERSION,
@@ -241,6 +245,7 @@ def health() -> HealthResponse:
         kernel_selected_modules=dict(kernel_health.get("selected_modules") or {}),
         kernel_module_health=dict(kernel_health.get("module_health") or {}),
         kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
+        kernel_tool_registry=dict(tool_registry or {}),
     )
 
 
@@ -250,13 +255,18 @@ def _kernel_runtime_response(
     detail: str = "",
     validation: dict[str, object] | None = None,
     smoke: dict[str, object] | None = None,
+    replay: dict[str, object] | None = None,
+    pipeline: dict[str, object] | None = None,
 ) -> KernelRuntimeResponse:
     kernel_health = build_kernel_health_payload(get_kernel_runtime())
+    tool_registry = get_agent()._debug_tool_registry_snapshot()
     return KernelRuntimeResponse(
         ok=ok,
         detail=detail,
         validation=dict(validation or {}),
         smoke=dict(smoke or {}),
+        replay=dict(replay or {}),
+        pipeline=dict(pipeline or {}),
         kernel_active_manifest=dict(kernel_health.get("active_manifest") or {}),
         kernel_shadow_manifest=dict(kernel_health.get("shadow_manifest") or {}),
         kernel_shadow_validation=dict(kernel_health.get("shadow_validation") or {}),
@@ -265,7 +275,16 @@ def _kernel_runtime_response(
         kernel_selected_modules=dict(kernel_health.get("selected_modules") or {}),
         kernel_module_health=dict(kernel_health.get("module_health") or {}),
         kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
+        kernel_tool_registry=dict(tool_registry or {}),
     )
+
+
+def _find_shadow_replay_record(run_id: str | None = None) -> dict[str, Any] | None:
+    run_id_text = str(run_id or "").strip()
+    if run_id_text:
+        return shadow_log_store.find_run(run_id_text)
+    recent = shadow_log_store.list_recent(limit=1)
+    return recent[0] if recent else None
 
 
 @app.get("/api/kernel/runtime", response_model=KernelRuntimeResponse)
@@ -315,6 +334,44 @@ def kernel_shadow_smoke(req: KernelShadowSmokeRequest) -> KernelRuntimeResponse:
     )
 
 
+@app.get("/api/kernel/shadow/logs", response_model=KernelRuntimeResponse)
+def kernel_shadow_logs(limit: int = 10) -> KernelRuntimeResponse:
+    records = shadow_log_store.list_recent(limit=limit)
+    summary = [
+        {
+            "run_id": str(item.get("run_id") or ""),
+            "logged_at": str(item.get("logged_at") or ""),
+            "session_id": str(item.get("session_id") or ""),
+            "message_preview": str(item.get("message_preview") or ""),
+            "effective_model": str(item.get("effective_model") or ""),
+        }
+        for item in records
+    ]
+    return _kernel_runtime_response(
+        ok=True,
+        detail="最近 shadow log 列表。",
+        pipeline={"recent_runs": summary},
+    )
+
+
+@app.post("/api/kernel/shadow/replay", response_model=KernelRuntimeResponse)
+def kernel_shadow_replay(req: KernelShadowReplayRequest) -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    record = _find_shadow_replay_record(req.run_id)
+    if not isinstance(record, dict):
+        return _kernel_runtime_response(
+            ok=False,
+            detail="未找到可回放的 shadow log 记录。",
+        )
+    replay = runtime.run_shadow_replay(replay_record=record)
+    return _kernel_runtime_response(
+        ok=bool(replay.get("ok")),
+        detail="shadow replay 已执行。",
+        validation=runtime.validate_shadow_manifest(),
+        replay=replay,
+    )
+
+
 @app.post("/api/kernel/shadow/promote", response_model=KernelRuntimeResponse)
 def kernel_shadow_promote() -> KernelRuntimeResponse:
     runtime = get_kernel_runtime()
@@ -334,6 +391,56 @@ def kernel_runtime_rollback() -> KernelRuntimeResponse:
         ok=bool(result.get("ok")),
         detail="active manifest 回滚完成。" if result.get("ok") else "active manifest 回滚失败。",
         validation=result.get("validation") if isinstance(result.get("validation"), dict) else {},
+    )
+
+
+@app.post("/api/kernel/shadow/pipeline", response_model=KernelRuntimeResponse)
+def kernel_shadow_pipeline(req: KernelShadowPipelineRequest) -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    overrides = req.model_dump(
+        exclude_none=True,
+        include={"router", "policy", "attachment_context", "finalizer", "tool_registry", "providers"},
+    )
+    stage = runtime.stage_shadow_manifest(overrides=overrides)
+    validation = stage.get("validation") if isinstance(stage.get("validation"), dict) else runtime.validate_shadow_manifest()
+    smoke: dict[str, object] = {}
+    replay: dict[str, object] = {}
+    promotion: dict[str, object] = {}
+
+    if bool(validation.get("ok")):
+        smoke = runtime.run_shadow_smoke(
+            user_message=req.smoke_message,
+            validate_provider=bool(req.validate_provider),
+        )
+        if req.replay_run_id or shadow_log_store.list_recent(limit=1):
+            record = _find_shadow_replay_record(req.replay_run_id)
+            if isinstance(record, dict):
+                replay = runtime.run_shadow_replay(replay_record=record)
+        if req.promote_if_healthy and bool(smoke.get("ok")) and (not replay or bool(replay.get("ok"))):
+            promotion = runtime.promote_shadow_manifest()
+
+    pipeline = {
+        "stage": stage,
+        "validation": validation,
+        "smoke": smoke,
+        "replay": replay,
+        "promotion": promotion,
+    }
+    overall_ok = bool(stage.get("ok")) and bool(validation.get("ok"))
+    if smoke:
+        overall_ok = overall_ok and bool(smoke.get("ok"))
+    if replay:
+        overall_ok = overall_ok and bool(replay.get("ok"))
+    if promotion:
+        overall_ok = overall_ok and bool(promotion.get("ok"))
+
+    return _kernel_runtime_response(
+        ok=overall_ok,
+        detail="shadow pipeline 已执行。",
+        validation=validation,
+        smoke=smoke,
+        replay=replay,
+        pipeline=pipeline,
     )
 
 
@@ -692,6 +799,8 @@ def _process_chat_request(
             queue_wait_ms=queue_wait_ms,
         )
         agent = get_agent()
+        history_turns_before = copy.deepcopy(session.get("turns", []))
+        summary_before = str(session.get("summary", "") or "")
         summarized = agent.maybe_compact_session(session, req.settings.max_context_turns)
         if summarized:
             _emit_progress(progress_cb, "trace", message="历史上下文已自动压缩摘要。", run_id=run_id)
@@ -948,12 +1057,18 @@ def _process_chat_request(
                     "auto_linked_attachment_ids": [item for item in auto_linked_attachment_ids if item in found_attachment_ids],
                     "missing_attachment_ids": missing_attachment_ids,
                     "route_state_scope": route_state_scope,
+                    "route_state_input": route_state_input or {},
                     "route_state": route_state or {},
                     "pipeline_hooks": pipeline_hooks,
                     "tool_events_count": len(tool_events),
                     "active_roles": active_roles,
                     "current_role": current_role,
                     "token_usage": token_usage,
+                    "message": req.message,
+                    "settings": req.settings.model_dump(),
+                    "summary_before": summary_before,
+                    "history_turns_before": history_turns_before,
+                    "attachment_metas": attachments,
                     "kernel_selected_modules": kernel_health.get("selected_modules") or {},
                     "kernel_module_health": kernel_health.get("module_health") or {},
                     "message_preview": req.message[:500],

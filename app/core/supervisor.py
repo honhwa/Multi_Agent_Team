@@ -87,7 +87,7 @@ class KernelSupervisor:
                 "store_scoped_route_state",
             ),
             "finalizer": ("sanitize",),
-            "tool_registry": ("build_langchain_tools",),
+            "tool_registry": ("build_langchain_tools", "describe_tools"),
             "provider": ("build_runner",),
         }
         missing = [name for name in required_methods.get(kind, ()) if not callable(getattr(module, name, None))]

@@ -228,6 +228,7 @@ class HealthResponse(BaseModel):
     kernel_selected_modules: dict[str, str] = Field(default_factory=dict)
     kernel_module_health: dict[str, dict[str, object]] = Field(default_factory=dict)
     kernel_runtime_files: dict[str, str] = Field(default_factory=dict)
+    kernel_tool_registry: dict[str, object] = Field(default_factory=dict)
 
 
 class KernelManifestUpdateRequest(BaseModel):
@@ -244,11 +245,30 @@ class KernelShadowSmokeRequest(BaseModel):
     validate_provider: bool = True
 
 
+class KernelShadowReplayRequest(BaseModel):
+    run_id: str | None = None
+
+
+class KernelShadowPipelineRequest(BaseModel):
+    router: str | None = None
+    policy: str | None = None
+    attachment_context: str | None = None
+    finalizer: str | None = None
+    tool_registry: str | None = None
+    providers: dict[str, str] = Field(default_factory=dict)
+    smoke_message: str = "给我今天的新闻"
+    validate_provider: bool = True
+    replay_run_id: str | None = None
+    promote_if_healthy: bool = False
+
+
 class KernelRuntimeResponse(BaseModel):
     ok: bool
     detail: str = ""
     validation: dict[str, object] = Field(default_factory=dict)
     smoke: dict[str, object] = Field(default_factory=dict)
+    replay: dict[str, object] = Field(default_factory=dict)
+    pipeline: dict[str, object] = Field(default_factory=dict)
     kernel_active_manifest: dict[str, object] = Field(default_factory=dict)
     kernel_shadow_manifest: dict[str, object] = Field(default_factory=dict)
     kernel_shadow_validation: dict[str, object] = Field(default_factory=dict)
@@ -257,6 +277,7 @@ class KernelRuntimeResponse(BaseModel):
     kernel_selected_modules: dict[str, str] = Field(default_factory=dict)
     kernel_module_health: dict[str, dict[str, object]] = Field(default_factory=dict)
     kernel_runtime_files: dict[str, str] = Field(default_factory=dict)
+    kernel_tool_registry: dict[str, object] = Field(default_factory=dict)
 
 
 class TokenStatsResponse(BaseModel):

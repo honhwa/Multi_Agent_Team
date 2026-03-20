@@ -276,6 +276,39 @@ class ShadowLogStore:
                 fh.write("\n")
         return target
 
+    def list_recent(self, limit: int = 20) -> list[dict[str, Any]]:
+        max_items = max(1, min(200, int(limit)))
+        files = sorted(self.logs_dir.glob("*.jsonl"), key=lambda path: path.name, reverse=True)
+        out: list[dict[str, Any]] = []
+        for path in files:
+            try:
+                with self._lock:
+                    lines = path.read_text(encoding="utf-8").splitlines()
+            except Exception:
+                continue
+            for raw in reversed(lines):
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    payload = json.loads(raw)
+                except Exception:
+                    continue
+                if isinstance(payload, dict):
+                    out.append(payload)
+                if len(out) >= max_items:
+                    return out
+        return out
+
+    def find_run(self, run_id: str) -> dict[str, Any] | None:
+        wanted = str(run_id or "").strip()
+        if not wanted:
+            return None
+        for record in self.list_recent(limit=500):
+            if str(record.get("run_id") or "").strip() == wanted:
+                return record
+        return None
+
 
 def _empty_totals() -> dict[str, int | float]:
     return {

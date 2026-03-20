@@ -2210,6 +2210,65 @@
     }
   },
   {
+    "name": "helper_debug_tool_registry_snapshot_exposes_tools",
+    "kind": "helper",
+    "helper": "_debug_tool_registry_snapshot",
+    "args": {},
+    "assert": {
+      "min_value": {
+        "tool_count": 1
+      },
+      "contains": {
+        "selected_ref": [
+          "tool_registry@1.0.0"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_debug_kernel_shadow_replay",
+    "kind": "helper",
+    "helper": "_debug_kernel_shadow_replay",
+    "args": {},
+    "assert": {
+      "equals": {
+        "replay.ok": true,
+        "replay.selected_modules.router": "router_rules@2.0.0"
+      },
+      "contains_any": {
+        "replay.text_preview": [
+          "|",
+          "表格",
+          "张三"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_debug_kernel_shadow_pipeline",
+    "kind": "helper",
+    "helper": "_debug_kernel_shadow_pipeline",
+    "args": {},
+    "assert": {
+      "equals": {
+        "stage.ok": true,
+        "validation.ok": true,
+        "smoke.ok": true,
+        "replay.ok": true,
+        "promotion.ok": true,
+        "rollback.ok": true
+      },
+      "contains": {
+        "promotion.active_manifest.router": [
+          "router_rules@2.0.0"
+        ],
+        "rollback.active_manifest.router": [
+          "router_rules@1.0.0"
+        ]
+      }
+    }
+  },
+  {
     "name": "tool_doc_index_build_external_nvme_pdf",
     "kind": "tool",
     "tool": "doc_index_build",
