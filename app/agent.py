@@ -39,6 +39,7 @@ from app.agents.planning_support import (
     summarize_attachment_metas_for_agents as summarize_attachment_metas_for_agents_helper,
 )
 from app.agents.planner_role import run_planner_role as run_planner_role_helper
+from app.agents.conflict_detector_role import run_conflict_detector_role as run_conflict_detector_role_helper
 from app.agents.review_support import (
     format_tool_event_for_review as format_tool_event_for_review_helper,
     has_successful_local_file_access as has_successful_local_file_access_helper,
@@ -63,6 +64,8 @@ from app.agents.role_debug_support import (
     debug_role_contract_matrix as debug_role_contract_matrix_helper,
     debug_role_execution_smoke_matrix as debug_role_execution_smoke_matrix_helper,
 )
+from app.agents.role_registry import build_default_role_registry
+from app.agents.runtime_controller import RoleExecution, RoleRuntimeController
 from app.agents.runtime_profiles import (
     build_runtime_profile_hint,
     default_runtime_profile_for_route,
@@ -637,6 +640,8 @@ class OfficeAgent:
         else:
             self._lc_tools = self._build_langchain_tools()
         self._lc_tool_map = {getattr(tool, "name", ""): tool for tool in self._lc_tools}
+        self._role_registry = build_default_role_registry()
+        self._role_runtime_controller = RoleRuntimeController(self._role_registry)
         self._model_failover_lock = threading.Lock()
         self._model_failover_state: dict[str, dict[str, int | float]] = {}
 
@@ -739,6 +744,81 @@ class OfficeAgent:
                 "router_top_signal": str(((module_affinity.get("router") or [{}])[0] or {}).get("name") or ""),
                 "finalizer_top_signal": str(((module_affinity.get("finalizer") or [{}])[0] or {}).get("name") or ""),
             }
+
+    def _debug_role_lab_runtime_snapshot(self) -> dict[str, Any]:
+        return self._role_runtime_controller.runtime_snapshot()
+
+    def _debug_role_lab_multi_instance_batch(self) -> dict[str, Any]:
+        registry_role = self._role_registry.require("researcher")
+        original_handler = registry_role.handler
+
+        def _fake_researcher(agent: Any, *, context: RoleContext) -> RoleResult:
+            spec = agent._make_role_spec(
+                "researcher",
+                description="多实例联网取证试运行。",
+                output_keys=["summary", "bullets", "worker_hint", "queries", "scope", "stop_rules"],
+            )
+            suffix = str(context.extra.get("slot") or "").strip() or "slot"
+            payload = {
+                "summary": f"research batch {suffix}",
+                "bullets": [f"处理 {suffix}", "已形成独立子任务结果。"],
+                "worker_hint": f"整合 {suffix} 的结果。",
+                "queries": [f"query-{suffix}"],
+                "scope": "多实例试运行",
+                "stop_rules": ["不要直接输出最终答案。"],
+                "usage": self._empty_usage(),
+                "effective_model": self.config.default_model,
+                "notes": [],
+            }
+            return self._make_role_result(spec, context, payload, json.dumps(payload, ensure_ascii=False))
+
+        registry_role.handler = _fake_researcher
+        try:
+            run_state = RunState.create(
+                run_id=f"role_lab_demo_{int(time.time() * 1000)}",
+                session_id="session-role-lab-demo",
+                task_type="role_lab_demo",
+                root_role="coordinator",
+                root_role_kind="processor",
+                meta={"profile": "role_agent_lab"},
+            )
+            parent_node = run_state.root_node_id
+            for slot in ("A", "B"):
+                context = self._make_role_context(
+                    "researcher",
+                    requested_model=self.config.default_model,
+                    user_message=f"请并行搜索来源 {slot}",
+                    effective_user_message=f"请并行搜索来源 {slot}",
+                    history_summary="role-agent lab multi-instance demo",
+                    route={
+                        "task_type": "web_research",
+                        "primary_intent": "web",
+                        "execution_policy": "web_research_full_pipeline",
+                        "runtime_profile": "evidence",
+                    },
+                    extra={"slot": slot},
+                )
+                self._role_runtime_controller.execute(
+                    agent=self,
+                    role="researcher",
+                    context=context,
+                    run_state=run_state,
+                    parent_node_id=parent_node,
+                    phase="multi_instance_demo",
+                    meta={"slot": slot},
+                )
+            run_state.finish(status="completed")
+            snapshot = self._role_runtime_controller.capture_run_state(run_state)
+            return {
+                "ok": True,
+                "stage4_readiness": self._role_runtime_controller.stage4_readiness(),
+                "runtime": snapshot,
+                "instance_ids": [item.get("instance_id") for item in snapshot.get("instances") or []],
+                "node_roles": [item.get("role") for item in snapshot.get("nodes") or []],
+                "instance_count": int((snapshot.get("run") or {}).get("instance_count") or 0),
+            }
+        finally:
+            registry_role.handler = original_handler
 
     def _debug_kernel_shadow_upgrade_flow(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
         return debug_kernel_shadow_upgrade_flow_helper(self, target_router_ref)
@@ -1134,6 +1214,11 @@ class OfficeAgent:
                     summary_text=summary_text or f"final_status={normalized}",
                 )
                 run_state.finish(status=normalized)  # type: ignore[arg-type]
+                self._role_runtime_controller.capture_run_state(
+                    run_state,
+                    active_roles=sorted(active_roles),
+                    current_role=current_role,
+                )
                 add_trace(
                     "Runtime: "
                     + self._shorten(
@@ -1630,11 +1715,6 @@ class OfficeAgent:
         )
         planner_raw = planner_result.raw_text
         if route.get("use_planner"):
-            planner_node_id, planner_instance_id = begin_role_instance(
-                "planner",
-                parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
-                phase="plan",
-            )
             set_role_activity("coordinator", "planner", current="planner", phase="规划", detail="整理目标与执行计划")
             planner_request_detail = "\n".join(
                 [
@@ -1650,7 +1730,15 @@ class OfficeAgent:
                 title="Coordinator -> Planner",
                 detail=planner_request_detail,
             )
-            planner_result = self._run_planner_role(context=planner_result.context, settings=settings)
+            planner_execution = self._execute_registered_role(
+                role="planner",
+                context=planner_result.context,
+                run_state=run_state,
+                parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
+                phase="plan",
+                handler_kwargs={"settings": settings},
+            )
+            planner_result = planner_execution.result or planner_result
             planner_raw = planner_result.raw_text
             planner_effective_model = str(planner_result.effective_model or "").strip()
             if planner_effective_model:
@@ -1659,13 +1747,9 @@ class OfficeAgent:
             for note in planner_result.notes:
                 add_trace(note)
             add_trace("多 Role: Planner 已生成目标摘要与执行计划。")
-            complete_role_instance(
-                planner_instance_id,
-                summary_text=str(planner_result.summary or "planner_ready"),
-            )
             add_run_event(
                 "planner_completed",
-                node_id=planner_node_id,
+                node_id=planner_execution.node_id,
                 verdict="ok",
                 model=planner_effective_model or requested_model,
             )
@@ -1713,11 +1797,6 @@ class OfficeAgent:
         specialist_system_hints: list[str] = []
         for specialist in self._normalize_specialists(route.get("specialists") or []):
             specialist_label = _SPECIALIST_LABELS.get(specialist, specialist)
-            specialist_node_id, specialist_instance_id = begin_role_instance(
-                specialist,
-                parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
-                phase="specialist_brief",
-            )
             set_role_activity(
                 "coordinator",
                 specialist,
@@ -1745,7 +1824,15 @@ class OfficeAgent:
                 route=route,
                 user_content=user_content,
             )
-            specialist_result = self._run_specialist_with_context(context=specialist_context)
+            specialist_execution = self._execute_registered_role(
+                role=specialist,
+                context=specialist_context,
+                run_state=run_state,
+                parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
+                phase="specialist_brief",
+                meta={"specialist": specialist},
+            )
+            specialist_result = specialist_execution.result or self._run_specialist_with_context(context=specialist_context)
             specialist_brief = specialist_result.payload
             specialist_raw = specialist_result.raw_text
             specialist_model = str(specialist_result.effective_model or "").strip()
@@ -1753,14 +1840,10 @@ class OfficeAgent:
             for note in specialist_result.notes:
                 add_trace(note)
                 add_trace(f"多 Role: {specialist_label} 已生成专门简报。")
-            complete_role_instance(
-                specialist_instance_id,
-                summary_text=str(specialist_result.summary or f"{specialist_label} ready"),
-            )
             add_run_event(
                 "specialist_completed",
                 role=specialist,
-                node_id=specialist_node_id,
+                node_id=specialist_execution.node_id,
                 model=specialist_model or self.config.summary_model or requested_model,
                 bullet_count=len(specialist_result.payload.get("bullets") or []),
             )
@@ -2743,11 +2826,6 @@ class OfficeAgent:
             reviewer_rerun_budget = max_reviewer_reruns if self._coordinator_tools_enabled(execution_state) else 0
             while True:
                 if review_hook["use_conflict_detector"]:
-                    conflict_node_id, conflict_instance_id = begin_role_instance(
-                        "conflict_detector",
-                        parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
-                        phase="review_conflict_check",
-                    )
                     set_role_activity(
                         "coordinator",
                         "conflict_detector",
@@ -2785,19 +2863,22 @@ class OfficeAgent:
                             "evidence_required_mode": evidence_required_mode,
                         },
                     )
-                    conflict_result = self._run_answer_conflict_detector_role(context=conflict_context)
+                    conflict_execution = self._execute_registered_role(
+                        role="conflict_detector",
+                        context=conflict_context,
+                        run_state=run_state,
+                        parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
+                        phase="conflict_review",
+                    )
+                    conflict_result = conflict_execution.result or self._run_answer_conflict_detector_role(context=conflict_context)
                     conflict_raw = conflict_result.raw_text
                     conflict_effective_model = str(conflict_result.effective_model or "").strip()
                     if conflict_effective_model:
                         effective_model = conflict_effective_model
                     usage_total = self._merge_usage(usage_total, conflict_result.usage or self._empty_usage())
-                    complete_role_instance(
-                        conflict_instance_id,
-                        summary_text=str(conflict_result.summary or "conflict_checked"),
-                    )
                     add_run_event(
                         "conflict_detector_completed",
-                        node_id=conflict_node_id,
+                        node_id=conflict_execution.node_id,
                         has_conflict=bool(conflict_result.payload.get("has_conflict")),
                         confidence=str(conflict_result.payload.get("confidence") or "medium"),
                     )
@@ -2823,11 +2904,6 @@ class OfficeAgent:
                     current="reviewer",
                     phase="最终审阅",
                     detail="检查覆盖度、证据链与交付风险",
-                )
-                reviewer_node_id, reviewer_instance_id = begin_role_instance(
-                    "reviewer",
-                    parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
-                    phase="final_review",
                 )
                 reviewer_request_detail = "\n".join(
                     [
@@ -2863,23 +2939,26 @@ class OfficeAgent:
                         "evidence_required_mode": evidence_required_mode,
                     },
                 )
-                reviewer_result = self._run_reviewer_role(
+                reviewer_execution = self._execute_registered_role(
+                    role="reviewer",
                     context=reviewer_context,
-                    debug_cb=add_debug,
-                    trace_cb=add_trace,
+                    run_state=run_state,
+                    parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
+                    phase="final_review",
+                    handler_kwargs={
+                        "debug_cb": add_debug,
+                        "trace_cb": add_trace,
+                    },
                 )
+                reviewer_result = reviewer_execution.result or self._run_reviewer_role(context=reviewer_context, debug_cb=add_debug, trace_cb=add_trace)
                 reviewer_raw = reviewer_result.raw_text
                 reviewer_effective_model = str(reviewer_result.effective_model or "").strip()
                 if reviewer_effective_model:
                     effective_model = reviewer_effective_model
                 usage_total = self._merge_usage(usage_total, reviewer_result.usage or self._empty_usage())
-                complete_role_instance(
-                    reviewer_instance_id,
-                    summary_text=str(reviewer_result.summary or "reviewed"),
-                )
                 add_run_event(
                     "reviewer_completed",
-                    node_id=reviewer_node_id,
+                    node_id=reviewer_execution.node_id,
                     verdict=str(reviewer_result.payload.get("verdict") or "pass"),
                     confidence=str(reviewer_result.payload.get("confidence") or "medium"),
                 )
@@ -3023,11 +3102,6 @@ class OfficeAgent:
                     continue
 
                 if review_hook["use_revision"]:
-                    revision_node_id, revision_instance_id = begin_role_instance(
-                        "revision",
-                        parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
-                        phase="final_revision",
-                    )
                     set_role_activity(
                         "coordinator",
                         "revision",
@@ -3067,19 +3141,22 @@ class OfficeAgent:
                         response_text=text,
                         extra={"evidence_required_mode": evidence_required_mode},
                     )
-                    revision_result = self._run_revision_role(context=revision_context)
+                    revision_execution = self._execute_registered_role(
+                        role="revision",
+                        context=revision_context,
+                        run_state=run_state,
+                        parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
+                        phase="final_revision",
+                    )
+                    revision_result = revision_execution.result or self._run_revision_role(context=revision_context)
                     revision_raw = revision_result.raw_text
                     revision_effective_model = str(revision_result.effective_model or "").strip()
                     if revision_effective_model:
                         effective_model = revision_effective_model
                     usage_total = self._merge_usage(usage_total, revision_result.usage or self._empty_usage())
-                    complete_role_instance(
-                        revision_instance_id,
-                        summary_text=str(revision_result.summary or "revision_done"),
-                    )
                     add_run_event(
                         "revision_completed",
-                        node_id=revision_node_id,
+                        node_id=revision_execution.node_id,
                         changed=bool(revision_result.payload.get("changed")),
                     )
                     for note in revision_result.notes:
@@ -3214,11 +3291,6 @@ class OfficeAgent:
             phase="结构化整理",
             detail=f"整理 {len(finalized_citations)} 条 citations（证据来源）",
         )
-        structurer_node_id, structurer_instance_id = begin_role_instance(
-            "structurer",
-            parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
-            phase="bundle_answer",
-        )
         structurer_context = self._make_role_context(
             "structurer",
             requested_model=effective_model or requested_model,
@@ -3227,16 +3299,19 @@ class OfficeAgent:
             response_text=text,
             extra={"citations": finalized_citations},
         )
-        structurer_result = self._run_answer_structurer_role(context=structurer_context)
+        structurer_execution = self._execute_registered_role(
+            role="structurer",
+            context=structurer_context,
+            run_state=run_state,
+            parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
+            phase="bundle_answer",
+        )
+        structurer_result = structurer_execution.result or self._run_answer_structurer_role(context=structurer_context)
         answer_bundle = structurer_result.payload
         structurer_raw = structurer_result.raw_text
-        complete_role_instance(
-            structurer_instance_id,
-            summary_text=str(structurer_result.summary or "structured"),
-        )
         add_run_event(
             "structurer_completed",
-            node_id=structurer_node_id,
+            node_id=structurer_execution.node_id,
             claim_count=len(answer_bundle.get("claims") or []),
             citation_count=len(answer_bundle.get("citations") or []),
         )
@@ -3410,8 +3485,36 @@ class OfficeAgent:
         result = self._run_planner_role(context=context, settings=settings)
         return result.payload, result.raw_text
 
+    def _execute_registered_role(
+        self,
+        *,
+        role: str,
+        context: RoleContext,
+        run_state: RunState | None = None,
+        parent_node_id: str | None = None,
+        phase: str = "",
+        tool_mode: str = "",
+        meta: dict[str, Any] | None = None,
+        handler_kwargs: dict[str, Any] | None = None,
+    ) -> RoleExecution:
+        return self._role_runtime_controller.execute(
+            agent=self,
+            role=role,
+            context=context,
+            run_state=run_state,
+            parent_node_id=parent_node_id,
+            phase=phase,
+            tool_mode=tool_mode,
+            meta=meta,
+            handler_kwargs=handler_kwargs,
+        )
+
     def _run_planner_role(self, *, context: RoleContext, settings: ChatSettings) -> RoleResult:
-        return run_planner_role_helper(self, context=context, settings=settings)
+        return self._execute_registered_role(
+            role="planner",
+            context=context,
+            handler_kwargs={"settings": settings},
+        ).result or run_planner_role_helper(self, context=context, settings=settings)
 
     def _run_answer_conflict_detector(
         self,
@@ -3446,104 +3549,10 @@ class OfficeAgent:
         return result.payload, result.raw_text
 
     def _run_answer_conflict_detector_role(self, *, context: RoleContext) -> RoleResult:
-        spec = self._make_role_spec(
-            "conflict_detector",
-            description="检查答案是否与通识或成熟工程知识明显冲突。",
-            output_keys=["has_conflict", "confidence", "summary", "concerns", "suggested_checks"],
-        )
-        validation_context = self._summarize_validation_context(context.tool_events)
-        attachment_summary = self._summarize_attachment_metas_for_agents(context.attachment_metas)
-        tool_summaries = self._summarize_tool_events_for_review(context.tool_events, limit=10)
-        detector_input = "\n".join(
-            [
-                f"effective_user_request:\n{context.primary_user_request or '(empty)'}",
-                f"raw_user_message:\n{context.user_message.strip() or '(empty)'}",
-                f"history_summary:\n{context.history_summary.strip() or '(none)'}",
-                f"attachments:\n{attachment_summary}",
-                f"planner_objective:\n{str(context.planner_brief.get('objective') or '').strip() or '(none)'}",
-                f"spec_lookup_request={str(bool(context.extra.get('spec_lookup_request'))).lower()}",
-                f"evidence_required_mode={str(bool(context.extra.get('evidence_required_mode'))).lower()}",
-                f"web_tools_used={str(validation_context['web_tools_used']).lower()}",
-                f"web_tools_success={str(validation_context['web_tools_success']).lower()}",
-                "web_tool_notes:",
-                *[f"- {item}" for item in validation_context["web_tool_notes"]],
-                "web_tool_warnings:",
-                *[f"- {item}" for item in validation_context["web_tool_warnings"]],
-                "tool_events:",
-                *(tool_summaries or ["(none)"]),
-                f"answer:\n{context.response_text.strip() or '(empty)'}",
-            ]
-        )
-        fallback = {
-            "has_conflict": False,
-            "confidence": "medium",
-            "summary": "Conflict Detector 未发现明显常识冲突。",
-            "concerns": [],
-            "suggested_checks": [],
-            "usage": self._empty_usage(),
-            "effective_model": context.requested_model,
-            "notes": [],
-        }
-        messages = [
-            self._SystemMessage(
-                content=(
-                    "你是 Answer Conflict Detector。"
-                    "基于通识、成熟工程知识和任务上下文，检查当前答案是否存在明显可疑点、过度确定、或与常见知识冲突。"
-                    "不要输出思维链。"
-                    "你的知识只能用于报警和建议复核，不能替代文件证据。"
-                    "如果 attachments 或 tool_events 已显示本轮存在附件/本地文件且 Worker 已经读取过，"
-                    "不要仅因为 raw_user_message 是短跟进、或你自己没有独立文件证据，就把答案判成“没有依据”。"
-                    "只有当答案和通识或工程常识存在明确冲突时，才应标记 has_conflict=true。"
-                    "必须区分底层模型限制与工具增强后的系统能力。"
-                    "如果本轮已经成功使用 search_web、fetch_web 或 download_web_file 获得实时来源，"
-                    "不能仅因为“模型原生不支持实时信息”就判定答案冲突；"
-                    "这类情况最多只能提醒来源质量、时效性或复核范围。"
-                    '只返回 JSON 对象，字段固定为 has_conflict, confidence, summary, concerns, suggested_checks。'
-                    "has_conflict 必须是 true 或 false；confidence 只能是 high, medium, low。"
-                )
-            ),
-            self._HumanMessage(content=detector_input),
-        ]
-        try:
-            ai_msg, _, effective_model, notes = self._invoke_chat_with_runner(
-                messages=messages,
-                model=context.requested_model,
-                max_output_tokens=900,
-                enable_tools=False,
-            )
-            raw_text = self._content_to_text(getattr(ai_msg, "content", "")).strip()
-            parsed = self._parse_json_object(raw_text)
-            if not parsed:
-                fallback["notes"] = ["Conflict Detector 未返回标准 JSON，已忽略冲突检查结果。", *notes]
-                fallback["usage"] = self._extract_usage_from_message(ai_msg)
-                fallback["effective_model"] = effective_model
-                return self._make_role_result(spec, context, fallback, raw_text)
-
-            has_conflict_raw = parsed.get("has_conflict")
-            if isinstance(has_conflict_raw, bool):
-                has_conflict = has_conflict_raw
-            else:
-                has_conflict = str(has_conflict_raw or "").strip().lower() in {"1", "true", "yes", "on"}
-            confidence = str(parsed.get("confidence") or "medium").strip().lower()
-            if confidence not in {"high", "medium", "low"}:
-                confidence = "medium"
-            detector = {
-                "has_conflict": has_conflict,
-                "confidence": confidence,
-                "summary": str(parsed.get("summary") or fallback["summary"]).strip() or fallback["summary"],
-                "concerns": self._normalize_string_list(parsed.get("concerns") or [], limit=4, item_limit=180),
-                "suggested_checks": self._normalize_string_list(
-                    parsed.get("suggested_checks") or [], limit=4, item_limit=180
-                ),
-                "usage": self._extract_usage_from_message(ai_msg),
-                "effective_model": effective_model,
-                "notes": notes,
-            }
-            return self._make_role_result(spec, context, detector, raw_text)
-        except Exception as exc:
-            fallback["notes"] = [f"Conflict Detector 调用失败，已跳过: {self._shorten(exc, 180)}"]
-            raw_text = json.dumps({"error": str(exc)}, ensure_ascii=False)
-            return self._make_role_result(spec, context, fallback, raw_text)
+        return self._execute_registered_role(
+            role="conflict_detector",
+            context=context,
+        ).result or run_conflict_detector_role_helper(self, context=context)
 
     def _run_reviewer(
         self,
@@ -3590,7 +3599,11 @@ class OfficeAgent:
         debug_cb: Callable[[str, str, str], None] | None = None,
         trace_cb: Callable[[str], None] | None = None,
     ) -> RoleResult:
-        return run_reviewer_role_helper(self, context=context, debug_cb=debug_cb, trace_cb=trace_cb)
+        return self._execute_registered_role(
+            role="reviewer",
+            context=context,
+            handler_kwargs={"debug_cb": debug_cb, "trace_cb": trace_cb},
+        ).result or run_reviewer_role_helper(self, context=context, debug_cb=debug_cb, trace_cb=trace_cb)
 
     def _run_revision(
         self,
@@ -3625,7 +3638,10 @@ class OfficeAgent:
         return result.payload, result.raw_text
 
     def _run_revision_role(self, *, context: RoleContext) -> RoleResult:
-        return run_revision_role_helper(self, context=context)
+        return self._execute_registered_role(
+            role="revision",
+            context=context,
+        ).result or run_revision_role_helper(self, context=context)
 
     def _sanitize_final_answer_text(
         self,
@@ -3808,7 +3824,10 @@ class OfficeAgent:
         return result.payload, result.raw_text
 
     def _run_answer_structurer_role(self, *, context: RoleContext) -> RoleResult:
-        return run_structurer_role_helper(self, context=context)
+        return self._execute_registered_role(
+            role="structurer",
+            context=context,
+        ).result or run_structurer_role_helper(self, context=context)
 
     def _fallback_answer_bundle(
         self,
@@ -5118,7 +5137,10 @@ class OfficeAgent:
         return result.payload, result.raw_text
 
     def _run_specialist_with_context(self, *, context: RoleContext) -> RoleResult:
-        return run_specialist_with_context_helper(self, context=context)
+        return self._execute_registered_role(
+            role=str(context.role or "").strip().lower(),
+            context=context,
+        ).result or run_specialist_with_context_helper(self, context=context)
 
     def _format_specialist_system_hint(self, specialist: str, brief: RoleResult | dict[str, Any]) -> str:
         return format_specialist_system_hint_helper(self, specialist, brief)

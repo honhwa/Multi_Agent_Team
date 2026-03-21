@@ -174,6 +174,9 @@
 - `RoleSpec / RoleContext / RoleResult` 已在主流程使用
 - 新增 `RoleInstance / TaskNode / RunState` 数据模型
 - 主链路已开始记录 role 实例级运行状态与关键事件（先保持行为不变）
+- 已新增 `role_registry`，把当前可独立执行的 agent 统一注册
+- 已新增 `runtime_controller`，把串行链路中的 Planner / Specialist / Conflict Detector / Reviewer / Revision / Structurer 包进统一 runtime 执行接口
+- `Role-Agent Lab` 已能暴露 registry 快照、stage 4 readiness 和最近一轮 run state
 
 ### 目标
 
@@ -214,6 +217,7 @@
 - 保留现有 `Router / Worker / Reviewer / Revision` 行为
 - 先把它们包进统一的 runtime 接口
 - 让当前单实例串行流程先在新抽象上跑通
+- 先覆盖可独立抽离的 agent，`Worker` 保持行为不变但纳入 readiness gap 管理
 
 ### 这一阶段不做的事
 

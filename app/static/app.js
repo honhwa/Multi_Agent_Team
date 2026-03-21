@@ -63,6 +63,9 @@ const kernelConsoleSubtitle = document.getElementById("kernelConsoleSubtitle");
 const roleBoardSection = document.getElementById("roleBoardSection");
 const roleBoardTitle = document.getElementById("roleBoardTitle");
 const roleBoardLegend = document.getElementById("roleBoardLegend");
+const roleLabRuntimeMeta = document.getElementById("roleLabRuntimeMeta");
+const roleLabRuntimeMetrics = document.getElementById("roleLabRuntimeMetrics");
+const roleLabRegistry = document.getElementById("roleLabRegistry");
 const runtimeDebugSections = Array.from(document.querySelectorAll(".runtime-panel .debug-only"));
 
 const RUN_FLOW_STEPS = [
@@ -1438,6 +1441,64 @@ function renderEvolutionFeed(events = []) {
   });
 }
 
+function renderRoleLabRuntime(health = {}) {
+  if (!roleLabRuntimeMetrics || !roleLabRegistry) return;
+  const runtime = health?.role_lab_runtime || {};
+  const registry = runtime?.registry || {};
+  const readiness = runtime?.stage4_readiness || {};
+  const lastRun = runtime?.last_run || {};
+  const runMeta = lastRun?.run || {};
+  const registryRoles = Array.isArray(registry?.roles) ? registry.roles : [];
+
+  if (roleLabRuntimeMeta) {
+    roleLabRuntimeMeta.textContent = `${Number(registry?.registered_roles || 0)} registered · ${Number(readiness?.executable_role_count || 0)} controller-backed`;
+  }
+
+  renderKernelStatGrid(roleLabRuntimeMetrics, [
+    { label: "Stage 4 Trial", value: readiness?.ready_for_stage4_trial ? "READY" : "PREP", meta: String(readiness?.next_focus || "runtime abstraction") },
+    { label: "Coverage", value: `${Number(readiness?.executable_role_count || 0)}/${Number(registry?.registered_roles || 0)}`, meta: "controller-backed / registered" },
+    { label: "Multi Instance", value: String(readiness?.multi_instance_role_count || 0), meta: "roles can spawn same-type instances" },
+    { label: "Parent/Child", value: String(readiness?.parent_child_role_count || 0), meta: "roles support task parent-child graph" },
+    { label: "Last Run", value: String(runMeta?.status || "-").toUpperCase(), meta: `instances=${Number(runMeta?.instance_count || 0)} · nodes=${Number(runMeta?.node_count || 0)}` },
+    { label: "Current Role", value: String(lastRun?.current_role || "-"), meta: String((lastRun?.active_roles || []).join(", ") || "idle") },
+  ]);
+
+  roleLabRegistry.innerHTML = "";
+  if (!registryRoles.length) {
+    roleLabRegistry.textContent = "role registry 为空。";
+    return;
+  }
+  registryRoles.forEach((item) => {
+    const role = String(item?.role || "").trim();
+    const title = String(item?.title || role).trim();
+    const kind = String(item?.kind || "agent").trim();
+    const executable = Boolean(item?.executable);
+    const multiInstance = Boolean(item?.multi_instance_ready);
+    const parentChild = Boolean(item?.supports_parent_child);
+    const card = document.createElement("article");
+    card.className = `module-card ${executable ? "status-active" : "status-idle"}`;
+    card.innerHTML = `
+      <div class="module-card-head">
+        <div>
+          <div class="module-card-title">${title}</div>
+          <div class="module-card-ref">${role}</div>
+        </div>
+        <span class="module-status-badge">${executable ? "ACTIVE" : "META"}</span>
+      </div>
+      <div class="module-card-desc">${String(item?.description || "").trim() || "未填写描述。"}</div>
+      <div class="module-card-stats">
+        <span>kind=${kind}</span>
+        <span>multi=${multiInstance ? "yes" : "no"}</span>
+      </div>
+      <div class="module-card-signals">
+        <span class="signal-chip">${parentChild ? "parent-child ready" : "flat only"}</span>
+        ${(Array.isArray(item?.runtime_profiles) ? item.runtime_profiles : []).slice(0, 3).map((profile) => `<span class="signal-chip">${String(profile)}</span>`).join("")}
+      </div>
+    `;
+    roleLabRegistry.appendChild(card);
+  });
+}
+
 function renderKernelConsole(health = {}) {
   const selected = health?.kernel_selected_modules || {};
   const overlay = health?.assistant_overlay_profile || {};
@@ -1493,6 +1554,7 @@ async function refreshSystemDashboard() {
   renderAppVersion(health);
   renderBackendPolicy(health);
   renderKernelConsole(health);
+  renderRoleLabRuntime(health);
   return health;
 }
 

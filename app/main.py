@@ -42,6 +42,7 @@ from app.models import (
     KernelRuntimeResponse,
     KernelShadowSmokeRequest,
     NewSessionResponse,
+    RoleLabRuntimeResponse,
     SessionDetailResponse,
     SessionListItem,
     SessionListResponse,
@@ -232,6 +233,7 @@ def health() -> HealthResponse:
     docker_ok, docker_msg = agent.tools.docker_status()
     auth_summary = OpenAIAuthManager(config).auth_summary()
     kernel_health = build_kernel_health_payload(get_kernel_runtime())
+    role_lab_runtime = agent._debug_role_lab_runtime_snapshot()
     evolution_payload = get_evolution_store().runtime_payload(limit=10)
     tool_registry = agent._debug_tool_registry_snapshot()
     return HealthResponse(
@@ -274,9 +276,17 @@ def health() -> HealthResponse:
         kernel_module_health=dict(kernel_health.get("module_health") or {}),
         kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
         kernel_tool_registry=dict(tool_registry or {}),
+        role_lab_runtime=dict(role_lab_runtime or {}),
         assistant_overlay_profile=dict(evolution_payload.get("overlay_profile") or {}),
         assistant_evolution_recent=list(evolution_payload.get("recent_events") or []),
     )
+
+
+@app.get("/api/role-lab/runtime", response_model=RoleLabRuntimeResponse)
+def role_lab_runtime() -> RoleLabRuntimeResponse:
+    agent = get_agent()
+    snapshot = agent._debug_role_lab_runtime_snapshot()
+    return RoleLabRuntimeResponse(ok=True, detail="role-agent runtime snapshot", role_lab_runtime=dict(snapshot or {}))
 
 
 def _kernel_runtime_response(

@@ -2775,6 +2775,49 @@
     }
   },
   {
+    "name": "helper_debug_role_lab_runtime_snapshot_exposes_registry_and_stage4_state",
+    "kind": "helper",
+    "helper": "_debug_role_lab_runtime_snapshot",
+    "args": {},
+    "assert": {
+      "equals": {
+        "registry.registered_roles": 12
+      },
+      "contains_any": {
+        "stage4_readiness.next_focus": [
+          "worker runtime abstraction",
+          "pilot multi-instance batch"
+        ]
+      },
+      "min_value": {
+        "stage4_readiness.executable_role_count": 8,
+        "stage4_readiness.multi_instance_role_count": 8
+      }
+    }
+  },
+  {
+    "name": "helper_debug_role_lab_multi_instance_batch_records_two_researchers",
+    "kind": "helper",
+    "helper": "_debug_role_lab_multi_instance_batch",
+    "args": {},
+    "assert": {
+      "equals": {
+        "ok": true,
+        "instance_count": 2,
+        "runtime.run.instance_count": 2,
+        "stage4_readiness.ready_for_stage4_trial": true
+      },
+      "contains": {
+        "instance_ids.0": [
+          "researcher#"
+        ],
+        "instance_ids.1": [
+          "researcher#"
+        ]
+      }
+    }
+  },
+  {
     "name": "tool_doc_index_build_external_nvme_pdf",
     "kind": "tool",
     "tool": "doc_index_build",

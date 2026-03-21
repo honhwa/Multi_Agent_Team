@@ -243,6 +243,7 @@ class HealthResponse(BaseModel):
     kernel_module_health: dict[str, dict[str, object]] = Field(default_factory=dict)
     kernel_runtime_files: dict[str, str] = Field(default_factory=dict)
     kernel_tool_registry: dict[str, object] = Field(default_factory=dict)
+    role_lab_runtime: dict[str, object] = Field(default_factory=dict)
     assistant_overlay_profile: dict[str, object] = Field(default_factory=dict)
     assistant_evolution_recent: list[dict[str, object]] = Field(default_factory=list)
 
@@ -349,6 +350,12 @@ class EvolutionRuntimeResponse(BaseModel):
     detail: str = ""
     assistant_overlay_profile: dict[str, object] = Field(default_factory=dict)
     assistant_evolution_recent: list[dict[str, object]] = Field(default_factory=list)
+
+
+class RoleLabRuntimeResponse(BaseModel):
+    ok: bool
+    detail: str = ""
+    role_lab_runtime: dict[str, object] = Field(default_factory=dict)
 
 
 class TokenStatsResponse(BaseModel):

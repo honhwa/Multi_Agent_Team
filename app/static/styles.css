@@ -1251,6 +1251,10 @@ textarea {
   gap: 10px;
 }
 
+.module-bay.compact {
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
 .module-card,
 .evolution-event {
   display: grid;
@@ -1356,6 +1360,10 @@ textarea {
       transparent 1px,
       transparent 10px
     );
+}
+
+.role-runtime-shell {
+  margin-bottom: 14px;
 }
 
 .role-board-title {
