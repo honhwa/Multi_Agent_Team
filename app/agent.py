@@ -64,8 +64,6 @@ from app.agents.role_debug_support import (
     debug_role_contract_matrix as debug_role_contract_matrix_helper,
     debug_role_execution_smoke_matrix as debug_role_execution_smoke_matrix_helper,
 )
-from app.agents.role_registry import build_default_role_registry
-from app.agents.runtime_controller import RoleExecution, RoleRuntimeController
 from app.agents.runtime_profiles import (
     build_runtime_profile_hint,
     default_runtime_profile_for_route,
@@ -103,7 +101,6 @@ from app.core.kernel_debug_support import (
 )
 from app.execution_policy import execution_policy_spec, planner_enabled_for_policy
 from app.evolution import EvolutionStore
-from app.local_tools import LocalToolExecutor
 from app.models import AgentPanel, ChatSettings, ToolEvent
 from app.openai_auth import OpenAIAuthManager, normalize_model_for_auth_mode
 from app.pipeline_hooks import (
@@ -153,15 +150,18 @@ from app.router_intent_support import (
     request_likely_requires_tools as request_likely_requires_tools_helper,
     requires_evidence_mode as requires_evidence_mode_helper,
 )
-from app.role_runtime import (
+from packages.agent_core import (
     HookDebugEntry,
     HookPromptInjection,
     HookResult,
     RoleContext,
+    RoleExecution,
     RoleResult,
+    RoleRuntimeController,
     RoleSpec,
     RunState,
 )
+from packages.runtime_core import load_capability_bundle
 
 
 _STYLE_HINTS = {
@@ -600,7 +600,11 @@ class ReadSessionHistoryArgs(BaseModel):
 class OfficeAgent:
     def __init__(self, config: AppConfig, *, kernel_runtime: KernelRuntime | None = None) -> None:
         self.config = config
-        self.tools = LocalToolExecutor(config)
+        self._capability_bundle = load_capability_bundle("packages.office_modules", config=config)
+        tool_factory = self._capability_bundle.tool_executor_factory
+        if tool_factory is None:
+            raise RuntimeError("office capability bundle does not provide tool_executor_factory")
+        self.tools = tool_factory(config)
         self._auth_manager = OpenAIAuthManager(config)
         self._kernel_runtime = kernel_runtime or build_kernel_runtime(config)
         self._product_profile_key = str(os.environ.get("OFFICETOOL_APP_PROFILE") or "").strip().lower() or "kernel_robot"
@@ -641,13 +645,27 @@ class OfficeAgent:
         else:
             self._lc_tools = self._build_langchain_tools()
         self._lc_tool_map = {getattr(tool, "name", ""): tool for tool in self._lc_tools}
-        self._role_registry = build_default_role_registry()
+        role_registry_builder = self._capability_bundle.build_role_registry
+        if role_registry_builder is None:
+            raise RuntimeError("office capability bundle does not provide build_role_registry")
+        self._role_registry = role_registry_builder()
         self._role_runtime_controller = RoleRuntimeController(self._role_registry)
         self._model_failover_lock = threading.Lock()
         self._model_failover_state: dict[str, dict[str, int | float]] = {}
 
     def _debug_openai_auth_summary(self) -> dict[str, Any]:
         return self._auth_manager.auth_summary()
+
+    def _debug_capability_bundle_snapshot(self) -> dict[str, Any]:
+        bundle = self._capability_bundle
+        return {
+            "module_id": bundle.module_id,
+            "version": bundle.version,
+            "manifest": dict(bundle.manifest),
+            "metadata": dict(bundle.metadata),
+            "has_tool_executor_factory": bundle.tool_executor_factory is not None,
+            "has_role_registry_builder": bundle.build_role_registry is not None,
+        }
 
     def _debug_codex_input_payload(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         built_messages: list[Any] = []

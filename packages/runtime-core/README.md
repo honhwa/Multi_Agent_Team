@@ -1,11 +1,15 @@
 # runtime-core
 
-共享底层运行时。
+统一底层运行时。
 
-计划承接：
+承接内容：
 - auth / provider
 - storage / session / upload
 - module manifest / loader / supervisor
 - shadow / promote / rollback
 - attachment parsing 与 document cache
+- capability loader（能力模块加载）
 
+说明：
+- 这里不承接具体 office 角色和工具。
+- 它负责把 `agent-core` 和 `capability-modules` 粘起来。

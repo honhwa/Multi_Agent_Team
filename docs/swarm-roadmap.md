@@ -54,6 +54,8 @@
 - 阶段 4：试点进行中
 - 下一步重点：扩大多实例覆盖面，并为阶段 5/6 准备分支与聚合
 
+补充：当前仓库正在把多 role runtime 正式抽成 `agent-core`，并把 office 领域 roles / tools / prompts 收敛为 `capability modules`。这意味着后续 Stage 4/5 的并行与聚合，不再依赖单体 `app/agent.py` 的硬编码岗位定义。
+
 ## 当前架构
 
 当前架构仍然是一个由后端编排的多 Role 串行流水线：

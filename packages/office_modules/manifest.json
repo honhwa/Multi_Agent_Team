@@ -1,0 +1,26 @@
+{
+  "module_id": "office_modules",
+  "version": "0.1.0",
+  "tools": [
+    "local_tool_executor"
+  ],
+  "roles": [
+    "router",
+    "coordinator",
+    "worker",
+    "planner",
+    "researcher",
+    "file_reader",
+    "summarizer",
+    "fixer",
+    "conflict_detector",
+    "reviewer",
+    "revision",
+    "structurer"
+  ],
+  "profiles": [
+    "explainer",
+    "evidence",
+    "patch_worker"
+  ]
+}

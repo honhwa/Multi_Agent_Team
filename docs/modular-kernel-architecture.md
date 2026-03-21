@@ -13,10 +13,18 @@
 
 ## 当前结构
 
+当前系统正在收敛成统一宿主，不再把“模块”和“多 agent”看成对立关系。
+
+现在需要区分两类模块：
+
+- `kernel modules`：主核级模块，例如 router / policy / provider / tool_registry / finalizer
+- `capability modules`：能力包，例如 office 的 tools / roles / prompts / profiles / workflows
+
 当前系统已经不是单体脚本，而是一个分层运行时：
 
 - `stable kernel` 负责加载、调度、健康检查、降级和回滚
-- `modules` 负责具体能力
+- `agent-core` 负责多 agent 运行时
+- `capability modules` 负责具体能力
 - `shadow` 负责验证、冒烟、晋升和回退
 
 ```mermaid
@@ -25,19 +33,13 @@ flowchart TD
     API --> K["Stable Kernel\nbootstrap / supervisor / loader / health"]
     K --> S["Runtime State\nsession / uploads / manifests / health"]
 
-    K --> R["Router Module"]
-    K --> P["Policy Module"]
-    K --> A["Attachment Context Module"]
-    K --> V["Provider Module"]
-    K --> T["Tool Registry Module"]
-    K --> F["Finalizer Module"]
+    K --> KM["Kernel Modules\nrouter / policy / attachment / provider / tool_registry / finalizer"]
+    K --> AC["Agent Core\nmulti-agent runtime / registry / controller"]
+    K --> CM["Capability Modules\noffice tools / roles / prompts / profiles / workflows"]
 
-    R --> O["Minimal Orchestrator\napp/agent.py"]
-    P --> O
-    A --> O
-    V --> O
-    T --> O
-    F --> O
+    KM --> O["Host Orchestrator\napp/agent.py (shrinking)"]
+    AC --> O
+    CM --> O
 
     K --> SH["Shadow Runtime\nstage / validate / smoke / replay / promote / rollback"]
     SH --> HL["Module Health\nok / degraded / disabled / fallback"]
@@ -57,9 +59,9 @@ flowchart TD
 - 记录健康状态
 - 触发降级、回滚和晋升
 
-### 模块
+### Kernel Modules
 
-模块只负责单一能力域：
+主核模块只负责系统级能力域：
 
 - 路由
 - 策略
@@ -68,7 +70,19 @@ flowchart TD
 - Tool registry
 - 最终整理
 
-模块可以失败，但失败不能扩散到其他模块。
+这些模块可以失败，但失败不能扩散到其他模块。
+
+### Capability Modules
+
+能力模块承接业务域能力：
+
+- tools
+- roles
+- prompts
+- runtime profiles
+- workflows
+
+以后多 agent 不会被削弱，而是会以 capability module 的形式装载和替换。
 
 ### Shadow
 
@@ -209,21 +223,22 @@ flowchart TD
 
 ## 结构约束
 
-未来不应该再把所有逻辑堆在一个大文件里。
+未来不应该再把所有逻辑堆在一个大文件里，也不应该继续把产品壳子和底层能力混为一谈。
 
 推荐的边界是：
 
-- `app/main.py`：HTTP 入口
-- `app/core/*`：稳定内核
-- `app/modules/*`：版本化模块
-- `app/storage.py`：持久化
-- `app/agent.py`：最小 orchestrator
+- `packages/runtime_core/*`：共享底层运行时
+- `packages/agent_core/*`：多 agent 运行时内核
+- `packages/office_modules/*`：office 能力包
+- `app/core/*`：当前 kernel modules 实现
+- `app/main.py`：HTTP 入口 / product shell
+- `app/agent.py`：宿主编排器（持续瘦身）
 
 ## 结论
 
-这套系统的方向不是“把智能体做得更大”，而是“把它拆成稳定内核和可升级模块”。
+这套系统的方向不是“把智能体做得更大”，而是“把它拆成稳定内核、统一多 agent 运行时和可升级能力模块”。
 
-内核负责活着，模块负责变化。
+内核负责活着，agent-core 负责多 agent runtime，capability modules 负责变化。
 升级失败时，活着的那一部分继续服务，失败的那一部分继续在 shadow 里修。
 
 补两条关键约束：
