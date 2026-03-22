@@ -5,7 +5,7 @@ from typing import Any
 
 from packages.agent_core.role_registry import RegisteredRole, RoleRegistry
 from packages.agent_core.runtime_controller import RoleRuntimeController
-from packages.runtime_core import CapabilityBundle, load_capability_bundles
+from packages.runtime_core.capability_loader import AgentModule, CapabilityBundle, ToolModule, load_capability_bundles
 
 
 @dataclass(slots=True)
@@ -14,6 +14,10 @@ class AgentCapabilityRuntime:
     bundles: tuple[CapabilityBundle, ...]
     role_registry: RoleRegistry
     runtime_controller: RoleRuntimeController
+    agent_modules: tuple[AgentModule, ...]
+    tool_modules: tuple[ToolModule, ...]
+    primary_agent_module: AgentModule | None
+    primary_tool_module: ToolModule | None
     tools: Any
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -46,6 +50,45 @@ def _merge_role_registries(bundles: list[CapabilityBundle]) -> tuple[RoleRegistr
     return merged, role_sources
 
 
+def _collect_agent_modules(bundles: list[CapabilityBundle]) -> tuple[list[AgentModule], AgentModule | None]:
+    modules: list[AgentModule] = []
+    primary: AgentModule | None = None
+    for bundle in bundles:
+        for item in bundle.agent_modules:
+            modules.append(item)
+            if primary is None and item.default:
+                primary = item
+    if primary is None and modules:
+        primary = modules[0]
+    return modules, primary
+
+
+def _collect_tool_modules(bundles: list[CapabilityBundle]) -> tuple[list[ToolModule], ToolModule | None]:
+    modules: list[ToolModule] = []
+    primary: ToolModule | None = None
+    for index, bundle in enumerate(bundles):
+        raw_items = list(bundle.tool_modules)
+        if not raw_items and bundle.tool_executor_factory is not None:
+            raw_items = [
+                ToolModule(
+                    module_id=f"{bundle.module_id}.tools",
+                    title=f"{bundle.module_id} Tool Module",
+                    description=f"{bundle.module_id} 提供的默认工具模块。",
+                    build_executor=bundle.tool_executor_factory,
+                    default=index == 0,
+                    tool_names=tuple(bundle.metadata.get("tools") or ()),
+                    metadata={"bundle_module_id": bundle.module_id, "synthetic": True},
+                )
+            ]
+        for item in raw_items:
+            modules.append(item)
+            if primary is None and item.default:
+                primary = item
+    if primary is None and modules:
+        primary = modules[0]
+    return modules, primary
+
+
 def build_agent_capability_runtime(config: Any, module_paths: list[str] | tuple[str, ...]) -> AgentCapabilityRuntime:
     normalized_paths = tuple(str(item or "").strip() for item in module_paths if str(item or "").strip())
     if not normalized_paths:
@@ -56,16 +99,12 @@ def build_agent_capability_runtime(config: Any, module_paths: list[str] | tuple[
         raise RuntimeError("Capability loader did not load any modules")
 
     role_registry, role_sources = _merge_role_registries(bundles)
-    tool_factories = [
-        (bundle.module_id, bundle.tool_executor_factory)
-        for bundle in bundles
-        if bundle.tool_executor_factory is not None
-    ]
-    if not tool_factories:
-        raise RuntimeError("No capability module provides a tool executor")
+    agent_modules, primary_agent_module = _collect_agent_modules(bundles)
+    tool_modules, primary_tool_module = _collect_tool_modules(bundles)
+    if not tool_modules or primary_tool_module is None or primary_tool_module.build_executor is None:
+        raise RuntimeError("No capability module provides a ToolModule")
 
-    primary_tool_module, tool_factory = tool_factories[0]
-    tools = tool_factory(config)
+    tools = primary_tool_module.build_executor(config)
     runtime_controller = RoleRuntimeController(role_registry)
     metadata = {
         "module_paths": list(normalized_paths),
@@ -75,13 +114,32 @@ def build_agent_capability_runtime(config: Any, module_paths: list[str] | tuple[
                 "version": bundle.version,
                 "manifest": dict(bundle.manifest),
                 "metadata": dict(bundle.metadata),
-                "provides_tools": bundle.tool_executor_factory is not None,
+                "provides_tools": bundle.tool_executor_factory is not None or bool(bundle.tool_modules),
                 "provides_roles": bundle.build_role_registry is not None,
+                "provides_agent_modules": bool(bundle.agent_modules),
             }
             for bundle in bundles
         ],
-        "primary_tool_module": primary_tool_module,
-        "extra_tool_modules": [module_id for module_id, _ in tool_factories[1:]],
+        "agent_modules": [
+            {
+                "module_id": item.module_id,
+                "title": item.title,
+                "roles": list(item.roles),
+                "profiles": list(item.profiles),
+            }
+            for item in agent_modules
+        ],
+        "tool_modules": [
+            {
+                "module_id": item.module_id,
+                "title": item.title,
+                "tool_names": list(item.tool_names),
+            }
+            for item in tool_modules
+        ],
+        "primary_agent_module": primary_agent_module.module_id if primary_agent_module else "",
+        "primary_tool_module": primary_tool_module.module_id,
+        "extra_tool_modules": [item.module_id for item in tool_modules[1:]],
         "role_sources": role_sources,
     }
     return AgentCapabilityRuntime(
@@ -89,6 +147,10 @@ def build_agent_capability_runtime(config: Any, module_paths: list[str] | tuple[
         bundles=tuple(bundles),
         role_registry=role_registry,
         runtime_controller=runtime_controller,
+        agent_modules=tuple(agent_modules),
+        tool_modules=tuple(tool_modules),
+        primary_agent_module=primary_agent_module,
+        primary_tool_module=primary_tool_module,
         tools=tools,
         metadata=metadata,
     )

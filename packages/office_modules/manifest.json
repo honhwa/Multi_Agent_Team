@@ -4,6 +4,12 @@
   "tools": [
     "local_tool_executor"
   ],
+  "tool_modules": [
+    "office_tools"
+  ],
+  "agent_modules": [
+    "office_agent"
+  ],
   "roles": [
     "router",
     "coordinator",

@@ -15,6 +15,13 @@
 
 当前系统正在收敛成统一宿主，不再把“模块”和“多 agent”看成对立关系。
 
+当前最重要的 4 个一等公民对象是：
+
+- `KernelHost`：机械式主核入口。只负责启动、装配、调度、健康与回滚。
+- `AgentModule`：可升级的智能体能力模块。内部可以继续是多 agent pipeline。
+- `ToolModule`：可升级的工具能力模块。负责提供动作执行器。
+- `Blackboard`：一次请求的共享状态面板。主核和模块通过它交换任务状态。
+
 现在需要区分两类模块：
 
 - `kernel modules`：主核级模块，例如 router / policy / provider / tool_registry / finalizer
@@ -32,6 +39,14 @@
 - `agent-core` 负责多 agent 运行时
 - `capability modules` 负责具体能力
 - `shadow` 负责验证、冒烟、晋升和回退
+
+当前代码上的第一批对应关系已经补上：
+
+- `KernelHost`：`packages/runtime_core/kernel_host.py`
+- `Blackboard`：`packages/runtime_core/blackboard.py`
+- `AgentModule` / `ToolModule`：`packages/runtime_core/capability_loader.py`
+- 默认办公 `AgentModule`：`packages/office_modules/agent_module.py`
+- 默认办公 `ToolModule`：`packages/office_modules/tools.py`
 
 ```mermaid
 flowchart TD
@@ -95,7 +110,10 @@ flowchart TD
 - `OFFICETOOL_CAPABILITY_MODULES` 配置多个 capability module
 - loader 按顺序加载多个能力包
 - role registry 由多个能力包合并
-- tool executor 当前由第一个提供工具宿主的能力包担任，其余能力包可先提供 roles / prompts / profiles
+- `AgentModule` 当前由能力包显式导出
+- `ToolModule` 当前由能力包显式导出
+- 主核当前会选择一个主 `AgentModule` 和一个主 `ToolModule`
+- tool executor 当前由主 `ToolModule` 提供，其余能力包可先提供 roles / prompts / profiles
 
 ### Shadow
 

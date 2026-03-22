@@ -1341,20 +1341,69 @@ function renderModuleBay(health = {}) {
   if (!moduleBay) return;
   const selected = health?.kernel_selected_modules || {};
   const moduleHealth = health?.kernel_module_health || {};
+  const hostRuntime = health?.kernel_host_runtime || {};
+  const primaryAgent = hostRuntime?.primary_agent_module || {};
+  const primaryTool = hostRuntime?.primary_tool_module || {};
   const overlay = health?.assistant_overlay_profile || {};
   const moduleAffinity = overlay?.module_affinity || {};
   const entries = Object.entries(selected);
 
   moduleBay.innerHTML = "";
-  if (!entries.length) {
+  if (!entries.length && !primaryAgent?.module_id && !primaryTool?.module_id) {
     moduleBay.textContent = "模块舱为空。";
     if (moduleBayMeta) moduleBayMeta.textContent = "0 modules";
     return;
   }
 
   if (moduleBayMeta) {
-    moduleBayMeta.textContent = `${entries.length} 个模块在线`;
+    const capabilityCount = [primaryAgent?.module_id, primaryTool?.module_id].filter(Boolean).length;
+    moduleBayMeta.textContent = `${entries.length} 个 kernel 模块 · ${capabilityCount} 个 capability 模块`;
   }
+
+  const capabilityCards = [
+    {
+      title: "Agent Module",
+      ref: String(primaryAgent?.module_id || "-"),
+      desc: String(primaryAgent?.description || "当前由主核装载的默认智能体模块。"),
+      stats: [
+        `title=${String(primaryAgent?.title || "-")}`,
+        `roles=${Array.isArray(primaryAgent?.roles) ? primaryAgent.roles.length : 0}`,
+      ],
+      signals: Array.isArray(primaryAgent?.profiles) ? primaryAgent.profiles : [],
+    },
+    {
+      title: "Tool Module",
+      ref: String(primaryTool?.module_id || "-"),
+      desc: String(primaryTool?.description || "当前由主核装载的默认工具模块。"),
+      stats: [
+        `title=${String(primaryTool?.title || "-")}`,
+        `tools=${Array.isArray(primaryTool?.tool_names) ? primaryTool.tool_names.length : 0}`,
+      ],
+      signals: Array.isArray(primaryTool?.tool_names) ? primaryTool.tool_names.slice(0, 4) : [],
+    },
+  ].filter((item) => item.ref && item.ref !== "-");
+
+  capabilityCards.forEach((item) => {
+    const card = document.createElement("article");
+    card.className = "module-card status-active capability-card";
+    card.innerHTML = `
+      <div class="module-card-head">
+        <div>
+          <div class="module-card-title">${item.title}</div>
+          <div class="module-card-ref">${item.ref}</div>
+        </div>
+        <span class="module-status-badge">MODULE</span>
+      </div>
+      <div class="module-card-desc">${item.desc}</div>
+      <div class="module-card-stats">
+        ${item.stats.map((stat) => `<span>${stat}</span>`).join("")}
+      </div>
+      <div class="module-card-signals">
+        ${item.signals.map((signal) => `<span class="signal-chip">${String(signal)}</span>`).join("")}
+      </div>
+    `;
+    moduleBay.appendChild(card);
+  });
 
   entries.forEach(([key, ref]) => {
     const meta = MODULE_LABELS[key] || { title: key, desc: "未命名模块。" };
@@ -1627,6 +1676,10 @@ function renderRoleLabRuntime(health = {}) {
 
 function renderKernelConsole(health = {}) {
   const selected = health?.kernel_selected_modules || {};
+  const hostRuntime = health?.kernel_host_runtime || {};
+  const primaryAgent = hostRuntime?.primary_agent_module || {};
+  const primaryTool = hostRuntime?.primary_tool_module || {};
+  const blackboard = hostRuntime?.blackboard || {};
   const overlay = health?.assistant_overlay_profile || {};
   const recentEvents = health?.assistant_evolution_recent || [];
   const validation = health?.kernel_shadow_validation || {};
@@ -1650,6 +1703,8 @@ function renderKernelConsole(health = {}) {
   renderKernelStatGrid(kernelCoreMetrics, [
     { label: "Active Manifest", value: String(health?.build_version || "runtime"), meta: `${Object.keys(selected).length} modules live` },
     { label: "Provider", value: authMode, meta: `${Number(toolRegistry?.tool_count || 0)} tools registered` },
+    { label: "Agent Module", value: String(primaryAgent?.module_id || "-"), meta: String(primaryAgent?.title || "未装载") },
+    { label: "Tool Module", value: String(primaryTool?.module_id || "-"), meta: String(primaryTool?.title || "未装载") },
     { label: "Router Bias", value: pickTopCounterName(overlay?.module_affinity?.router || [], "none"), meta: `top intent=${pickTopCounterName(overlay?.intent_counts || [], "none")}` },
     { label: "Explainer Bias", value: pickTopCounterName(overlay?.module_affinity?.explainer || [], "none"), meta: `profile=${pickTopCounterName(overlay?.runtime_profile_counts || [], "none")}` },
   ]);
@@ -1667,7 +1722,7 @@ function renderKernelConsole(health = {}) {
     { label: "Turns Observed", value: String(turnCount), meta: `updated=${formatRelativeTime(overlay?.updated_at)}` },
     { label: "Top Terms", value: pickTopCounterName(overlay?.domain_terms || [], "none"), meta: "长期对话累积的领域词" },
     { label: "Finalizer Bias", value: pickTopCounterName(overlay?.module_affinity?.finalizer || [], "none"), meta: `style=${pickTopCounterName(overlay?.response_style_counts || [], "normal")}` },
-    { label: "Last Signal", value: String(overlay?.last_signal?.primary_intent || "-"), meta: String(overlay?.last_signal?.summary || "暂无最近信号") },
+    { label: "Blackboard", value: String(blackboard?.status || "-").toUpperCase(), meta: String(blackboard?.selected_agent_module_id || blackboard?.selected_tool_module_id || "暂无黑板状态") },
   ]);
 
   renderModuleBay(health);

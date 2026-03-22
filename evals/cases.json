@@ -2838,7 +2838,7 @@
     "assert": {
       "equals": {
         "module_count": 2,
-        "primary_tool_module": "office_modules"
+        "primary_tool_module": "office_tools"
       },
       "contains_any": {
         "module_ids.0": [
@@ -2846,6 +2846,23 @@
         ],
         "module_ids.1": [
           "office_addons"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_debug_kernel_host_snapshot_exposes_primary_agent_and_tool_modules",
+    "kind": "helper",
+    "helper": "_debug_kernel_host_snapshot",
+    "args": {},
+    "assert": {
+      "equals": {
+        "primary_agent_module.module_id": "office_agent",
+        "primary_tool_module.module_id": "office_tools"
+      },
+      "contains_any": {
+        "capability_modules.0": [
+          "packages.office_modules"
         ]
       }
     }

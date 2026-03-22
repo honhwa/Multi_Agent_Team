@@ -15,3 +15,4 @@
   - `RoleSpec / RoleContext / RoleResult`
   - `RoleRegistry / RuntimeController`
   - capability runtime 装配支撑
+- 这里提供的是 `agent runtime`，不是具体 `AgentModule` 实现。

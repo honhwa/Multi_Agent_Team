@@ -599,13 +599,30 @@ class ReadSessionHistoryArgs(BaseModel):
 
 
 class OfficeAgent:
-    def __init__(self, config: AppConfig, *, kernel_runtime: KernelRuntime | None = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        *,
+        kernel_runtime: KernelRuntime | None = None,
+        capability_runtime: AgentCapabilityRuntime | None = None,
+        tool_executor: Any | None = None,
+        host: Any | None = None,
+        selected_agent_module_id: str = "",
+        selected_tool_module_id: str = "",
+    ) -> None:
         self.config = config
-        self._capability_runtime: AgentCapabilityRuntime = build_agent_capability_runtime(
+        self._host = host
+        self._capability_runtime = capability_runtime or build_agent_capability_runtime(
             config,
             config.capability_modules,
         )
-        self.tools = self._capability_runtime.tools
+        self._selected_agent_module_id = str(
+            selected_agent_module_id or self._capability_runtime.metadata.get("primary_agent_module") or ""
+        ).strip()
+        self._selected_tool_module_id = str(
+            selected_tool_module_id or self._capability_runtime.metadata.get("primary_tool_module") or ""
+        ).strip()
+        self.tools = tool_executor or self._capability_runtime.tools
         self._auth_manager = OpenAIAuthManager(config)
         self._kernel_runtime = kernel_runtime or build_kernel_runtime(config)
         self._product_profile_key = str(os.environ.get("OFFICETOOL_APP_PROFILE") or "").strip().lower() or "kernel_robot"
@@ -658,7 +675,10 @@ class OfficeAgent:
         return {
             "module_paths": list(self._capability_runtime.module_paths),
             "modules": list(self._capability_runtime.metadata.get("modules") or []),
-            "primary_tool_module": self._capability_runtime.metadata.get("primary_tool_module"),
+            "agent_modules": list(self._capability_runtime.metadata.get("agent_modules") or []),
+            "tool_modules": list(self._capability_runtime.metadata.get("tool_modules") or []),
+            "primary_agent_module": self._selected_agent_module_id,
+            "primary_tool_module": self._selected_tool_module_id or self._capability_runtime.metadata.get("primary_tool_module"),
             "extra_tool_modules": list(self._capability_runtime.metadata.get("extra_tool_modules") or []),
             "role_sources": dict(self._capability_runtime.metadata.get("role_sources") or {}),
         }

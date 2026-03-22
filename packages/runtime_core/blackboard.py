@@ -1,0 +1,129 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+from uuid import uuid4
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass(slots=True)
+class BlackboardEvent:
+    ts: str
+    kind: str
+    detail: str = ""
+    data: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class Blackboard:
+    request_id: str
+    session_id: str = ""
+    user_message: str = ""
+    attachment_ids: list[str] = field(default_factory=list)
+    selected_agent_module_id: str = ""
+    selected_tool_module_id: str = ""
+    selected_capability_modules: list[str] = field(default_factory=list)
+    status: str = "created"
+    created_at: str = field(default_factory=_now_iso)
+    updated_at: str = field(default_factory=_now_iso)
+    effective_model: str = ""
+    route_state: dict[str, Any] = field(default_factory=dict)
+    execution_plan: list[str] = field(default_factory=list)
+    execution_trace: list[str] = field(default_factory=list)
+    tool_event_count: int = 0
+    answer_bundle: dict[str, Any] = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
+    events: list[BlackboardEvent] = field(default_factory=list)
+    last_error: str = ""
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        session_id: str | None,
+        user_message: str,
+        attachment_ids: list[str] | None,
+        selected_agent_module_id: str,
+        selected_tool_module_id: str,
+        selected_capability_modules: list[str] | None = None,
+    ) -> "Blackboard":
+        return cls(
+            request_id=f"bb-{uuid4().hex[:12]}",
+            session_id=str(session_id or "").strip(),
+            user_message=str(user_message or ""),
+            attachment_ids=[str(item or "").strip() for item in (attachment_ids or []) if str(item or "").strip()],
+            selected_agent_module_id=str(selected_agent_module_id or "").strip(),
+            selected_tool_module_id=str(selected_tool_module_id or "").strip(),
+            selected_capability_modules=[
+                str(item or "").strip() for item in (selected_capability_modules or []) if str(item or "").strip()
+            ],
+        )
+
+    def touch(self) -> None:
+        self.updated_at = _now_iso()
+
+    def add_event(self, kind: str, detail: str = "", **data: Any) -> None:
+        self.events.append(BlackboardEvent(ts=_now_iso(), kind=str(kind or ""), detail=str(detail or ""), data=dict(data)))
+        self.touch()
+
+    def start(self) -> None:
+        self.status = "running"
+        self.add_event("run_started", "kernel dispatched primary agent module")
+
+    def complete(
+        self,
+        *,
+        effective_model: str,
+        route_state: dict[str, Any] | None,
+        execution_plan: list[str] | None,
+        execution_trace: list[str] | None,
+        tool_events: list[Any] | None,
+        answer_bundle: dict[str, Any] | None,
+    ) -> None:
+        self.status = "completed"
+        self.effective_model = str(effective_model or "")
+        self.route_state = dict(route_state or {})
+        self.execution_plan = [str(item or "") for item in (execution_plan or []) if str(item or "").strip()]
+        self.execution_trace = [str(item or "") for item in (execution_trace or []) if str(item or "").strip()]
+        self.tool_event_count = len(tool_events or [])
+        self.answer_bundle = dict(answer_bundle or {})
+        self.add_event(
+            "run_completed",
+            "primary agent module completed",
+            tool_event_count=self.tool_event_count,
+            execution_plan_count=len(self.execution_plan),
+        )
+
+    def fail(self, error: str) -> None:
+        self.status = "failed"
+        self.last_error = str(error or "")
+        self.add_event("run_failed", self.last_error)
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "request_id": self.request_id,
+            "session_id": self.session_id,
+            "status": self.status,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "user_message_preview": self.user_message[:160],
+            "attachment_ids": list(self.attachment_ids),
+            "selected_agent_module_id": self.selected_agent_module_id,
+            "selected_tool_module_id": self.selected_tool_module_id,
+            "selected_capability_modules": list(self.selected_capability_modules),
+            "effective_model": self.effective_model,
+            "route_state": dict(self.route_state),
+            "execution_plan": list(self.execution_plan),
+            "execution_trace_tail": list(self.execution_trace[-8:]),
+            "tool_event_count": self.tool_event_count,
+            "answer_bundle_summary": str((self.answer_bundle or {}).get("summary") or "").strip(),
+            "last_error": self.last_error,
+            "notes": list(self.notes),
+            "events": [
+                {"ts": item.ts, "kind": item.kind, "detail": item.detail, "data": dict(item.data)} for item in self.events[-12:]
+            ],
+        }

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from packages.agent_core.role_registry import RoleRegistry
-from packages.runtime_core import CapabilityBundle
+from packages.runtime_core.capability_loader import CapabilityBundle
 
 
 def _manifest_path() -> Path:

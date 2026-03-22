@@ -7,13 +7,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-from app.agent import ExecutionState, OfficeAgent
+from app.agent import ExecutionState
 from app.config import load_config
 from app.core.bootstrap import build_kernel_runtime
 from app.models import ChatSettings, ToolEvent
 from app import session_context as session_context_impl
 from app.session_context import normalize_attachment_ids
 from app.storage import now_iso
+from packages.runtime_core.kernel_host import KernelHost
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CASES_PATH = ROOT / "evals" / "cases.json"
@@ -234,7 +235,7 @@ def _run_tool_case(case: dict[str, Any], executor: Any) -> dict[str, Any]:
     return payload
 
 
-def _run_helper_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str, Any]:
+def _run_helper_case(case: dict[str, Any], agent: Any) -> dict[str, Any]:
     helper_name = str(case["helper"])
     args = _helper_arg(_resolve_value(case.get("args") or {}))
     fn = getattr(agent, helper_name)
@@ -251,7 +252,7 @@ def _run_helper_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str, Any]
     return payload
 
 
-def _run_agent_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str, Any]:
+def _run_agent_case(case: dict[str, Any], agent: Any) -> dict[str, Any]:
     message = str(case.get("message") or "")
     attachments = [_attachment_meta(item) for item in case.get("attachments") or []]
     settings = ChatSettings(**(case.get("settings") or {}))
@@ -317,7 +318,7 @@ def _attachment_catalog(entries: list[dict[str, Any]]) -> dict[str, dict[str, An
 
 def _run_conversation_case(
     case: dict[str, Any],
-    agent: OfficeAgent,
+    agent: Any,
     *,
     attachment_module: Any,
     kernel_runtime: Any,
@@ -523,7 +524,7 @@ def run_regression_evals(
 
     cfg = load_config()
     kernel_runtime = build_kernel_runtime(cfg)
-    agent = OfficeAgent(cfg, kernel_runtime=kernel_runtime)
+    agent = KernelHost(cfg, kernel_runtime=kernel_runtime)
     tools = agent.tools
     attachment_module = kernel_runtime.registry.attachment_context
 

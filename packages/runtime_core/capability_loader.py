@@ -5,13 +5,43 @@ import importlib
 from typing import Any, Callable
 
 
+AgentRuntimeFactory = Callable[..., Any]
+ToolExecutorFactory = Callable[[Any], Any]
+RoleRegistryBuilder = Callable[[], Any]
+
+
+@dataclass(frozen=True, slots=True)
+class AgentModule:
+    module_id: str
+    title: str
+    description: str = ""
+    build_runtime: AgentRuntimeFactory | None = None
+    default: bool = False
+    roles: tuple[str, ...] = ()
+    profiles: tuple[str, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ToolModule:
+    module_id: str
+    title: str
+    description: str = ""
+    build_executor: ToolExecutorFactory | None = None
+    default: bool = False
+    tool_names: tuple[str, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass(frozen=True, slots=True)
 class CapabilityBundle:
     module_id: str
     version: str
     manifest: dict[str, Any] = field(default_factory=dict)
-    build_role_registry: Callable[[], Any] | None = None
-    tool_executor_factory: Callable[[Any], Any] | None = None
+    build_role_registry: RoleRegistryBuilder | None = None
+    tool_executor_factory: ToolExecutorFactory | None = None
+    agent_modules: tuple[AgentModule, ...] = ()
+    tool_modules: tuple[ToolModule, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

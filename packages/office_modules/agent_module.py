@@ -1,0 +1,54 @@
+from __future__ import annotations
+
+from typing import Any
+
+from packages.runtime_core.capability_loader import AgentModule
+
+
+def _build_office_agent_runtime(
+    *,
+    config: Any,
+    kernel_runtime: Any,
+    capability_runtime: Any,
+    tool_executor: Any,
+    host: Any,
+):
+    from app.agent import OfficeAgent
+
+    return OfficeAgent(
+        config,
+        kernel_runtime=kernel_runtime,
+        capability_runtime=capability_runtime,
+        tool_executor=tool_executor,
+        host=host,
+        selected_agent_module_id="office_agent",
+        selected_tool_module_id="office_tools",
+    )
+
+
+def build_office_agent_modules() -> tuple[AgentModule, ...]:
+    return (
+        AgentModule(
+            module_id="office_agent",
+            title="Office Agent Module",
+            description="默认办公智能体模块，内部运行多 agent pipeline。",
+            build_runtime=_build_office_agent_runtime,
+            default=True,
+            roles=(
+                "router",
+                "coordinator",
+                "worker",
+                "planner",
+                "researcher",
+                "file_reader",
+                "summarizer",
+                "fixer",
+                "conflict_detector",
+                "reviewer",
+                "revision",
+                "structurer",
+            ),
+            profiles=("explainer", "evidence", "patch_worker"),
+            metadata={"family": "office", "runtime": "multi_role"},
+        ),
+    )
