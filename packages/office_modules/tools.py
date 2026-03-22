@@ -1,14 +1,129 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from packages.runtime_core.capability_loader import ToolModule
 
 from app.local_tools import LocalToolExecutor
 
 
-def get_tool_executor(config: Any) -> LocalToolExecutor:
-    return LocalToolExecutor(config)
+class ScopedToolExecutor:
+    def __init__(
+        self,
+        config: Any,
+        *,
+        module_id: str,
+        title: str,
+        group: str,
+        allowed_tool_names: tuple[str, ...],
+    ) -> None:
+        self.config = config
+        self.module_id = str(module_id or "").strip()
+        self.title = str(title or "").strip()
+        self.group = str(group or "").strip()
+        self.allowed_tool_names = tuple(str(item or "").strip() for item in allowed_tool_names if str(item or "").strip())
+        self._allowed = set(self.allowed_tool_names)
+        self._executor = LocalToolExecutor(config)
+        self._all_tool_names = {
+            str(item.get("name") or "").strip()
+            for item in list(getattr(self._executor, "tool_specs", []) or [])
+            if str(item.get("name") or "").strip()
+        }
+
+    @property
+    def tool_specs(self) -> list[dict[str, Any]]:
+        return [
+            dict(item)
+            for item in list(getattr(self._executor, "tool_specs", []) or [])
+            if str(item.get("name") or "").strip() in self._allowed
+        ]
+
+    def set_runtime_context(self, *, execution_mode: str | None = None, session_id: str | None = None) -> None:
+        self._executor.set_runtime_context(execution_mode=execution_mode, session_id=session_id)
+
+    def clear_runtime_context(self) -> None:
+        self._executor.clear_runtime_context()
+
+    def docker_available(self) -> bool:
+        return self._executor.docker_available()
+
+    def docker_status(self) -> tuple[bool, str]:
+        return self._executor.docker_status()
+
+    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        tool_name = str(name or "").strip()
+        if tool_name not in self._allowed:
+            raise ValueError(f"Tool {tool_name!r} is not registered in module {self.module_id}")
+        return self._executor.execute(tool_name, arguments)
+
+    def __getattr__(self, name: str) -> Any:
+        attr_name = str(name or "").strip()
+        if attr_name in self._all_tool_names and attr_name not in self._allowed:
+            raise AttributeError(f"{attr_name!r} is not exposed by ScopedToolExecutor({self.module_id})")
+        return getattr(self._executor, name)
+
+
+def _build_scoped_executor_factory(
+    *,
+    module_id: str,
+    title: str,
+    group: str,
+    tool_names: tuple[str, ...],
+) -> Callable[[Any], ScopedToolExecutor]:
+    def factory(config: Any) -> ScopedToolExecutor:
+        return ScopedToolExecutor(
+            config,
+            module_id=module_id,
+            title=title,
+            group=group,
+            allowed_tool_names=tool_names,
+        )
+
+    return factory
+
+
+_WORKSPACE_TOOL_NAMES = (
+    "run_shell",
+    "list_directory",
+    "search_codebase",
+    "copy_file",
+    "extract_zip",
+    "extract_msg_attachments",
+)
+_FILE_TOOL_NAMES = (
+    "read_text_file",
+    "search_text_in_file",
+    "multi_query_search",
+    "doc_index_build",
+    "read_section_by_heading",
+    "table_extract",
+    "fact_check_file",
+)
+_WEB_TOOL_NAMES = (
+    "fetch_web",
+    "download_web_file",
+    "search_web",
+)
+_WRITE_TOOL_NAMES = (
+    "write_text_file",
+    "append_text_file",
+    "replace_in_file",
+)
+_SESSION_TOOL_NAMES = (
+    "list_sessions",
+    "read_session_history",
+)
+_ALL_TOOL_NAMES = _WORKSPACE_TOOL_NAMES + _FILE_TOOL_NAMES + _WEB_TOOL_NAMES + _WRITE_TOOL_NAMES + _SESSION_TOOL_NAMES
+
+
+def get_tool_executor(config: Any) -> ScopedToolExecutor:
+    return ScopedToolExecutor(
+        config,
+        module_id="office_tools",
+        title="Office Tool Module",
+        group="office",
+        allowed_tool_names=_ALL_TOOL_NAMES,
+    )
 
 
 def build_office_tool_modules() -> tuple[ToolModule, ...]:
@@ -16,72 +131,78 @@ def build_office_tool_modules() -> tuple[ToolModule, ...]:
         ToolModule(
             module_id="workspace_tools",
             title="Workspace Tool Module",
-            description="工作区与代码库操作工具模块，当前承载共享工具执行器。",
-            build_executor=get_tool_executor,
-            default=True,
-            tool_names=(
-                "run_shell",
-                "list_directory",
-                "search_codebase",
-                "copy_file",
-                "extract_zip",
-                "extract_msg_attachments",
+            description="工作区与代码库操作工具模块。",
+            build_executor=_build_scoped_executor_factory(
+                module_id="workspace_tools",
+                title="Workspace Tool Module",
+                group="workspace",
+                tool_names=_WORKSPACE_TOOL_NAMES,
             ),
-            metadata={"family": "office", "executor": "LocalToolExecutor", "group": "workspace"},
+            default=True,
+            tool_names=_WORKSPACE_TOOL_NAMES,
+            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "workspace"},
         ),
         ToolModule(
             module_id="file_tools",
             title="File Tool Module",
             description="文档读取、检索、结构提取与事实核验。",
-            build_executor=None,
-            default=False,
-            tool_names=(
-                "read_text_file",
-                "search_text_in_file",
-                "multi_query_search",
-                "doc_index_build",
-                "read_section_by_heading",
-                "table_extract",
-                "fact_check_file",
+            build_executor=_build_scoped_executor_factory(
+                module_id="file_tools",
+                title="File Tool Module",
+                group="file",
+                tool_names=_FILE_TOOL_NAMES,
             ),
-            metadata={"family": "office", "group": "file"},
+            default=False,
+            tool_names=_FILE_TOOL_NAMES,
+            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "file"},
         ),
         ToolModule(
             module_id="web_tools",
             title="Web Tool Module",
             description="联网抓取、搜索与网页下载工具。",
-            build_executor=None,
-            default=False,
-            tool_names=(
-                "fetch_web",
-                "download_web_file",
-                "search_web",
+            build_executor=_build_scoped_executor_factory(
+                module_id="web_tools",
+                title="Web Tool Module",
+                group="web",
+                tool_names=_WEB_TOOL_NAMES,
             ),
-            metadata={"family": "office", "group": "web"},
+            default=False,
+            tool_names=_WEB_TOOL_NAMES,
+            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "web"},
         ),
         ToolModule(
             module_id="write_tools",
             title="Write Tool Module",
             description="文本写入、追加和精确替换工具。",
-            build_executor=None,
-            default=False,
-            tool_names=(
-                "write_text_file",
-                "append_text_file",
-                "replace_in_file",
+            build_executor=_build_scoped_executor_factory(
+                module_id="write_tools",
+                title="Write Tool Module",
+                group="write",
+                tool_names=_WRITE_TOOL_NAMES,
             ),
-            metadata={"family": "office", "group": "write"},
+            default=False,
+            tool_names=_WRITE_TOOL_NAMES,
+            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "write"},
         ),
         ToolModule(
             module_id="session_tools",
             title="Session Tool Module",
             description="跨会话浏览与历史检索工具。",
-            build_executor=None,
-            default=False,
-            tool_names=(
-                "list_sessions",
-                "read_session_history",
+            build_executor=_build_scoped_executor_factory(
+                module_id="session_tools",
+                title="Session Tool Module",
+                group="session",
+                tool_names=_SESSION_TOOL_NAMES,
             ),
-            metadata={"family": "office", "group": "session"},
+            default=False,
+            tool_names=_SESSION_TOOL_NAMES,
+            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "session"},
         ),
     )
+
+
+__all__ = [
+    "ScopedToolExecutor",
+    "build_office_tool_modules",
+    "get_tool_executor",
+]

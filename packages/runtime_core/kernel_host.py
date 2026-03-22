@@ -99,6 +99,7 @@ class KernelHost:
                 session_id=session_id,
                 route_state=route_state,
                 progress_cb=progress_cb,
+                blackboard=blackboard,
             )
             blackboard.complete(
                 effective_model=str(result[13] if len(result) > 13 else ""),
@@ -140,6 +141,7 @@ class KernelHost:
                     "title": item.title,
                     "description": item.description,
                     "tool_names": list(item.tool_names),
+                    "group": str(item.metadata.get("group") or ""),
                 }
                 for item in self.tool_modules
             ],
@@ -187,6 +189,7 @@ class KernelHost:
             else {},
             "capability_modules": list(self.capability_runtime.metadata.get("module_paths") or []),
             "loaded_capability_bundles": [item.get("module_id") for item in self.capability_runtime.metadata.get("modules") or []],
+            "tool_dispatch_modules": list(self.capability_runtime.metadata.get("tool_dispatch_modules") or []),
             "role_sources": dict(self.capability_runtime.metadata.get("role_sources") or {}),
             "blackboard": self._last_blackboard.snapshot() if self._last_blackboard else {},
         }

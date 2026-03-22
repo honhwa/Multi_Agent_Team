@@ -37,6 +37,8 @@ class Blackboard:
     execution_plan: list[str] = field(default_factory=list)
     execution_trace: list[str] = field(default_factory=list)
     tool_event_count: int = 0
+    tool_usage: dict[str, int] = field(default_factory=dict)
+    tool_module_usage: dict[str, int] = field(default_factory=dict)
     answer_bundle: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     events: list[BlackboardEvent] = field(default_factory=list)
@@ -76,6 +78,24 @@ class Blackboard:
         self.events.append(BlackboardEvent(ts=_now_iso(), kind=str(kind or ""), detail=str(detail or ""), data=dict(data)))
         self.touch()
 
+    def set_route_state(self, route_state: dict[str, Any] | None) -> None:
+        self.route_state = dict(route_state or {})
+        self.touch()
+
+    def set_execution_plan(self, execution_plan: list[str] | None) -> None:
+        self.execution_plan = [str(item or "") for item in (execution_plan or []) if str(item or "").strip()]
+        self.touch()
+
+    def record_tool_event(self, event: Any) -> None:
+        name = str(getattr(event, "name", "") or "").strip()
+        module_id = str(getattr(event, "module_id", "") or "").strip()
+        if name:
+            self.tool_usage[name] = int(self.tool_usage.get(name) or 0) + 1
+        if module_id:
+            self.tool_module_usage[module_id] = int(self.tool_module_usage.get(module_id) or 0) + 1
+        self.tool_event_count = sum(int(value or 0) for value in self.tool_usage.values())
+        self.touch()
+
     def start(self) -> None:
         self.status = "running"
         self.add_event("run_started", "kernel dispatched primary agent module")
@@ -95,7 +115,10 @@ class Blackboard:
         self.route_state = dict(route_state or {})
         self.execution_plan = [str(item or "") for item in (execution_plan or []) if str(item or "").strip()]
         self.execution_trace = [str(item or "") for item in (execution_trace or []) if str(item or "").strip()]
-        self.tool_event_count = len(tool_events or [])
+        if tool_events and not self.tool_usage:
+            for event in tool_events:
+                self.record_tool_event(event)
+        self.tool_event_count = max(self.tool_event_count, len(tool_events or []))
         self.answer_bundle = dict(answer_bundle or {})
         self.add_event(
             "run_completed",
@@ -128,6 +151,8 @@ class Blackboard:
             "execution_plan": list(self.execution_plan),
             "execution_trace_tail": list(self.execution_trace[-8:]),
             "tool_event_count": self.tool_event_count,
+            "tool_usage": dict(self.tool_usage),
+            "tool_module_usage": dict(self.tool_module_usage),
             "answer_bundle_summary": str((self.answer_bundle or {}).get("summary") or "").strip(),
             "last_error": self.last_error,
             "notes": list(self.notes),

@@ -26,6 +26,9 @@ class ToolEvent(BaseModel):
     name: str
     input: dict | None = None
     output_preview: str
+    module_id: str = ""
+    module_title: str = ""
+    module_group: str = ""
 
 
 class DebugFlowItem(BaseModel):

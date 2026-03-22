@@ -19,3 +19,4 @@
 - 当前还开始承接：
   - `KernelHost`：主核入口
   - `Blackboard`：请求级共享状态
+  - `ToolExecutionBus`：按 `ToolModule` 路由具体工具执行

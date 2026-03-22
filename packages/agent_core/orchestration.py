@@ -13,6 +13,7 @@ from packages.runtime_core.capability_loader import (
     ToolModule,
     load_capability_bundles,
 )
+from packages.runtime_core.tool_execution_bus import ToolExecutionBus
 
 
 @dataclass(slots=True)
@@ -143,7 +144,22 @@ def build_agent_capability_runtime(config: Any, module_paths: list[str] | tuple[
     if not tool_modules or primary_tool_module is None or primary_tool_module.build_executor is None:
         raise RuntimeError("No capability module provides a ToolModule")
 
-    tools = primary_tool_module.build_executor(config)
+    primary_executor = primary_tool_module.build_executor(config)
+    executors_by_module: dict[str, Any] = {}
+    for module in tool_modules:
+        if module.build_executor is None:
+            executors_by_module[module.module_id] = primary_executor
+            continue
+        if module.module_id == primary_tool_module.module_id:
+            executors_by_module[module.module_id] = primary_executor
+            continue
+        executors_by_module[module.module_id] = module.build_executor(config)
+
+    tools = ToolExecutionBus(
+        primary_executor=primary_executor,
+        tool_modules=tuple(tool_modules),
+        executors_by_module=executors_by_module,
+    )
     runtime_controller = RoleRuntimeController(role_registry)
     metadata = {
         "module_paths": list(normalized_paths),
@@ -173,6 +189,8 @@ def build_agent_capability_runtime(config: Any, module_paths: list[str] | tuple[
                 "module_id": item.module_id,
                 "title": item.title,
                 "tool_names": list(item.tool_names),
+                "group": str(item.metadata.get("group") or ""),
+                "executor": type((executors_by_module.get(item.module_id) or primary_executor)).__name__,
             }
             for item in tool_modules
         ],
@@ -197,6 +215,7 @@ def build_agent_capability_runtime(config: Any, module_paths: list[str] | tuple[
         "primary_output_module": primary_output_module.module_id if primary_output_module else "",
         "primary_memory_module": primary_memory_module.module_id if primary_memory_module else "",
         "extra_tool_modules": [item.module_id for item in tool_modules[1:]],
+        "tool_dispatch_modules": tools.describe_tool_modules(),
         "role_sources": role_sources,
     }
     return AgentCapabilityRuntime(

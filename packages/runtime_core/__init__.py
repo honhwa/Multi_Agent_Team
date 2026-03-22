@@ -10,6 +10,7 @@ from .capability_loader import (
 )
 from .blackboard import Blackboard
 from .kernel_host import KernelHost
+from .tool_execution_bus import ToolDispatchMeta, ToolExecutionBus
 
 __all__ = [
     "AgentModule",
@@ -20,6 +21,8 @@ __all__ = [
     "MemoryModule",
     "OutputModule",
     "ToolModule",
+    "ToolDispatchMeta",
+    "ToolExecutionBus",
     "load_capability_bundle",
     "load_capability_bundles",
 ]

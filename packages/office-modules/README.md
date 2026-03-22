@@ -25,3 +25,6 @@ office 领域能力包。
   - `Session Tool Module`
   - `Output Module`
   - `Overlay Memory Module`
+- 当前工具模块已经不是纯展示分组：
+  - 主核会通过 `ToolExecutionBus` 把具体工具调用路由到对应 `ToolModule`
+  - `Blackboard` 和前端运行轨迹也会显示实际命中的 `ToolModule`

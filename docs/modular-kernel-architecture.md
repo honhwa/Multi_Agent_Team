@@ -19,7 +19,7 @@
 
 - `KernelHost`：机械式主核入口。只负责启动、装配、调度、健康与回滚。
 - `AgentModule`：可升级的智能体能力模块。内部可以继续是多 agent pipeline。
-- `ToolModule`：可升级的工具能力模块。负责提供动作执行器。
+- `ToolModule`：可升级的工具能力模块。负责提供动作执行器，并通过 `ToolExecutionBus` 接入主核。
 - `Blackboard`：一次请求的共享状态面板。主核和模块通过它交换任务状态。
 
 现在需要区分两类模块：
@@ -45,6 +45,7 @@
 - `KernelHost`：`packages/runtime_core/kernel_host.py`
 - `Blackboard`：`packages/runtime_core/blackboard.py`
 - `AgentModule` / `ToolModule`：`packages/runtime_core/capability_loader.py`
+- `ToolExecutionBus`：`packages/runtime_core/tool_execution_bus.py`
 - 默认办公 `AgentModule`：`packages/office_modules/agent_module.py`
 - 默认办公 `ToolModule`：`packages/office_modules/tools.py`
 - 默认办公 `OutputModule`：`packages/office_modules/output_module.py`
@@ -126,7 +127,9 @@ flowchart TD
 - `AgentModule` 当前由能力包显式导出
 - `ToolModule` 当前由能力包显式导出
 - 主核当前会选择一个主 `AgentModule` 和一个主 `ToolModule`
-- tool executor 当前由主 `ToolModule` 提供，其余能力包可先提供 roles / prompts / profiles
+- `ToolExecutionBus` 当前会按 `ToolModule` 路由具体工具调用
+- `Blackboard` 当前会记录 `tool_usage / tool_module_usage`
+- 工具执行器已经开始按 `workspace / file / web / write / session` 分舱
 
 ### Shadow
 

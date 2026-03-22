@@ -8,7 +8,7 @@ import threading
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import urlparse, urlunparse
 
 from pydantic import BaseModel, Field
@@ -128,6 +128,9 @@ from app.router_rules import (
     VERIFICATION_HINTS,
     text_has_any,
 )
+
+if TYPE_CHECKING:
+    from packages.runtime_core.blackboard import Blackboard
 from app.router_intent_support import (
     attachment_is_inline_parseable as attachment_is_inline_parseable_helper,
     attachment_needs_tooling as attachment_needs_tooling_helper,
@@ -1343,6 +1346,7 @@ class OfficeAgent:
         session_id: str | None = None,
         route_state: dict[str, Any] | None = None,
         progress_cb: Callable[[dict[str, Any]], None] | None = None,
+        blackboard: Blackboard | None = None,
     ) -> tuple[
         str,
         list[ToolEvent],
@@ -1415,8 +1419,37 @@ class OfficeAgent:
             debug_flow.append(item)
             emit_progress("debug", item=item)
 
+        def _tool_dispatch_meta(name: str) -> tuple[str, str, str]:
+            raw_name = str(name or "").strip()
+            normalized_name = raw_name.split("(", 1)[0].strip()
+            resolver = getattr(self.tools, "dispatch_meta_for_tool", None)
+            if not callable(resolver):
+                return "", "", ""
+            try:
+                meta = resolver(normalized_name)
+            except Exception:
+                return "", "", ""
+            return (
+                str(getattr(meta, "module_id", "") or "").strip(),
+                str(getattr(meta, "module_title", "") or "").strip(),
+                str(getattr(meta, "group", "") or "").strip(),
+            )
+
+        def build_tool_event(name: str, arguments: dict[str, Any] | None, output_preview: str) -> ToolEvent:
+            module_id, module_title, module_group = _tool_dispatch_meta(name)
+            return ToolEvent(
+                name=str(name or ""),
+                input=arguments,
+                output_preview=output_preview,
+                module_id=module_id,
+                module_title=module_title,
+                module_group=module_group,
+            )
+
         def add_tool_event(event: ToolEvent) -> None:
             tool_events.append(event)
+            if blackboard is not None:
+                blackboard.record_tool_event(event)
             emit_progress("tool_event", item=event.model_dump())
 
         def emit_agent_state() -> None:
@@ -2228,10 +2261,10 @@ class OfficeAgent:
             if warning:
                 add_trace(f"预搜索提示: {warning}")
             add_tool_event(
-                ToolEvent(
-                    name="search_web(auto_prefetch)",
-                    input={"query": prefetch_payload["query"], "max_results": prefetch_payload.get("count", 0)},
-                    output_preview=self._shorten(
+                build_tool_event(
+                    "search_web(auto_prefetch)",
+                    {"query": prefetch_payload["query"], "max_results": prefetch_payload.get("count", 0)},
+                    self._shorten(
                         json.dumps(prefetch_payload.get("raw_result", {}), ensure_ascii=False),
                         1200,
                     ),
@@ -2445,10 +2478,10 @@ class OfficeAgent:
                 )
 
             add_tool_event(
-                ToolEvent(
-                    name=name,
-                    input=arguments,
-                    output_preview=result_json[:1200],
+                build_tool_event(
+                    name,
+                    arguments,
+                    result_json[:1200],
                 )
             )
             add_run_event(

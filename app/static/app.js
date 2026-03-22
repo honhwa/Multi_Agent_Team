@@ -1405,6 +1405,8 @@ function renderModuleBay(health = {}) {
   const selected = health?.kernel_selected_modules || {};
   const moduleHealth = health?.kernel_module_health || {};
   const hostRuntime = health?.kernel_host_runtime || {};
+  const blackboard = hostRuntime?.blackboard || {};
+  const toolModuleUsage = blackboard?.tool_module_usage || {};
   const agentModules = Array.isArray(hostRuntime?.agent_modules) ? hostRuntime.agent_modules : [];
   const toolModules = Array.isArray(hostRuntime?.tool_modules) ? hostRuntime.tool_modules : [];
   const outputModules = Array.isArray(hostRuntime?.output_modules) ? hostRuntime.output_modules : [];
@@ -1474,7 +1476,7 @@ function renderModuleBay(health = {}) {
     },
     {
       title: "Tool Modules",
-      meta: "动作能力分舱。后续继续把执行器物理拆开。",
+      meta: "动作能力分舱。当前请求已经按 ToolModule 路由执行。",
       items: toolModules.map((item) => ({
         kind: "Tool",
         primary: primaryIds.has(item?.module_id),
@@ -1483,7 +1485,10 @@ function renderModuleBay(health = {}) {
           title: String(item?.title || "Tool Module"),
           module_id: String(item?.module_id || "-"),
           description: String(item?.description || "未填写描述。"),
-          stats: [`tools=${Array.isArray(item?.tool_names) ? item.tool_names.length : 0}`],
+          stats: [
+            `tools=${Array.isArray(item?.tool_names) ? item.tool_names.length : 0}`,
+            `used=${Number(toolModuleUsage?.[String(item?.module_id || "")] || 0)}`,
+          ],
           signals: Array.isArray(item?.tool_names) ? item.tool_names.slice(0, 5) : [],
         },
       })),
@@ -1790,6 +1795,8 @@ function renderKernelConsole(health = {}) {
   const primaryOutput = hostRuntime?.primary_output_module || {};
   const primaryMemory = hostRuntime?.primary_memory_module || {};
   const blackboard = hostRuntime?.blackboard || {};
+  const toolUsage = blackboard?.tool_usage || {};
+  const toolModuleUsage = blackboard?.tool_module_usage || {};
   const overlay = health?.assistant_overlay_profile || {};
   const recentEvents = health?.assistant_evolution_recent || [];
   const validation = health?.kernel_shadow_validation || {};
@@ -1806,6 +1813,10 @@ function renderKernelConsole(health = {}) {
     (Array.isArray(hostRuntime?.tool_modules) ? hostRuntime.tool_modules.length : 0) +
     (Array.isArray(hostRuntime?.output_modules) ? hostRuntime.output_modules.length : 0) +
     (Array.isArray(hostRuntime?.memory_modules) ? hostRuntime.memory_modules.length : 0);
+  const topToolModule = Object.entries(toolModuleUsage)
+    .sort((a, b) => Number(b?.[1] || 0) - Number(a?.[1] || 0))[0]?.[0] || "none";
+  const topTool = Object.entries(toolUsage)
+    .sort((a, b) => Number(b?.[1] || 0) - Number(a?.[1] || 0))[0]?.[0] || "none";
 
   if (kernelLiveLabel) {
     kernelLiveLabel.textContent = Object.keys(selected).length ? "主核在线" : "主核待机";
@@ -1829,8 +1840,8 @@ function renderKernelConsole(health = {}) {
   renderKernelStatGrid(shadowLabMetrics, [
     { label: "Status", value: String(blackboard?.status || "idle").toUpperCase(), meta: String(blackboard?.request_id || "waiting") },
     { label: "Agent Slot", value: String(blackboard?.selected_agent_module_id || "-"), meta: String(blackboard?.selected_capability_modules?.join(", ") || "no request yet") },
-    { label: "Tool Slot", value: String(blackboard?.selected_tool_module_id || "-"), meta: `events=${Number(blackboard?.tool_event_count || 0)}` },
-    { label: "Output Slot", value: String(blackboard?.selected_output_module_id || "-"), meta: String(blackboard?.selected_memory_module_id || "memory=-") },
+    { label: "Tool Slot", value: String(blackboard?.selected_tool_module_id || "-"), meta: `events=${Number(blackboard?.tool_event_count || 0)} · top=${topToolModule}` },
+    { label: "Output Slot", value: String(blackboard?.selected_output_module_id || "-"), meta: `${String(blackboard?.selected_memory_module_id || "memory=-")} · tool=${topTool}` },
     { label: "Plan", value: String((blackboard?.execution_plan || []).length || 0), meta: String((blackboard?.execution_plan || [])[0] || "暂无执行计划") },
     { label: "Last Error", value: String(blackboard?.last_error ? "YES" : "NO"), meta: String(blackboard?.last_error || blackboard?.answer_bundle_summary || "暂无错误，等待输出摘要") },
   ]);
@@ -2366,6 +2377,10 @@ function renderRunTrace(traceItems = [], toolEvents = []) {
     lines.push("工具调用:");
     toolEvents.forEach((tool, idx) => {
       const args = tool?.input ? JSON.stringify(tool.input) : "{}";
+      const moduleBits = [];
+      if (String(tool?.module_id || "").trim()) moduleBits.push(String(tool.module_id).trim());
+      if (String(tool?.module_group || "").trim()) moduleBits.push(String(tool.module_group).trim());
+      const moduleSuffix = moduleBits.length ? ` <${moduleBits.join(" / ")}>` : "";
       let modeSuffix = "";
       try {
         const raw = String(tool?.output_preview || "").trim();
@@ -2377,7 +2392,7 @@ function renderRunTrace(traceItems = [], toolEvents = []) {
           }
         }
       } catch {}
-      lines.push(`${idx + 1}. ${tool?.name || "unknown"}(${args})${modeSuffix}`);
+      lines.push(`${idx + 1}. ${tool?.name || "unknown"}${moduleSuffix}(${args})${modeSuffix}`);
     });
   }
 
