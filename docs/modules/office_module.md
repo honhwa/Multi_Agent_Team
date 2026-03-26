@@ -55,3 +55,8 @@ Optional tools:
 - `KernelHost.dispatch(...)` resolves `office_module`
 - Kernel injects registry context and provider visibility
 - Tool/provider selection is recorded in the kernel trace
+
+Reference docs:
+
+- [Module Integration Guide](/Users/dalizhou/Desktop/new_validation_agent/docs/modules/module_integration_guide.md)
+- [Minimal Demo](/Users/dalizhou/Desktop/new_validation_agent/docs/demo/minimal_demo.md)

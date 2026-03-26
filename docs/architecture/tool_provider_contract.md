@@ -49,3 +49,7 @@ Each Provider contract declares:
 - repeated provider failures can mark a provider degraded
 - degraded or circuit-open providers are skipped from the primary chain
 - fallback provider usage is recorded in kernel traces
+
+Operational follow-up:
+
+- [Tool / Provider Degradation Guide](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/tool_provider_degradation_guide.md)

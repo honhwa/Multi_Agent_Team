@@ -23,6 +23,10 @@ A trace should explain:
 - debug JSON files under `artifacts/agent_os_traces/`
 - in-memory `recent_traces` exposed by kernel health snapshot
 
+Related docs:
+
+- [Troubleshooting Guide](/Users/dalizhou/Desktop/new_validation_agent/docs/observability/troubleshooting.md)
+
 ## Common Debug Steps
 
 1. Check `module_id` and `final_outcome`

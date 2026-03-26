@@ -4,6 +4,7 @@ from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from app.business_modules.office_module.manifest import OFFICE_MODULE_COMPATIBILITY_SHIMS, OFFICE_MODULE_MANIFEST
+from app.business_modules.office_module.pipeline.demo import run_minimal_demo
 from app.business_modules.office_module.pipeline.runtime import build_office_pipeline_trace
 from app.business_modules.office_module.policies.catalog import OFFICE_MODULE_POLICY_SET
 from app.business_modules.office_module.workflow import ROLE_CHAIN, build_office_workflow_plan
@@ -67,6 +68,13 @@ class OfficeModule:
         self._agent = None
 
     def handle(self, request: TaskRequest, context: RuntimeContext) -> TaskResponse:
+        if self._should_run_minimal_demo(request):
+            return run_minimal_demo(
+                request=request,
+                context=context,
+                kernel_context=self._kernel_context,
+                module_id=self.manifest.module_id,
+            )
         runtime = self._runtime()
         request_context = dict(request.context or {})
         context.selected_roles = list(context.selected_roles or ROLE_CHAIN)
@@ -139,6 +147,12 @@ class OfficeModule:
 
     def workflow_plan(self) -> list[str]:
         return build_office_workflow_plan()
+
+    def _should_run_minimal_demo(self, request: TaskRequest) -> bool:
+        task_type = str(request.task_type or "").strip().lower()
+        if task_type in {"demo.minimal", "task.demo.minimal"}:
+            return True
+        return str(request.context.get("demo_mode") or "").strip().lower() == "minimal"
 
     def _normalize_settings(self, value: Any) -> ChatSettings:
         if isinstance(value, ChatSettings):

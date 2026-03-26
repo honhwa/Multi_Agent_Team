@@ -232,6 +232,13 @@ class KernelHost:
         )
         trace.add_event(TraceEvent(stage="resolve_module", module_id=module.manifest.module_id, detail=module.manifest.identity()))
         response = self.run_module(module, request, runtime_context)
+        trace.selected_roles = list(runtime_context.selected_roles)
+        trace.selected_tools = list(runtime_context.selected_tools)
+        trace.selected_providers = list(runtime_context.selected_providers)
+        if runtime_context.execution_policy:
+            trace.execution_policy = runtime_context.execution_policy
+        if runtime_context.runtime_profile:
+            trace.runtime_profile = runtime_context.runtime_profile
         trace.health_state = runtime_context.health_state
         trace.final_outcome = "ok" if response.ok else "failed"
         trace.error_summary = str(response.error or "")

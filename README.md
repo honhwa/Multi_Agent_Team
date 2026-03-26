@@ -14,6 +14,11 @@
 ## 目录
 
 - [1. 快速启动](#1-快速启动)
+- [第一次使用：先跑哪个入口](#第一次使用先跑哪个入口)
+- [开发模块：先看哪里](#开发模块先看哪里)
+- [调试运行时：先看哪里](#调试运行时先看哪里)
+- [最小演示路径](#最小演示路径)
+- [质量门禁](#质量门禁)
 - [2. 功能说明](#2-功能说明)
 - [3. 目录结构](#3-目录结构)
 - [架构关系](#架构关系)
@@ -27,8 +32,8 @@
 
 ```bash
 cd /Users/<YOU>/Desktop
-git clone https://github.com/jonhncatt/offciatool-openclaw-agent.git
-cd offciatool-openclaw-agent
+git clone https://github.com/jonhncatt/multi-agents-based-os.git
+cd multi-agents-based-os
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -56,8 +61,8 @@ cp .env.example .env
 
 ```powershell
 cd $HOME\Desktop
-git clone https://github.com/jonhncatt/offciatool-openclaw-agent.git officetool
-cd .\officetool
+git clone https://github.com/jonhncatt/multi-agents-based-os.git
+cd .\multi-agents-based-os
 
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
@@ -72,8 +77,8 @@ Copy-Item .env.example .env
 
 ```bat
 cd %USERPROFILE%\Desktop
-git clone https://github.com/jonhncatt/offciatool-openclaw-agent.git officetool
-cd officetool
+git clone https://github.com/jonhncatt/multi-agents-based-os.git
+cd multi-agents-based-os
 
 py -3.11 -m venv .venv
 .venv\Scripts\python.exe -m pip install --upgrade pip
@@ -89,10 +94,87 @@ powershell -ExecutionPolicy Bypass -File .\run.ps1
 首次配置完成后，后续每天只需要下面几步：
 
 ```powershell
-cd $HOME\Desktop\officetool
+cd $HOME\Desktop\multi-agents-based-os
 git pull
 .\run.ps1
 ```
+
+### 第一次使用：先跑哪个入口
+
+- 日常产品入口：`./run.sh` 或 `.\run.ps1`
+  - 地址：<http://127.0.0.1:8080>
+  - 适合第一次体验完整产品链路
+- 运行时实验入口：`./run-role-agent-lab.sh`
+  - 地址：<http://127.0.0.1:8081>
+  - 适合看 role 视图和实验态编排
+- 最小无模型 smoke：`python scripts/demo_minimal_agent_os.py --check`
+  - 适合先确认 `KernelHost -> office_module -> Tool/Provider` 是否通
+
+### 开发模块：先看哪里
+
+- 正式装配入口：[`app/bootstrap/assemble.py`](/Users/dalizhou/Desktop/new_validation_agent/app/bootstrap/assemble.py)
+- 正式内核入口：[`app/kernel/host.py`](/Users/dalizhou/Desktop/new_validation_agent/app/kernel/host.py)
+- 标准业务模块样板：[`app/business_modules/office_module/module.py`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/office_module/module.py)
+- 模块接入指南：[docs/modules/module_integration_guide.md](/Users/dalizhou/Desktop/new_validation_agent/docs/modules/module_integration_guide.md)
+- packages 边界说明：[packages/README.md](/Users/dalizhou/Desktop/new_validation_agent/packages/README.md)
+
+### 调试运行时：先看哪里
+
+- 当前主路径：[docs/architecture/current_execution_path.md](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/current_execution_path.md)
+- Trace 指南：[docs/observability/trace_guide.md](/Users/dalizhou/Desktop/new_validation_agent/docs/observability/trace_guide.md)
+- 故障排查：[docs/observability/troubleshooting.md](/Users/dalizhou/Desktop/new_validation_agent/docs/observability/troubleshooting.md)
+- Tool / Provider 降级指南：[docs/operations/tool_provider_degradation_guide.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/tool_provider_degradation_guide.md)
+- Kernel 视图：`./run-kernel-robot.sh`
+- Role 视图：`./run-role-agent-lab.sh`
+
+### 最小演示路径
+
+最短闭环命令：
+
+```bash
+python scripts/demo_minimal_agent_os.py --check
+```
+
+它固定验证这条链路：
+
+```text
+KernelHost.dispatch
+  -> office_module.handle
+  -> tool_runtime_module.execute
+  -> LocalWorkspaceProvider
+  -> TaskResponse + trace
+```
+
+完整说明见：[docs/demo/minimal_demo.md](/Users/dalizhou/Desktop/new_validation_agent/docs/demo/minimal_demo.md)
+
+### 质量门禁
+
+开发依赖：
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+本地完整门禁：
+
+```bash
+pytest -q tests
+python scripts/run_evals.py --cases evals/gate_cases.json --output artifacts/evals/regression-summary.json
+python scripts/demo_minimal_agent_os.py --check
+```
+
+CI 会在 push / pull request 上运行：
+
+- `pytest -q tests`
+- `python scripts/demo_minimal_agent_os.py --check`
+- `python scripts/run_evals.py --cases evals/gate_cases.json`
+
+说明：
+
+- `evals/gate_cases.json` 是稳定门禁集合
+- `evals/cases.json` 保留为更大的探索回归集合
+
+门禁说明见：[docs/operations/quality_gates.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/quality_gates.md)
 
 ### 127.0.0.1:8080 打不开时怎么查
 
@@ -134,7 +216,7 @@ taskkill /PID <PID> /F
 检查 `OFFICETOOL_EXTRA_ALLOWED_ROOTS` 是否生效：
 
 ```powershell
-cd $HOME\Desktop\officetool
+cd $HOME\Desktop\multi-agents-based-os
 .\.venv\Scripts\python.exe -c "from app.config import load_config; c=load_config(); print(c.allowed_roots)"
 ```
 

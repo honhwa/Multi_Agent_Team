@@ -1,0 +1,468 @@
+[
+  {
+    "name": "tool_search_positive_15h",
+    "kind": "tool",
+    "tool": "search_text_in_file",
+    "args": {
+      "path": "evals/fixtures/spec_excerpt.txt",
+      "query": "15h",
+      "max_matches": 3,
+      "context_chars": 120
+    },
+    "assert": {
+      "equals": {
+        "ok": true
+      },
+      "min_value": {
+        "match_count": 1
+      },
+      "contains": {
+        "matches.0.context": [
+          "Operation Denied"
+        ]
+      }
+    }
+  },
+  {
+    "name": "tool_multi_query_search",
+    "kind": "tool",
+    "tool": "multi_query_search",
+    "args": {
+      "path": "evals/fixtures/spec_excerpt.txt",
+      "queries": [
+        "15h",
+        "Get Features"
+      ],
+      "per_query_max_matches": 2,
+      "context_chars": 120
+    },
+    "assert": {
+      "equals": {
+        "ok": true
+      },
+      "min_value": {
+        "match_count": 2
+      }
+    }
+  },
+  {
+    "name": "tool_read_section_by_heading",
+    "kind": "tool",
+    "tool": "read_section_by_heading",
+    "args": {
+      "path": "evals/fixtures/spec_excerpt.txt",
+      "heading": "5.15 Get Features command",
+      "max_chars": 2000
+    },
+    "assert": {
+      "equals": {
+        "ok": true,
+        "matched_section": "5.15"
+      },
+      "contains": {
+        "content": [
+          "Get Features command",
+          "feature identifier"
+        ]
+      }
+    }
+  },
+  {
+    "name": "tool_search_codebase",
+    "kind": "tool",
+    "tool": "search_codebase",
+    "args": {
+      "query": "search_text_in_file",
+      "root": "app",
+      "max_matches": 5
+    },
+    "assert": {
+      "equals": {
+        "ok": true
+      },
+      "min_value": {
+        "match_count": 1
+      }
+    }
+  },
+  {
+    "name": "tool_table_extract_xlsx",
+    "kind": "tool",
+    "tool": "table_extract",
+    "args": {
+      "path": "evals/fixtures/generated/opcode_table.xlsx",
+      "query": "Operation Denied",
+      "max_tables": 2,
+      "max_rows": 6
+    },
+    "prepare": {
+      "fixture": "opcode_xlsx"
+    },
+    "assert": {
+      "equals": {
+        "ok": true
+      },
+      "min_value": {
+        "table_count": 1
+      },
+      "contains": {
+        "tables.0.rows.0": [
+          "15h"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_validation_context_web_tools_success",
+    "kind": "helper",
+    "helper": "_summarize_validation_context",
+    "args": {
+      "tool_events": [
+        {
+          "__type": "ToolEvent",
+          "name": "search_web",
+          "input": {
+            "query": "latest openai news"
+          },
+          "output_preview": "{\"ok\": true, \"query\": \"latest openai news\", \"engine\": \"duckduckgo_html\", \"count\": 3}"
+        },
+        {
+          "__type": "ToolEvent",
+          "name": "fetch_web",
+          "input": {
+            "url": "https://example.com/story"
+          },
+          "output_preview": "{\"ok\": true, \"url\": \"https://example.com/story\", \"source_format\": \"html_text_extracted\", \"length\": 1200}"
+        }
+      ]
+    },
+    "assert": {
+      "equals": {
+        "web_tools_used": true,
+        "web_tools_success": true
+      },
+      "contains_any": {
+        "web_tool_notes.0": [
+          "search_web",
+          "fetch_web"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_route_rules_web_research",
+    "kind": "helper",
+    "helper": "_route_request_by_rules",
+    "args": {
+      "user_message": "查一下大谷翔平最近在不在日本国内",
+      "attachment_metas": [],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "task_type": "web_research",
+        "specialists.0": "researcher",
+        "use_worker_tools": true,
+        "use_reviewer": true,
+        "use_web_prefetch": true
+      }
+    }
+  },
+  {
+    "name": "helper_route_rules_evidence_lookup",
+    "kind": "helper",
+    "helper": "_route_request_by_rules",
+    "args": {
+      "user_message": "请根据原文定位 15h，并给出出处。",
+      "attachment_metas": [
+        {
+          "original_name": "spec_excerpt.txt",
+          "suffix": ".txt",
+          "kind": "document",
+          "size": 4096
+        }
+      ],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "task_type": "evidence_lookup",
+        "specialists.0": "file_reader",
+        "use_planner": true,
+        "use_worker_tools": true,
+        "use_reviewer": true,
+        "use_structurer": true
+      }
+    }
+  },
+  {
+    "name": "helper_route_runtime_override_attachment_context_requires_tooling",
+    "kind": "helper",
+    "helper": "_debug_route_runtime_override_attachment_context_requires_tooling",
+    "assert": {
+      "equals": {
+        "route.task_type": "attachment_tooling",
+        "route.use_worker_tools": true,
+        "route.execution_policy": "attachment_tooling_generic"
+      },
+      "contains": {
+        "router_raw": [
+          "attachment_context_incomplete_requires_tooling"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_route_runtime_override_force_tool_followup",
+    "kind": "helper",
+    "helper": "_debug_route_runtime_override_force_tool_followup",
+    "assert": {
+      "equals": {
+        "route.use_worker_tools": true,
+        "route.execution_policy": "continue_tooling"
+      },
+      "contains": {
+        "router_raw": [
+          "followup_execution_ack_forces_tool_continuation"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_hook_before_route_finalize_no_longer_changes_task_type",
+    "kind": "helper",
+    "helper": "_hook_before_route_finalize",
+    "args": {
+      "route": {
+        "task_type": "simple_understanding",
+        "primary_intent": "understanding",
+        "execution_policy": "attachment_understanding_direct",
+        "use_planner": false,
+        "use_worker_tools": false,
+        "use_reviewer": false,
+        "use_revision": false,
+        "use_structurer": false,
+        "use_web_prefetch": false,
+        "use_conflict_detector": false
+      },
+      "router_raw": "{\"source\":\"rules\"}",
+      "planner_user_message": "请解释这个设计文档的整体思路",
+      "attachment_issues": [
+        "文档解析失败"
+      ],
+      "followup_has_attachments": true,
+      "followup_attachment_requires_tools": true,
+      "attachment_metas": [
+        {
+          "original_name": "spec.pdf",
+          "suffix": ".pdf",
+          "kind": "document",
+          "size": 7340032
+        }
+      ],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "route.task_type": "simple_understanding",
+        "route.use_worker_tools": false
+      }
+    }
+  },
+  {
+    "name": "helper_followup_search_inherits_previous_topic",
+    "kind": "helper",
+    "helper": "_build_followup_topic_hint",
+    "args": {
+      "user_message": "上网查一下",
+      "history_turns": [
+        {
+          "role": "user",
+          "text": "查一下大谷翔平最近在不在日本国内"
+        },
+        {
+          "role": "assistant",
+          "text": "先前答复错误地拒绝了这个请求。"
+        }
+      ]
+    },
+    "assert": {
+      "contains_any": {
+        "result": [
+          "大谷翔平",
+          "日本国内"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_route_rules_followup_tool_ack_keeps_tools_enabled",
+    "kind": "helper",
+    "helper": "_route_request_by_rules",
+    "args": {
+      "user_message": "开始搜索\n\n[延续主题]\n去 /Users/dalizhou/Desktop/new_validation_agent/app 下面找 handle_route 和 run_chat 这两个函数。",
+      "attachment_metas": [],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "use_worker_tools": true
+      },
+      "not_contains": {
+        "task_type": [
+          "simple_qa"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_force_initial_tool_execution_detects_code_lookup",
+    "kind": "helper",
+    "helper": "_should_force_initial_tool_execution",
+    "args": {
+      "user_message": "解释 workbench 文件夹下的两个函数 handle_route 和 run_chat",
+      "attachment_metas": []
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
+    "name": "helper_debug_kernel_module_snapshot_exposes_selected_modules",
+    "kind": "helper",
+    "helper": "_debug_kernel_module_snapshot",
+    "args": {},
+    "assert": {
+      "equals": {
+        "selected_modules.router": "router_rules@1.0.0",
+        "selected_modules.policy": "policy_resolver@1.0.0",
+        "selected_modules.attachment_context": "attachment_context@1.0.0",
+        "selected_modules.finalizer": "finalizer@1.0.0",
+        "selected_modules.tool_registry": "tool_registry@1.0.0",
+        "selected_modules.provider:api_key": "provider_openai_api@1.0.0",
+        "selected_modules.provider:codex_auth": "provider_codex_auth@1.0.0"
+      }
+    }
+  },
+  {
+    "name": "helper_debug_kernel_module_snapshot_exposes_runtime_paths",
+    "kind": "helper",
+    "helper": "_debug_kernel_module_snapshot",
+    "args": {},
+    "assert": {
+      "contains": {
+        "runtime_files.active_manifest_path": [
+          "app/data/runtime/active_manifest.json"
+        ],
+        "runtime_files.module_health_path": [
+          "app/data/runtime/module_health.json"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_debug_tool_registry_snapshot_exposes_tools",
+    "kind": "helper",
+    "helper": "_debug_tool_registry_snapshot",
+    "args": {},
+    "assert": {
+      "min_value": {
+        "tool_count": 1
+      },
+      "contains": {
+        "selected_ref": [
+          "tool_registry@1.0.0"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_debug_role_contract_matrix",
+    "kind": "helper",
+    "helper": "_debug_role_contract_matrix",
+    "args": {},
+    "assert": {
+      "equals": {
+        "ok": true,
+        "roles.0.ok": true,
+        "profiles.0.ok": true,
+        "profiles.1.ok": true,
+        "profiles.2.ok": true
+      },
+      "contains": {
+        "roles.0.role": [
+          "planner"
+        ],
+        "roles.4.role": [
+          "researcher"
+        ],
+        "profiles.0.profile_id": [
+          "explainer"
+        ],
+        "profiles.1.profile_id": [
+          "evidence"
+        ],
+        "profiles.2.profile_id": [
+          "patch_worker"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_debug_capability_multi_module_snapshot_loads_office_and_addon_modules",
+    "kind": "helper",
+    "helper": "_debug_capability_multi_module_snapshot",
+    "args": {},
+    "assert": {
+      "equals": {
+        "module_count": 2,
+        "primary_tool_module": "workspace_tools"
+      },
+      "contains_any": {
+        "module_ids.0": [
+          "office_modules"
+        ],
+        "module_ids.1": [
+          "office_addons"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_debug_kernel_host_snapshot_exposes_primary_agent_and_tool_modules",
+    "kind": "helper",
+    "helper": "_debug_kernel_host_snapshot",
+    "args": {},
+    "assert": {
+      "equals": {
+        "primary_agent_module.module_id": "office_agent",
+        "primary_tool_module.module_id": "workspace_tools",
+        "primary_output_module.module_id": "output_finalizer",
+        "primary_memory_module.module_id": "overlay_memory"
+      },
+      "contains_any": {
+        "capability_modules.0": [
+          "packages.office_modules"
+        ]
+      }
+    }
+  }
+]
