@@ -100,6 +100,9 @@ from app.core.kernel_debug_support import (
     debug_kernel_shadow_validation_rejects_broken_manifest as debug_kernel_shadow_validation_rejects_broken_manifest_helper,
 )
 from app.execution_policy import execution_policy_spec, planner_enabled_for_policy
+from app.intent_classifier import IntentClassifier
+from app.intent_schema import IntentClassification, RequestSignals
+from app.policy_router import PolicyRouter
 from app.evolution import EvolutionStore
 from app.models import AgentPanel, ChatSettings, ToolEvent
 from app.openai_auth import OpenAIAuthManager, normalize_model_for_auth_mode
@@ -128,6 +131,7 @@ from app.router_rules import (
     VERIFICATION_HINTS,
     text_has_any,
 )
+from app.router_signals import RouterSignalExtractor
 
 if TYPE_CHECKING:
     from packages.runtime_core.blackboard import Blackboard
@@ -2022,9 +2026,10 @@ class OfficeAgent:
             "Router 分诊完成: "
             f"task_type={route.get('task_type')}, complexity={route.get('complexity')}, source={route.get('source')}。"
         )
+        is_llm_routed = str(route.get("source") or "").startswith("llm")
         add_debug(
-            stage="llm_to_backend" if route.get("source") == "llm_router" else "backend_router",
-            title="Router 判定 -> Coordinator" if route.get("source") == "llm_router" else "规则 Router 判定 -> Coordinator",
+            stage="llm_to_backend" if is_llm_routed else "backend_router",
+            title="Router 判定 -> Coordinator" if is_llm_routed else "规则 Router 判定 -> Coordinator",
             detail=(
                 f"route={json.dumps(route, ensure_ascii=False)}\n"
                 f"raw={self._shorten(router_raw, 2400 if not debug_raw else 120000)}"
@@ -5675,6 +5680,8 @@ class OfficeAgent:
         return [
             f"task_type: {route.get('task_type')}",
             f"primary_intent: {route.get('primary_intent')}",
+            f"action_type: {route.get('action_type')}",
+            f"intent_confidence: {route.get('intent_confidence')}",
             f"execution_policy: {route.get('execution_policy')}",
             f"runtime_profile: {route.get('runtime_profile')}",
             f"complexity: {route.get('complexity')}",
@@ -7424,6 +7431,21 @@ class OfficeAgent:
         normalized["router_model"] = str(normalized.get("router_model") or "").strip()
         return normalized
 
+    def _router_signal_extractor(self) -> RouterSignalExtractor:
+        return RouterSignalExtractor(self, news_hints=_NEWS_HINTS)
+
+    def _intent_classifier(self) -> IntentClassifier:
+        return IntentClassifier(self)
+
+    def _policy_router(self) -> PolicyRouter:
+        return PolicyRouter(self)
+
+    def _strip_internal_route_fields(self, route: dict[str, Any]) -> dict[str, Any]:
+        cleaned = dict(route or {})
+        cleaned.pop("_signals", None)
+        cleaned.pop("_rules_intent", None)
+        return cleaned
+
     def _route_request_by_rules(
         self,
         *,
@@ -7480,176 +7502,38 @@ class OfficeAgent:
         route_state: dict[str, Any] | None = None,
         inline_followup_context: bool = False,
     ) -> dict[str, Any]:
-        text = (user_message or "").strip().lower()
-        context_dependent_followup = self._looks_like_context_dependent_followup(user_message)
-        has_attachments = bool(attachment_metas)
-        spec_lookup_request = self._looks_like_spec_lookup_request(user_message, attachment_metas)
-        evidence_required = self._requires_evidence_mode(user_message, attachment_metas)
-        attachment_needs_tooling = any(self._attachment_needs_tooling(meta) for meta in attachment_metas)
-        inline_parseable_attachments = has_attachments and all(
-            self._attachment_is_inline_parseable(meta) for meta in attachment_metas
-        )
-        inline_document_payload = self._looks_like_inline_document_payload(user_message)
-        understanding_request = self._looks_like_understanding_request(user_message)
-        holistic_document_explanation = has_attachments and self._looks_like_holistic_document_explanation_request(user_message)
-        source_trace_request = self._looks_like_source_trace_request(user_message)
-        explicit_tool_confirmation = self._looks_like_explicit_tool_confirmation(user_message)
-        meeting_minutes_request = self._looks_like_meeting_minutes_request(user_message)
-        has_url = "http://" in text or "https://" in text
-        short_query_like = len(text) <= 280 and "\n" not in text
-        explicit_web_intent = any(hint in text for hint in ("上网", "网上", "联网", "web research", "web_research"))
-        internal_ticket_reference = self._looks_like_internal_ticket_reference(user_message)
-        news_request = (
-            any(hint in text for hint in _NEWS_HINTS)
-            and short_query_like
-            and not has_attachments
-            and not inline_document_payload
-            and not internal_ticket_reference
-        )
-        heavy_web_research_markers = (
-            "出处",
-            "来源",
-            "source",
-            "链接",
-            "link",
-            "比较",
-            "对比",
-            "compare",
-            "comparison",
-            "核对",
-            "核验",
-            "verify",
-            "verification",
-            "fact check",
-            "真假",
-            "是否属实",
-            "timeline",
-            "时间线",
-            "谣言",
-        )
-        explicit_news_brief_markers = (
-            "news",
-            "新闻",
-            "ニュース",
-            "headline",
-            "头条",
-            "热点",
-            "热搜",
-            "简报",
-            "汇总",
-        )
-        web_news_brief_request = (
-            news_request
-            and any(marker in text for marker in explicit_news_brief_markers)
-            and not any(marker in text for marker in heavy_web_research_markers)
-        )
-        web_request = (
-            news_request
-            or explicit_web_intent
-            or (
-                has_url
-                and not internal_ticket_reference
-                and not has_attachments
-                and not inline_document_payload
-            )
-        )
-        request_requires_tools = self._request_likely_requires_tools(user_message, attachment_metas)
-        local_code_lookup_request = self._looks_like_local_code_lookup_request(user_message, attachment_metas)
-        grounded_generation_hints = (
-            "参考",
-            "参照",
-            "对照",
-            "基于现有",
-            "按现有",
-            "沿用",
-            "按这个目录",
-            "在这个目录",
-            "在该目录",
-            "按这个文件",
-            "参考目录",
-            "reference",
-            "based on",
-            "according to",
-            "existing code",
-            "existing file",
-        )
-        grounded_code_generation_context = (
-            has_attachments
-            or inline_document_payload
-            or spec_lookup_request
-            or evidence_required
-            or local_code_lookup_request
-            or self._message_has_explicit_local_path(user_message)
-            or self._has_file_like_lookup_token(text)
-            or any(hint in text for hint in grounded_generation_hints)
-        )
-        signals = {
-            "text": text,
-            "attachment_metas": attachment_metas,
-            "route_state": route_state or {},
-            "inline_followup_context": bool(inline_followup_context),
-            "context_dependent_followup": context_dependent_followup,
-            "has_attachments": has_attachments,
-            "spec_lookup_request": spec_lookup_request,
-            "evidence_required": evidence_required,
-            "attachment_needs_tooling": attachment_needs_tooling,
-            "inline_parseable_attachments": inline_parseable_attachments,
-            "inline_document_payload": inline_document_payload,
-            "understanding_request": understanding_request,
-            "holistic_document_explanation": holistic_document_explanation,
-            "source_trace_request": source_trace_request,
-            "explicit_tool_confirmation": explicit_tool_confirmation,
-            "meeting_minutes_request": meeting_minutes_request,
-            "web_news_brief_request": web_news_brief_request,
-            "web_request": web_request,
-            "request_requires_tools": request_requires_tools,
-            "local_code_lookup_request": local_code_lookup_request,
-            "grounded_code_generation_context": grounded_code_generation_context,
-        }
-        inherited_primary_intent = self._infer_followup_primary_intent_from_state(
+        signals = self._router_signal_extractor().extract(
             user_message=user_message,
+            attachment_metas=attachment_metas,
+            settings=settings,
             route_state=route_state,
-            signals=signals,
+            inline_followup_context=inline_followup_context,
         )
-        if inherited_primary_intent:
-            signals["inherited_primary_intent"] = inherited_primary_intent
-        primary_intent = self._classify_primary_intent(
+        rules_intent = self._intent_classifier().classify_rules(
             user_message=user_message,
             attachment_metas=attachment_metas,
             route_state=route_state,
             signals=signals,
         )
-
-        fallback = {
-            "task_type": "standard",
-            "complexity": "medium",
-            "use_planner": True,
-            "use_worker_tools": bool(settings.enable_tools and request_requires_tools),
-            "use_reviewer": True,
-            "use_revision": True,
-            "use_structurer": True,
-            "use_web_prefetch": bool(settings.enable_tools and web_request),
-            "use_conflict_detector": True,
-            "specialists": [],
-            "needs_llm_router": False,
-            "reason": "rules_default_full_pipeline",
-            "source": "rules",
-            "summary": "默认走完整流水线。",
-            "router_model": "",
-            "primary_intent": primary_intent,
-            "execution_policy": self._default_execution_policy_for_intent(primary_intent),
-            "spec_lookup_request": spec_lookup_request,
-            "evidence_required_mode": evidence_required,
-            "default_root_search": bool(settings.enable_tools and self._should_auto_search_default_roots(user_message, attachment_metas)),
-        }
-        return self._resolve_execution_policy(
-            primary_intent=primary_intent,
+        policy_router = self._policy_router()
+        fallback = policy_router.build_fallback(
+            intent=rules_intent,
+            user_message=user_message,
+            attachment_metas=attachment_metas,
+            settings=settings,
+            signals=signals,
+        )
+        route = policy_router.route(
+            intent=rules_intent,
             user_message=user_message,
             attachment_metas=attachment_metas,
             settings=settings,
             signals=signals,
             fallback=fallback,
         )
+        route["_signals"] = signals.to_dict()
+        route["_rules_intent"] = rules_intent.to_dict()
+        return route
 
     def _run_router(
         self,
@@ -7661,80 +7545,53 @@ class OfficeAgent:
         settings: ChatSettings,
         rules_route: dict[str, Any],
     ) -> tuple[dict[str, Any], str]:
-        fallback = self._normalize_route_decision(rules_route, fallback=rules_route, settings=settings)
-        auth_summary = self._auth_manager.auth_summary()
-        if not bool(auth_summary.get("available")):
-            return fallback, json.dumps({"skipped": auth_summary.get("reason") or "openai_auth_missing"}, ensure_ascii=False)
+        base_route = self._strip_internal_route_fields(rules_route)
+        fallback = self._normalize_route_decision(base_route, fallback=base_route, settings=settings)
 
-        router_input = "\n".join(
-            [
-                f"user_message:\n{user_message.strip() or '(empty)'}",
-                f"history_summary:\n{summary.strip() or '(none)'}",
-                f"attachments:\n{self._summarize_attachment_metas_for_agents(attachment_metas)}",
-                f"enable_tools={str(settings.enable_tools).lower()}",
-                f"rules_task_type={fallback['task_type']}",
-                f"rules_complexity={fallback['complexity']}",
-                f"rules_reason={fallback['reason']}",
-                f"rules_summary={fallback['summary']}",
-            ]
-        )
-        messages = [
-            self._SystemMessage(
-                content=(
-                    "你是轻量 Router。"
-                    "你的职责是为当前请求选择最小可行链路，避免所有请求都跑完整流水线。"
-                    "优先最小化角色数和工具数，但不能牺牲明显必要的取证。"
-                    "只返回 JSON 对象，字段固定为 "
-                    "task_type, complexity, use_planner, use_worker_tools, use_reviewer, use_revision, "
-                    "use_structurer, use_web_prefetch, use_conflict_detector, specialists, reason, summary。"
-                    "specialists 只能从 researcher, file_reader, summarizer, fixer 中选择。"
-                    "complexity 只能是 low, medium, high。"
-                    "典型规则："
-                    "简单文本理解/小附件摘要 => specialists 可选 summarizer；"
-                    "规范定位/证据请求 => specialists 可选 file_reader；"
-                    "联网/实时问题 => specialists 可选 researcher；"
-                    "当用户在本地项目里找测试/文件/函数，且给了类似 tcg_accl0030 这类关键词时，"
-                    "应优先 use_worker_tools=true；先检索，不要先追问完整文件名或扩展名。"
-                    "不要输出思维链。"
-                )
-            ),
-            self._HumanMessage(content=router_input),
-        ]
-        try:
-            ai_msg, _, effective_model, notes = self._invoke_chat_with_runner(
-                messages=messages,
-                model=self.config.summary_model or requested_model,
-                max_output_tokens=500,
-                enable_tools=False,
-            )
-            raw_text = self._content_to_text(getattr(ai_msg, "content", "")).strip()
-            parsed = self._parse_json_object(raw_text)
-            if not parsed:
-                fallback["router_model"] = effective_model
-                fallback["source"] = "rules_fallback"
-                fallback["reason"] = f"{fallback['reason']}; router_invalid_json"
-                fallback["summary"] = f"{fallback['summary']} Router 未返回标准 JSON，回退规则分诊。"
-                return fallback, raw_text
-            normalized = self._normalize_route_decision(
-                {
-                    **parsed,
-                        "source": "llm_router",
-                        "router_model": effective_model,
-                        "needs_llm_router": False,
-                    },
-                fallback=fallback,
+        signals_payload = rules_route.get("_signals")
+        if isinstance(signals_payload, dict):
+            signals = RequestSignals.model_validate(signals_payload)
+        else:
+            signals = self._router_signal_extractor().extract(
+                user_message=user_message,
+                attachment_metas=attachment_metas,
                 settings=settings,
+                route_state=None,
+                inline_followup_context=False,
             )
-            if notes:
-                normalized["reason"] = "; ".join(
-                    [normalized["reason"], *self._normalize_string_list(notes, limit=2, item_limit=120)]
-                ).strip("; ")
-            return normalized, raw_text
-        except Exception as exc:
-            fallback["source"] = "rules_fallback"
-            fallback["reason"] = f"{fallback['reason']}; router_failed"
-            fallback["summary"] = f"{fallback['summary']} Router 调用失败，回退规则分诊。"
-            return fallback, json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+        intent_payload = rules_route.get("_rules_intent")
+        if isinstance(intent_payload, dict):
+            fallback_intent = IntentClassification.model_validate(intent_payload)
+        else:
+            fallback_intent = self._intent_classifier().classification_from_route(fallback)
+
+        classified_intent, raw_text = self._intent_classifier().classify_with_llm(
+            requested_model=requested_model,
+            user_message=user_message,
+            summary=summary,
+            attachment_metas=attachment_metas,
+            settings=settings,
+            signals=signals,
+            fallback=fallback_intent,
+        )
+        source_override = "llm_intent_classifier"
+        if not str(classified_intent.source or "").startswith("llm"):
+            source_override = "rules_fallback"
+
+        mapped = self._policy_router().route(
+            intent=classified_intent,
+            user_message=user_message,
+            attachment_metas=attachment_metas,
+            settings=settings,
+            signals=signals,
+            fallback=fallback,
+            source_override=source_override,
+            force_disable_llm_router=True,
+        )
+        mapped["_signals"] = signals.to_dict()
+        mapped["_rules_intent"] = classified_intent.to_dict()
+        return mapped, raw_text
 
     def _route_request(
         self,
@@ -7759,12 +7616,13 @@ class OfficeAgent:
             inline_followup_context=inline_followup_context,
         )
         if not rules_route.get("needs_llm_router"):
-            return rules_route, json.dumps(
+            final_route = self._strip_internal_route_fields(rules_route)
+            return final_route, json.dumps(
                 {
                     "source": "rules",
-                    "task_type": rules_route.get("task_type"),
-                    "primary_intent": rules_route.get("primary_intent"),
-                    "execution_policy": rules_route.get("execution_policy"),
+                    "task_type": final_route.get("task_type"),
+                    "primary_intent": final_route.get("primary_intent"),
+                    "execution_policy": final_route.get("execution_policy"),
                 },
                 ensure_ascii=False,
             )
@@ -7777,7 +7635,7 @@ class OfficeAgent:
                 settings=settings,
                 rules_route=rules_route,
             )
-        return self._apply_route_runtime_overrides(
+        route, raw = self._apply_route_runtime_overrides(
             route=route,
             router_raw=raw,
             user_message=user_message,
@@ -7788,6 +7646,7 @@ class OfficeAgent:
             followup_attachment_requires_tools=followup_attachment_requires_tools,
             force_tool_followup=force_tool_followup,
         )
+        return self._strip_internal_route_fields(route), raw
 
     def _apply_route_runtime_overrides(
         self,

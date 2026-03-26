@@ -1,0 +1,105 @@
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+
+PrimaryIntent = Literal[
+    "understanding",
+    "evidence",
+    "web",
+    "code_lookup",
+    "generation",
+    "meeting_minutes",
+    "qa",
+    "standard",
+]
+
+ActionType = Literal["answer", "search", "read", "modify", "create"]
+
+
+class RequestSignals(BaseModel):
+    text: str = ""
+    attachment_metas: list[dict[str, Any]] = Field(default_factory=list)
+    route_state: dict[str, Any] = Field(default_factory=dict)
+    inline_followup_context: bool = False
+    context_dependent_followup: bool = False
+    has_attachments: bool = False
+    spec_lookup_request: bool = False
+    evidence_required: bool = False
+    attachment_needs_tooling: bool = False
+    inline_parseable_attachments: bool = False
+    inline_document_payload: bool = False
+    understanding_request: bool = False
+    holistic_document_explanation: bool = False
+    source_trace_request: bool = False
+    explicit_tool_confirmation: bool = False
+    meeting_minutes_request: bool = False
+    web_news_brief_request: bool = False
+    web_request: bool = False
+    request_requires_tools: bool = False
+    local_code_lookup_request: bool = False
+    grounded_code_generation_context: bool = False
+    default_root_search: bool = False
+    inherited_primary_intent: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump()
+
+
+class IntentClassification(BaseModel):
+    primary_intent: PrimaryIntent = "standard"
+    secondary_intents: list[str] = Field(default_factory=list)
+    requires_tools: bool = False
+    requires_grounding: bool = False
+    requires_web: bool = False
+    requires_local_lookup: bool = False
+    action_type: ActionType = "answer"
+    confidence: float = 0.7
+    reason_short: str = ""
+    source: str = "rules_intent_classifier"
+    classifier_model: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = self.model_dump()
+        payload["confidence"] = max(0.0, min(1.0, float(payload.get("confidence") or 0.0)))
+        return payload
+
+
+class RouteDecision(BaseModel):
+    task_type: str = "standard"
+    complexity: Literal["low", "medium", "high"] = "medium"
+    use_planner: bool = False
+    use_worker_tools: bool = False
+    use_reviewer: bool = False
+    use_revision: bool = False
+    use_structurer: bool = False
+    use_web_prefetch: bool = False
+    use_conflict_detector: bool = False
+    specialists: list[str] = Field(default_factory=list)
+    needs_llm_router: bool = False
+    reason: str = ""
+    summary: str = ""
+    source: str = "rules"
+    router_model: str = ""
+    execution_policy: str = "standard_full_pipeline"
+    runtime_profile: str = "explainer"
+    primary_intent: PrimaryIntent = "standard"
+    secondary_intents: list[str] = Field(default_factory=list)
+    requires_tools: bool = False
+    requires_grounding: bool = False
+    requires_web: bool = False
+    requires_local_lookup: bool = False
+    action_type: ActionType = "answer"
+    intent_confidence: float = 0.7
+    intent_source: str = "rules_intent_classifier"
+    intent_reason: str = ""
+    spec_lookup_request: bool = False
+    evidence_required_mode: bool = False
+    default_root_search: bool = False
+
+    def to_route_dict(self) -> dict[str, Any]:
+        payload = self.model_dump()
+        payload["intent_confidence"] = max(0.0, min(1.0, float(payload.get("intent_confidence") or 0.0)))
+        return payload
