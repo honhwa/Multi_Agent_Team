@@ -136,6 +136,32 @@ class OfficeLegacyHelperSurface(ABC):
     ) -> Any:
         raise NotImplementedError
 
+    @abstractmethod
+    def route_request_by_rules(
+        self,
+        *,
+        user_message: str,
+        attachment_metas: list[dict[str, Any]],
+        settings: Any,
+        route_state: dict[str, Any] | None = None,
+        inline_followup_context: bool = False,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def build_session_route_state(self, route: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def normalize_route_decision(
+        self,
+        *,
+        route: dict[str, Any],
+        fallback: dict[str, Any] | None = None,
+        settings: Any | None = None,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
 
 def _default_legacy_helper_surface_metrics() -> dict[str, Any]:
     return {
@@ -241,6 +267,66 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
             route_state=route_state,
             progress_cb=progress_cb,
             **extra,
+        )
+
+    def route_request_by_rules(
+        self,
+        *,
+        user_message: str,
+        attachment_metas: list[dict[str, Any]],
+        settings: Any,
+        route_state: dict[str, Any] | None = None,
+        inline_followup_context: bool = False,
+    ) -> dict[str, Any]:
+        method = getattr(self._legacy_runtime, "route_request_by_rules", None)
+        if callable(method):
+            return dict(
+                method(
+                    user_message=user_message,
+                    attachment_metas=attachment_metas,
+                    settings=settings,
+                    route_state=route_state,
+                    inline_followup_context=inline_followup_context,
+                )
+                or {}
+            )
+        _record_legacy_helper_surface_usage("_route_request_by_rules", kind="method")
+        return dict(
+            self._legacy_runtime._route_request_by_rules(
+                user_message=user_message,
+                attachment_metas=attachment_metas,
+                settings=settings,
+                route_state=route_state,
+                inline_followup_context=inline_followup_context,
+            )
+            or {}
+        )
+
+    def build_session_route_state(self, route: dict[str, Any]) -> dict[str, Any]:
+        method = getattr(self._legacy_runtime, "build_session_route_state", None)
+        if callable(method):
+            return dict(method(route) or {})
+        _record_legacy_helper_surface_usage("_build_session_route_state", kind="method")
+        return dict(self._legacy_runtime._build_session_route_state(route) or {})
+
+    def normalize_route_decision(
+        self,
+        *,
+        route: dict[str, Any],
+        fallback: dict[str, Any] | None = None,
+        settings: Any | None = None,
+    ) -> dict[str, Any]:
+        method = getattr(self._legacy_runtime, "normalize_route_decision", None)
+        if callable(method):
+            return dict(method(route=route, fallback=fallback, settings=settings) or {})
+        _record_legacy_helper_surface_usage("_normalize_route_decision_impl", kind="method")
+        return dict(
+            self._legacy_runtime._normalize_route_decision_impl(
+                route=route,
+                fallback=fallback,
+                settings=settings,
+            )
+            or {}
         )
 
 

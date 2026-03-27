@@ -38,6 +38,19 @@ class _FakeLegacyRuntime:
         _ = args, kwargs
         return {"execution_policy": "standard_safe_pipeline"}
 
+    def _build_session_route_state(self, route: dict[str, Any]) -> dict[str, Any]:
+        return {"copied_execution_policy": str(route.get("execution_policy") or "")}
+
+    def _normalize_route_decision_impl(
+        self,
+        *,
+        route: dict[str, Any],
+        fallback: dict[str, Any] | None = None,
+        settings: Any | None = None,
+    ) -> dict[str, Any]:
+        _ = fallback, settings
+        return {"execution_policy": str(route.get("execution_policy") or "")}
+
 
 def test_shadow_replay_payload_uses_structured_result() -> None:
     payload = _shadow_replay_result_payload(
@@ -134,12 +147,19 @@ def test_legacy_helper_surface_records_call_counts(tmp_path: Any, monkeypatch: p
     adapter = LegacyOfficeHelperAdapter(_FakeLegacyRuntime())
 
     _ = adapter.tools
-    adapter._route_request_by_rules(user_message="hello")
+    route = adapter.route_request_by_rules(user_message="hello", attachment_metas=[], settings=ChatSettings())
+    route_state = adapter.build_session_route_state(route)
+    normalized = adapter.normalize_route_decision(route=route, fallback=route, settings=ChatSettings())
     adapter.run_chat([], "", "hello", [], ChatSettings())
 
     metrics = read_legacy_helper_surface_metrics()
     reset_legacy_helper_surface_metrics()
 
+    assert route["execution_policy"] == "standard_safe_pipeline"
+    assert route_state["copied_execution_policy"] == "standard_safe_pipeline"
+    assert normalized["execution_policy"] == "standard_safe_pipeline"
     assert metrics["run_chat_calls"] == 1
     assert metrics["method_calls"]["_route_request_by_rules"] == 1
+    assert metrics["method_calls"]["_build_session_route_state"] == 1
+    assert metrics["method_calls"]["_normalize_route_decision_impl"] == 1
     assert metrics["attribute_accesses"]["tools"] == 1

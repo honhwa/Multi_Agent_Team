@@ -109,6 +109,9 @@ class LegacyHostFacade:
         return self.host.tools
 
     def maybe_compact_session(self, session: dict[str, Any], keep_last_turns: int) -> bool:
+        method = getattr(self.host, "compact_session", None)
+        if callable(method):
+            return bool(method(session, keep_last_turns))
         if hasattr(self.host, "_summarize_turns") and hasattr(self.host, "config"):
             return bool(compact_legacy_session(self.host, session, keep_last_turns))
         return bool(self.host.maybe_compact_session(session, keep_last_turns))
@@ -117,11 +120,17 @@ class LegacyHostFacade:
         return dict(self.host._debug_kernel_host_snapshot() or {})
 
     def debug_role_lab_runtime_snapshot(self) -> dict[str, Any]:
+        method = getattr(self.host, "role_lab_runtime_snapshot", None)
+        if callable(method):
+            return dict(method() or {})
         if hasattr(self.host, "_role_runtime_controller"):
             return dict(legacy_role_lab_runtime_snapshot(self.host) or {})
         return dict(self.host._debug_role_lab_runtime_snapshot() or {})
 
     def debug_tool_registry_snapshot(self) -> dict[str, Any]:
+        method = getattr(self.host, "tool_registry_snapshot", None)
+        if callable(method):
+            return dict(method() or {})
         if hasattr(self.host, "_module_registry") and hasattr(self.host, "_lc_tools"):
             return dict(legacy_tool_registry_snapshot(self.host) or {})
         return dict(self.host._debug_tool_registry_snapshot() or {})

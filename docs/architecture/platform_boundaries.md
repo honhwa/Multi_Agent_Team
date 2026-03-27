@@ -33,6 +33,18 @@ For `app/agent.py`, prefer `packages/office_modules/*` helpers for session compa
 
 For `packages/runtime_core/kernel_host.py`, prefer `packages/runtime_core/legacy_host_support.py` for blackboard orchestration, `__getattr__` fallback observability, and other compatibility-only lifecycle glue. `AgentOSRuntime` should consume explicit legacy facades instead of spreading whole mixed host object access.
 
+The current migration focus for `packages/runtime_core/kernel_host.py` is category-based drain-down:
+
+- host-structure dependencies should use explicit shell methods and facades instead of `__getattr__`
+  - `_role_runtime_controller`
+  - `_module_registry`
+  - `_lc_tools`
+  - `_summarize_turns`
+- route-helper dependencies should use explicit legacy route-helper aliases instead of `__getattr__`
+  - `_route_request_by_rules`
+  - `_build_session_route_state`
+  - `_normalize_route_decision_impl`
+
 ## Retired Compatibility Zones
 
 - `app/router_rules.py`

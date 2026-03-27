@@ -832,7 +832,7 @@ class KernelRuntime:
             active_validation = smoke_runtime.validate_active_manifest()
             smoke_agent = create_office_legacy_surface(smoke_config, kernel_runtime=smoke_runtime)
             settings = ChatSettings()
-            route = smoke_agent._route_request_by_rules(
+            route = smoke_agent.route_request_by_rules(
                 user_message=user_message,
                 attachment_metas=[],
                 settings=settings,
@@ -1018,7 +1018,7 @@ class KernelRuntime:
         route: dict[str, object] = {}
 
         try:
-            route = contract_agent._route_request_by_rules(
+            route = contract_agent.route_request_by_rules(
                 user_message="给我今天的新闻",
                 attachment_metas=[],
                 settings=settings,
@@ -1043,7 +1043,7 @@ class KernelRuntime:
                 "execution_policy": "qa_direct",
                 "use_worker_tools": False,
             }
-            normalized = contract_agent._normalize_route_decision_impl(route=route_input, fallback=route_input, settings=settings)
+            normalized = contract_agent.normalize_route_decision(route=route_input, fallback=route_input, settings=settings)
             checks.append(
                 self._build_contract_check(
                     label="policy",

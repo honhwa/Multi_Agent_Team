@@ -416,14 +416,14 @@ def _run_conversation_case(
                 attachment_ids=resolved_attachment_ids,
             )
 
-        route = agent._route_request_by_rules(
+        route = agent.route_request_by_rules(
             user_message=message,
             attachment_metas=attachments,
             settings=turn_settings,
             route_state=route_state_input,
             inline_followup_context=False,
         )
-        route_state = agent._build_session_route_state(route)
+        route_state = agent.build_session_route_state(route)
         execution_plan = []
         if route.get("use_planner"):
             execution_plan.append("planner")

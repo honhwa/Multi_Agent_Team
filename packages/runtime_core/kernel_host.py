@@ -15,6 +15,7 @@ from packages.agent_core import AgentCapabilityRuntime, build_agent_capability_r
 from packages.runtime_core.blackboard import Blackboard
 from packages.runtime_core.legacy_host_support import (
     build_primary_agent,
+    compact_primary_agent_session,
     create_blackboard,
     kernel_host_snapshot,
     read_kernel_host_getattr_metrics,
@@ -71,6 +72,83 @@ class KernelHost:
     @property
     def primary_agent(self) -> Any:
         return self._primary_agent
+
+    def compact_session(self, session: dict[str, Any], keep_last_turns: int) -> bool:
+        return bool(compact_primary_agent_session(self._primary_agent, session, keep_last_turns))
+
+    def role_lab_runtime_snapshot(self) -> dict[str, Any]:
+        return dict(self._primary_agent._debug_role_lab_runtime_snapshot() or {})
+
+    def tool_registry_snapshot(self) -> dict[str, Any]:
+        return dict(self._primary_agent._debug_tool_registry_snapshot() or {})
+
+    def route_request_by_rules(
+        self,
+        *,
+        user_message: str,
+        attachment_metas: list[dict[str, Any]],
+        settings: Any,
+        route_state: dict[str, Any] | None = None,
+        inline_followup_context: bool = False,
+    ) -> dict[str, Any]:
+        return dict(
+            self._primary_agent._route_request_by_rules(
+                user_message=user_message,
+                attachment_metas=attachment_metas,
+                settings=settings,
+                route_state=route_state,
+                inline_followup_context=inline_followup_context,
+            )
+            or {}
+        )
+
+    def _route_request_by_rules(
+        self,
+        *,
+        user_message: str,
+        attachment_metas: list[dict[str, Any]],
+        settings: Any,
+        route_state: dict[str, Any] | None = None,
+        inline_followup_context: bool = False,
+    ) -> dict[str, Any]:
+        return self.route_request_by_rules(
+            user_message=user_message,
+            attachment_metas=attachment_metas,
+            settings=settings,
+            route_state=route_state,
+            inline_followup_context=inline_followup_context,
+        )
+
+    def build_session_route_state(self, route: dict[str, Any]) -> dict[str, Any]:
+        return dict(self._primary_agent._build_session_route_state(route) or {})
+
+    def _build_session_route_state(self, route: dict[str, Any]) -> dict[str, Any]:
+        return self.build_session_route_state(route)
+
+    def normalize_route_decision(
+        self,
+        *,
+        route: dict[str, Any],
+        fallback: dict[str, Any] | None = None,
+        settings: Any | None = None,
+    ) -> dict[str, Any]:
+        return dict(
+            self._primary_agent._normalize_route_decision_impl(
+                route=route,
+                fallback=fallback,
+                settings=settings,
+            )
+            or {}
+        )
+
+    def _normalize_route_decision_impl(
+        self,
+        *,
+        route: dict[str, Any],
+        fallback: dict[str, Any] | None = None,
+        settings: Any | None = None,
+    ) -> dict[str, Any]:
+        return self.normalize_route_decision(route=route, fallback=fallback, settings=settings)
 
     def create_blackboard(
         self,

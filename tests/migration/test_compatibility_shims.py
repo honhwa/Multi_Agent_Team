@@ -4,7 +4,12 @@ from pathlib import Path
 
 from app.bootstrap import assemble_runtime
 from app.config import load_config
+from app.models import ChatSettings
 from packages.office_modules import execution_policy, intent_support, request_analysis, router_hints
+from packages.runtime_core.legacy_host_support import (
+    read_kernel_host_getattr_metrics,
+    reset_kernel_host_getattr_metrics,
+)
 from app.business_modules.office_module.manifest import OFFICE_MODULE_COMPATIBILITY_SHIMS
 
 
@@ -77,3 +82,33 @@ def test_legacy_agent_debug_helpers_remain_available_through_shim() -> None:
     assert "runtime_override_actions" in route_override_attachment
     assert route_override_followup["route"]["use_worker_tools"] is True
     assert "runtime_override_actions" in route_override_followup
+
+
+def test_legacy_host_route_helper_aliases_avoid_kernel_getattr_metrics() -> None:
+    reset_kernel_host_getattr_metrics()
+    runtime = assemble_runtime(load_config())
+    legacy = runtime.get_legacy_host()
+    assert legacy is not None
+
+    route = legacy._route_request_by_rules(
+        user_message="给我今天的新闻",
+        attachment_metas=[],
+        settings=ChatSettings(),
+        route_state={},
+        inline_followup_context=False,
+    )
+    route_state = legacy._build_session_route_state(route)
+    normalized = legacy._normalize_route_decision_impl(
+        route=route,
+        fallback=route,
+        settings=ChatSettings(),
+    )
+    metrics = read_kernel_host_getattr_metrics()
+    reset_kernel_host_getattr_metrics()
+
+    assert route["execution_policy"]
+    assert isinstance(route_state, dict)
+    assert normalized["execution_policy"]
+    assert "_route_request_by_rules" not in metrics["fallback_access_counts"]
+    assert "_build_session_route_state" not in metrics["fallback_access_counts"]
+    assert "_normalize_route_decision_impl" not in metrics["fallback_access_counts"]

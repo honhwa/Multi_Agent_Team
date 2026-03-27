@@ -37,6 +37,23 @@ def build_primary_agent(
     )
 
 
+def compact_primary_agent_session(primary_agent: Any, session: dict[str, Any], keep_last_turns: int) -> bool:
+    turns = session.get("turns", [])
+    if len(turns) <= primary_agent.config.summary_trigger_turns:
+        return False
+
+    keep = max(2, min(2000, keep_last_turns))
+    older = turns[:-keep]
+    recent = turns[-keep:]
+    if not older:
+        return False
+
+    existing_summary = session.get("summary", "")
+    session["summary"] = primary_agent._summarize_turns(existing_summary, older)
+    session["turns"] = recent
+    return True
+
+
 def create_blackboard(
     *,
     session_id: str | None,
@@ -266,6 +283,7 @@ def kernel_host_snapshot(
 
 __all__ = [
     "build_primary_agent",
+    "compact_primary_agent_session",
     "complete_blackboard",
     "create_blackboard",
     "kernel_host_snapshot",

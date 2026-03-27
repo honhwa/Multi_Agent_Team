@@ -33,10 +33,37 @@
 - office routing/policy helpers fully live behind module-scoped packages
 - integration tests pass without instantiating compatibility host objects
 
+## KernelHost Class-Level Retirement Entry Conditions
+
+Before `packages/runtime_core/kernel_host.py` can enter class-level retirement work, all of the following must be true:
+
+- host-structure fallback access is drained under a full verification pass:
+  - `_role_runtime_controller`
+  - `_module_registry`
+  - `_lc_tools`
+  - `_summarize_turns`
+- route-helper fallback access is drained under the same verification pass:
+  - `_route_request_by_rules`
+  - `_build_session_route_state`
+  - `_normalize_route_decision_impl`
+- the verification pass includes:
+  - full `pytest`
+  - minimal smoke demo
+  - gate evals
+  - main-entry runtime checks for `health`, `role-lab`, `sandbox`, and `chat`
+- `AgentOSRuntime` runtime code no longer adds new `get_legacy_host()` consumers outside the explicit compatibility allowlist
+- blackboard orchestration remains externalized in `packages/runtime_core/legacy_host_support.py`
+- the legacy facade still covers:
+  - `maybe_compact_session`
+  - `health`
+  - `role-lab`
+  - `sandbox`
+
 ## Sequence
 
 1. migrate office runtime internals into `app/business_modules/office_module/*`
 2. sever `office_module -> OfficeAgent` delegation
 3. observe and shrink `KernelHost.__getattr__` fallback access
 4. move blackboard orchestration into `packages/runtime_core/legacy_host_support.py`
-5. retire legacy capability host coupling
+5. drain host-structure and route-helper fallback categories
+6. retire legacy capability host coupling
