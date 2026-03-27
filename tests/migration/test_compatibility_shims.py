@@ -3,16 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import app.execution_policy as execution_policy
-import app.request_analysis_support as request_analysis_support
-import app.router_intent_support as router_intent_support
+from packages.office_modules import intent_support, request_analysis, router_hints
 from app.business_modules.office_module.manifest import OFFICE_MODULE_COMPATIBILITY_SHIMS
-from packages.office_modules import router_hints
 from packages.runtime_core.kernel_host import KernelHost as LegacyKernelHost
 
 
 def test_compatibility_shim_markers_exist() -> None:
-    assert "Compatibility shim" in (request_analysis_support.__doc__ or "")
-    assert "Compatibility shim" in (router_intent_support.__doc__ or "")
     assert "Compatibility shim" in (execution_policy.__doc__ or "")
     assert OFFICE_MODULE_COMPATIBILITY_SHIMS
 
@@ -28,3 +24,10 @@ def test_retired_router_rules_shim_is_replaced_by_canonical_router_hints() -> No
     assert Path("app/router_rules.py").exists() is False
     assert hasattr(router_hints, "SOURCE_TRACE_HINTS")
     assert hasattr(router_hints, "text_has_any")
+
+
+def test_retired_request_and_intent_support_shims_are_replaced_by_canonical_packages() -> None:
+    assert Path("app/request_analysis_support.py").exists() is False
+    assert Path("app/router_intent_support.py").exists() is False
+    assert hasattr(request_analysis, "looks_like_local_code_lookup_request")
+    assert hasattr(intent_support, "looks_like_understanding_request")

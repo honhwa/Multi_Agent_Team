@@ -117,7 +117,7 @@ from app.pipeline_hooks import (
     build_pipeline_hook_panel_payload,
     build_pipeline_hook_telemetry,
 )
-from app.request_analysis_support import (
+from packages.office_modules.request_analysis import (
     has_file_like_lookup_token as has_file_like_lookup_token_helper,
     looks_like_code_generation_request as looks_like_code_generation_request_helper,
     looks_like_local_code_lookup_request as looks_like_local_code_lookup_request_helper,
@@ -141,7 +141,7 @@ from app.router_signals import RouterSignalExtractor
 
 if TYPE_CHECKING:
     from packages.runtime_core.blackboard import Blackboard
-from app.router_intent_support import (
+from packages.office_modules.intent_support import (
     attachment_is_inline_parseable as attachment_is_inline_parseable_helper,
     attachment_needs_tooling as attachment_needs_tooling_helper,
     attachment_needs_tooling_for_turn as attachment_needs_tooling_for_turn_helper,

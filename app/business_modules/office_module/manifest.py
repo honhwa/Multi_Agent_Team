@@ -5,8 +5,6 @@ from app.contracts import ModuleManifest
 
 OFFICE_MODULE_COMPATIBILITY_SHIMS: tuple[str, ...] = (
     "app.agent.OfficeAgent",
-    "app.request_analysis_support",
-    "app.router_intent_support",
     "app.execution_policy",
 )
 

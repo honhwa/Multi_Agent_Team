@@ -25,6 +25,7 @@ Purpose:
 
 - track how many shims are still active
 - prove at least one shim has actually retired
+- track whether active and retired shim inventories stay aligned with docs
 - verify the shim inventory stays aligned with the protected list
 
 ### Second-Module Baseline Metrics

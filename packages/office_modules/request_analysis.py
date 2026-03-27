@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-__doc__ = """Compatibility shim for legacy office request-analysis heuristics.
+__doc__ = """Canonical office request-analysis helpers.
 
-These helpers still back the OfficeAgent runtime while the formal
-business-module surface lives in `app/business_modules/office_module`.
-New request-entry logic should flow through KernelHost + business modules
-rather than adding new rules here.
+These heuristics support the office compatibility runtime from the
+module-scoped package boundary rather than retired top-level shims.
 """
 
 import re

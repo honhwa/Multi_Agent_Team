@@ -25,8 +25,6 @@ Add or evolve logic in these areas when the intent is platform growth:
 These files exist to preserve legacy behavior and migration continuity. They are not valid places for new business heuristics, module-local prompt logic, or Swarm orchestration.
 
 - `app/agent.py`
-- `app/request_analysis_support.py`
-- `app/router_intent_support.py`
 - `app/execution_policy.py`
 - `packages/runtime_core/kernel_host.py`
 
@@ -34,6 +32,12 @@ These files exist to preserve legacy behavior and migration continuity. They are
 
 - `app/router_rules.py`
   - replaced by `packages/office_modules/router_hints.py`
+  - must not be reintroduced through runtime imports
+- `app/request_analysis_support.py`
+  - replaced by `packages/office_modules/request_analysis.py`
+  - must not be reintroduced through runtime imports
+- `app/router_intent_support.py`
+  - replaced by `packages/office_modules/intent_support.py`
   - must not be reintroduced through runtime imports
 
 ## Team Rules

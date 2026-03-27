@@ -10,14 +10,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 PROTECTED_SHIMS = {
     "app/agent.py",
-    "app/request_analysis_support.py",
-    "app/router_intent_support.py",
     "app/execution_policy.py",
     "packages/runtime_core/kernel_host.py",
 }
 
 RETIRED_SHIM_IMPORTS = {
     "app.router_rules": "packages.office_modules.router_hints",
+    "app.request_analysis_support": "packages.office_modules.request_analysis",
+    "app.router_intent_support": "packages.office_modules.intent_support",
 }
 
 REQUIRED_DOC_UPDATES = {

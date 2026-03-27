@@ -24,14 +24,14 @@ OUTPUT_PATH = REPO_ROOT / "artifacts" / "platform_metrics" / "latest.json"
 
 PROTECTED_SHIMS = (
     "app/agent.py",
-    "app/request_analysis_support.py",
-    "app/router_intent_support.py",
     "app/execution_policy.py",
     "packages/runtime_core/kernel_host.py",
 )
 
 RETIRED_SHIMS = (
     "app/router_rules.py",
+    "app/request_analysis_support.py",
+    "app/router_intent_support.py",
 )
 
 

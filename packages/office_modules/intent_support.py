@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-__doc__ = """Compatibility shim for legacy office intent helpers.
+__doc__ = """Canonical office intent helper functions.
 
-The active request path now resolves business execution through KernelHost
-and `office_module`. These helpers remain only to support the legacy
-OfficeAgent compatibility runtime.
+These helpers support office-oriented intent interpretation from the
+module-scoped package boundary rather than retired top-level shims.
 """
 
 from pathlib import Path

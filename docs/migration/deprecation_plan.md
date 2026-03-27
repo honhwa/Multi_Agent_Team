@@ -4,14 +4,20 @@
 
 - `app/agent.py`
 - `packages/runtime_core/kernel_host.py`
-- `app/request_analysis_support.py`
-- `app/router_intent_support.py`
 - `app/execution_policy.py`
 
 ## Completed Retirements
 
 - `app/router_rules.py`
   - Replaced by `packages/office_modules/router_hints.py`
+  - Removed from the runtime import path
+  - Protected by the platform-boundary gate so legacy imports fail review
+- `app/request_analysis_support.py`
+  - Replaced by `packages/office_modules/request_analysis.py`
+  - Removed from the runtime import path
+  - Protected by the platform-boundary gate so legacy imports fail review
+- `app/router_intent_support.py`
+  - Replaced by `packages/office_modules/intent_support.py`
   - Removed from the runtime import path
   - Protected by the platform-boundary gate so legacy imports fail review
 
