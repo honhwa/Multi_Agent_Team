@@ -11,7 +11,7 @@ from app.business_modules.office_module.workflow import ROLE_CHAIN, build_office
 from app.contracts import HealthReport, TaskRequest, TaskResponse
 from app.kernel.runtime_context import RuntimeContext
 from app.models import ChatSettings
-from packages.office_modules.agent_module import create_office_agent, create_office_runtime
+from packages.office_modules.agent_module import create_office_legacy_surface, create_office_runtime
 from packages.office_modules.execution_runtime import (
     OfficeExecutionRuntime,
     OfficeLegacyHelperSurface,
@@ -58,7 +58,7 @@ class OfficeModule:
         if self._legacy_host is not None:
             self._legacy_surface = adapt_office_legacy_helper_surface(self._legacy_host)
             return self._legacy_surface
-        self._legacy_surface = create_office_agent(self._config, kernel_runtime=self._kernel_runtime)
+        self._legacy_surface = create_office_legacy_surface(self._config, kernel_runtime=self._kernel_runtime)
         return self._legacy_surface
 
     def _runtime(self) -> OfficeExecutionRuntime:
