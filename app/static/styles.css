@@ -1328,7 +1328,8 @@ textarea {
 }
 
 .module-bay,
-.evolution-feed {
+.evolution-feed,
+.milestone-roadmap {
   display: grid;
   gap: 10px;
 }
@@ -1373,7 +1374,8 @@ textarea {
 }
 
 .module-card,
-.evolution-event {
+.evolution-event,
+.milestone-card {
   display: grid;
   gap: 8px;
   min-height: 132px;
@@ -1385,7 +1387,8 @@ textarea {
 }
 
 .module-card-head,
-.evolution-event-head {
+.evolution-event-head,
+.milestone-card-head {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
@@ -1393,10 +1396,48 @@ textarea {
 }
 
 .module-card-title,
-.evolution-event-title {
+.evolution-event-title,
+.milestone-card-title {
   font-size: 14px;
   font-weight: 700;
   color: #17374a;
+}
+
+.milestone-card-id {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: #4c6b7b;
+  text-transform: uppercase;
+}
+
+.milestone-status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid #c4ced7;
+  background: #f2f5f8;
+  color: #566977;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.milestone-status-badge.status-done {
+  border-color: #8fc9b0;
+  background: #edf8f2;
+  color: #186746;
+}
+
+.milestone-status-badge.status-active {
+  border-color: #9bcce7;
+  background: #eef7fd;
+  color: #0c587f;
+}
+
+.milestone-status-badge.status-queued {
+  border-color: #d8c79a;
+  background: #fff8e9;
+  color: #8c651d;
 }
 
 .module-card-ref,
@@ -1469,7 +1510,8 @@ textarea {
 }
 
 .module-card-desc,
-.evolution-event-summary {
+.evolution-event-summary,
+.milestone-card-summary {
   font-size: 12px;
   line-height: 1.45;
   color: #355364;
@@ -1484,6 +1526,12 @@ textarea {
 }
 
 .module-card-signals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.milestone-card-tags {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;

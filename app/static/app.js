@@ -45,6 +45,7 @@ const runtimeViewModulesBtn = document.getElementById("runtimeViewModulesBtn");
 const runtimeViewRolesBtn = document.getElementById("runtimeViewRolesBtn");
 const runtimeViewSplitBtn = document.getElementById("runtimeViewSplitBtn");
 const runtimeViewStatus = document.getElementById("runtimeViewStatus");
+const milestoneSidebarView = document.getElementById("milestoneSidebarView");
 const backendPolicyView = document.getElementById("backendPolicyView");
 const runStageBadge = document.getElementById("runStageBadge");
 const runStageText = document.getElementById("runStageText");
@@ -65,6 +66,8 @@ const moduleBay = document.getElementById("moduleBay");
 const moduleBayMeta = document.getElementById("moduleBayMeta");
 const evolutionFeed = document.getElementById("evolutionFeed");
 const evolutionFeedMeta = document.getElementById("evolutionFeedMeta");
+const milestoneRoadmap = document.getElementById("milestoneRoadmap");
+const milestoneRoadmapMeta = document.getElementById("milestoneRoadmapMeta");
 const kernelConsoleSection = document.getElementById("kernelConsoleSection");
 const kernelConsoleTitle = document.getElementById("kernelConsoleTitle");
 const kernelConsoleSubtitle = document.getElementById("kernelConsoleSubtitle");
@@ -128,6 +131,51 @@ const MODE_PRESETS = {
     enableTools: true,
   },
 };
+
+const AGENT_OS_MILESTONES = [
+  {
+    id: "M1",
+    title: "平台边界与基线指标",
+    status: "done",
+    summary: "边界规则、shim 台账、platform metrics 和 workflow 雏形已经落地。",
+    tags: ["boundary gate", "shim inventory", "metrics artifact"],
+  },
+  {
+    id: "M2",
+    title: "第二模块选择",
+    status: "done",
+    summary: "已完成候选对比，当前默认第二正式模块为 research_module。",
+    tags: ["research_module", "candidate matrix", "no office pseudo-split"],
+  },
+  {
+    id: "M3",
+    title: "第二正式模块交付",
+    status: "done",
+    summary: "research_module 已可独立 dispatch、独立 demo、独立测试。",
+    tags: ["kernel dispatch", "independent demo", "integration tests"],
+  },
+  {
+    id: "M4",
+    title: "Swarm 合同冻结",
+    status: "active",
+    summary: "下一步定义 branch/join/aggregator contract，并明确至少一种失败退化策略。",
+    tags: ["branch/join", "aggregator", "degradation strategy"],
+  },
+  {
+    id: "M5",
+    title: "Swarm MVP",
+    status: "queued",
+    summary: "范围只做多输入并行 + 最小聚合，并要求非开发者也能看懂。",
+    tags: ["parallel inputs", "minimal aggregation", "demo readability"],
+  },
+  {
+    id: "M6",
+    title: "门禁与 shim 退场",
+    status: "queued",
+    summary: "把 module/swarm/shim 门禁接进 workflow，并正式退场至少 1 个 shim。",
+    tags: ["workflow gates", "shim retirement", "regression guard"],
+  },
+];
 
 const ROLE_DEFS = [
   {
@@ -1696,6 +1744,55 @@ function renderEvolutionFeed(events = []) {
   });
 }
 
+function milestoneStatusLabel(status) {
+  const key = String(status || "").trim().toLowerCase();
+  if (key === "done") return "完成";
+  if (key === "active") return "当前";
+  return "待启动";
+}
+
+function renderMilestones() {
+  const milestones = Array.isArray(AGENT_OS_MILESTONES) ? AGENT_OS_MILESTONES : [];
+  const completedCount = milestones.filter((item) => String(item?.status || "") === "done").length;
+  const current = milestones.find((item) => String(item?.status || "") === "active") || milestones[completedCount] || milestones[0];
+
+  if (milestoneSidebarView) {
+    const lines = [
+      `当前阶段: ${String(current?.id || "-")} ${String(current?.title || "")}`.trim(),
+      `已完成: ${completedCount}/${milestones.length}`,
+      `下一重点: ${String(current?.summary || "等待路线图").trim() || "等待路线图"}`,
+      "路线: M1 -> M2 -> M3 -> M4 -> M5 -> M6",
+    ];
+    milestoneSidebarView.textContent = lines.join("\n");
+  }
+
+  if (milestoneRoadmapMeta) {
+    milestoneRoadmapMeta.textContent = `已完成 ${completedCount}/${milestones.length} · 当前阶段 ${String(current?.id || "-")}`;
+  }
+
+  if (!milestoneRoadmap) return;
+  milestoneRoadmap.innerHTML = "";
+  milestones.forEach((item) => {
+    const node = document.createElement("article");
+    const status = String(item?.status || "queued").trim().toLowerCase() || "queued";
+    node.className = `milestone-card status-${status}`;
+    node.innerHTML = `
+      <div class="milestone-card-head">
+        <div>
+          <div class="milestone-card-id">${String(item?.id || "-")}</div>
+          <div class="milestone-card-title">${String(item?.title || "Milestone")}</div>
+        </div>
+        <span class="milestone-status-badge status-${status}">${milestoneStatusLabel(status)}</span>
+      </div>
+      <div class="milestone-card-summary">${String(item?.summary || "").trim() || "暂无说明。"}</div>
+      <div class="milestone-card-tags">
+        ${(Array.isArray(item?.tags) ? item.tags : []).map((tag) => `<span class="signal-chip">${String(tag)}</span>`).join("")}
+      </div>
+    `;
+    milestoneRoadmap.appendChild(node);
+  });
+}
+
 function renderRoleLabRunGraph(lastRun = {}) {
   if (!roleLabRunGraph || !roleLabRunFailures) return;
   const nodes = Array.isArray(lastRun?.nodes) ? lastRun.nodes : [];
@@ -1950,6 +2047,7 @@ function renderKernelConsole(health = {}) {
 
   renderModuleBay(health);
   renderEvolutionFeed(recentEvents);
+  renderMilestones();
 }
 
 async function refreshSystemDashboard() {
