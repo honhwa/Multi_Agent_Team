@@ -64,8 +64,6 @@ from app.product_profiles import ensure_product_profile_env
 from app import session_context as session_context_impl
 from app.session_context import normalize_attachment_ids
 from app.storage import SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
-from packages.runtime_core.kernel_host import KernelHost as LegacyKernelHost
-
 PRODUCT_PROFILE = ensure_product_profile_env()
 config = load_config()
 session_store = SessionStore(config.sessions_dir)
@@ -77,9 +75,8 @@ kernel_runtime = build_kernel_runtime(config)
 agent_os_runtime: AgentOSRuntime = assemble_runtime(
     config,
     kernel_runtime=kernel_runtime,
-    legacy_host_factory=lambda: LegacyKernelHost(config, kernel_runtime=get_kernel_runtime()),
 )
-_agent: LegacyKernelHost | None = None
+_agent: Any | None = None
 APP_VERSION = "0.3.5"
 
 
@@ -202,16 +199,13 @@ def get_agent_os_runtime() -> AgentOSRuntime:
     return agent_os_runtime
 
 
-def get_agent() -> LegacyKernelHost:
+def get_agent() -> Any:
     global _agent
     legacy = get_agent_os_runtime().get_legacy_host()
     if legacy is not None:
         _agent = legacy
         return legacy
-    if _agent is None:
-        _agent = LegacyKernelHost(config, kernel_runtime=get_kernel_runtime())
-        get_agent_os_runtime().bind_legacy_host(_agent)
-    return _agent
+    raise RuntimeError("Legacy host is unavailable from AgentOSRuntime")
 
 app = FastAPI(title=PRODUCT_PROFILE.app_title, version=APP_VERSION)
 

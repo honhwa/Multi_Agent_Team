@@ -157,6 +157,19 @@ def _register_default_tool_contracts(kernel: KernelHost) -> None:
         )
 
 
+def _build_default_legacy_host_factory(
+    app_config: AppConfig,
+    *,
+    kernel_runtime: Any | None,
+) -> Callable[[], Any]:
+    def _factory() -> Any:
+        from packages.runtime_core.kernel_host import KernelHost as LegacyKernelHost
+
+        return LegacyKernelHost(app_config, kernel_runtime=kernel_runtime)
+
+    return _factory
+
+
 def assemble_runtime(
     app_config: AppConfig,
     *,
@@ -168,6 +181,12 @@ def assemble_runtime(
     cfg = assemble_config or build_assemble_config(app_config)
     kernel = KernelHost(kernel_version=cfg.kernel_version)
     shared_executor = LocalToolExecutor(app_config)
+    resolved_legacy_host_factory = legacy_host_factory
+    if legacy_host is None and resolved_legacy_host_factory is None:
+        resolved_legacy_host_factory = _build_default_legacy_host_factory(
+            app_config,
+            kernel_runtime=kernel_runtime,
+        )
 
     system_modules: dict[str, object] = {
         "memory_module": MemoryModule(),
@@ -216,7 +235,7 @@ def assemble_runtime(
         business_modules=business_modules,
         providers=providers,
         _legacy_host=legacy_host,
-        _legacy_host_factory=legacy_host_factory,
+        _legacy_host_factory=resolved_legacy_host_factory,
     )
     if legacy_host is not None:
         runtime.bind_legacy_host(legacy_host)
