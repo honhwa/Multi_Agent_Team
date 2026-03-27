@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +19,20 @@ RETIRED_SHIM_IMPORTS = {
     "app.router_rules": "packages.office_modules.router_hints",
     "app.request_analysis_support": "packages.office_modules.request_analysis",
     "app.router_intent_support": "packages.office_modules.intent_support",
+}
+
+ACTIVE_SHIM_IMPORT_ALLOWLIST = {
+    "app.agent": {
+        "app/business_modules/office_module/module.py",
+        "app/core/bootstrap.py",
+        "app/evals.py",
+        "packages/office_modules/agent_module.py",
+    },
+    "packages.runtime_core.kernel_host": {
+        "app/evals.py",
+        "app/main.py",
+        "tests/migration/test_compatibility_shims.py",
+    },
 }
 
 REQUIRED_DOC_UPDATES = {
@@ -108,6 +123,15 @@ def _python_sources() -> list[Path]:
     return paths
 
 
+def _imports_module(text: str, module_path: str) -> bool:
+    escaped = re.escape(module_path)
+    patterns = (
+        rf"(?m)^\s*from\s+{escaped}\s+import\s+",
+        rf"(?m)^\s*import\s+{escaped}(?:\s|$)",
+    )
+    return any(re.search(pattern, text) for pattern in patterns)
+
+
 def _retired_shim_import_violations() -> list[str]:
     violations: list[str] = []
     for path in _python_sources():
@@ -116,9 +140,27 @@ def _retired_shim_import_violations() -> list[str]:
         except Exception:
             continue
         for retired_import, replacement in RETIRED_SHIM_IMPORTS.items():
-            if f"from {retired_import} import" in text or f"import {retired_import}" in text:
+            if _imports_module(text, retired_import):
                 relative = path.relative_to(REPO_ROOT).as_posix()
                 violations.append(f"{relative} imports retired shim {retired_import}; use {replacement}")
+    return violations
+
+
+def _active_shim_import_violations() -> list[str]:
+    violations: list[str] = []
+    for path in _python_sources():
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        for shim_import, allowlist in ACTIVE_SHIM_IMPORT_ALLOWLIST.items():
+            if not _imports_module(text, shim_import):
+                continue
+            if relative not in allowlist:
+                violations.append(
+                    f"{relative} imports active shim {shim_import}; expand module/kernel boundaries instead of adding new shim dependents"
+                )
     return violations
 
 
@@ -166,6 +208,14 @@ def main() -> int:
         for item in retired_violations:
             print(f"  - {item}")
         print("[platform-boundaries] failing because retired shims must not re-enter the runtime path.")
+        return 1
+
+    active_violations = _active_shim_import_violations()
+    if active_violations:
+        print("[platform-boundaries] active shim dependency expansion detected:")
+        for item in active_violations:
+            print(f"  - {item}")
+        print("[platform-boundaries] failing because active shim dependents must shrink, not grow.")
         return 1
 
     print("[platform-boundaries] checks passed")

@@ -34,11 +34,39 @@ RETIRED_SHIMS = (
     "app/router_intent_support.py",
 )
 
+ACTIVE_SHIM_IMPORT_TARGETS = (
+    "app.agent",
+    "packages.runtime_core.kernel_host",
+)
+
 
 def _read(path: Path) -> str:
     if not path.exists():
         return ""
     return path.read_text(encoding="utf-8")
+
+
+def _python_sources() -> list[Path]:
+    roots = ("app", "packages", "tests", "scripts")
+    paths: list[Path] = []
+    for root in roots:
+        base = REPO_ROOT / root
+        if not base.exists():
+            continue
+        for path in base.rglob("*.py"):
+            if "__pycache__" in path.parts or "app/data" in str(path):
+                continue
+            paths.append(path)
+    return paths
+
+
+def _imports_module(text: str, module_path: str) -> bool:
+    escaped = re.escape(module_path)
+    patterns = (
+        rf"(?m)^\s*from\s+{escaped}\s+import\s+",
+        rf"(?m)^\s*import\s+{escaped}(?:\s|$)",
+    )
+    return any(re.search(pattern, text) for pattern in patterns)
 
 
 def _extract_section_table_paths(text: str, heading: str) -> list[str]:
@@ -98,11 +126,23 @@ def _shim_metrics() -> dict[str, object]:
     inventory_text = _read(SHIM_INVENTORY)
     active_documented = _extract_section_table_paths(inventory_text, "Active Inventory")
     retired_documented = _extract_section_table_paths(inventory_text, "Retired Shims")
+    active_shim_dependents: dict[str, list[str]] = {}
+    for module_path in ACTIVE_SHIM_IMPORT_TARGETS:
+        importers: list[str] = []
+        for path in _python_sources():
+            text = _read(path)
+            if _imports_module(text, module_path):
+                importers.append(path.relative_to(REPO_ROOT).as_posix())
+        active_shim_dependents[module_path] = sorted(importers)
     return {
         "compatibility_shim_count": len(PROTECTED_SHIMS),
         "compatibility_shim_paths": list(PROTECTED_SHIMS),
         "retired_shim_count": len(RETIRED_SHIMS),
         "retired_shim_paths": list(RETIRED_SHIMS),
+        "active_shim_dependency_counts": {
+            module_path: len(importers) for module_path, importers in active_shim_dependents.items()
+        },
+        "active_shim_dependents": active_shim_dependents,
         "shim_inventory_documented_count": len(active_documented),
         "shim_inventory_paths": active_documented,
         "retired_inventory_documented_count": len(retired_documented),

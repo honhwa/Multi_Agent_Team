@@ -63,6 +63,12 @@ The update must state:
 - who still depends on it
 - what would allow it to retire
 
+## Active-Shim Dependency Rule
+
+- Existing active shim dependents are explicitly allowlisted in the boundary gate.
+- New files must not start importing `app.agent` or `packages.runtime_core.kernel_host`.
+- If a dependency truly must exist, update the allowlist and the shim inventory in the same change, with a retirement reason.
+
 ## Review Questions
 
 Use these questions in PR review:

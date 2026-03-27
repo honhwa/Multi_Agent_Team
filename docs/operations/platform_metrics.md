@@ -18,6 +18,8 @@ CI also uploads the metrics artifact.
 - `compatibility_shim_paths`
 - `retired_shim_count`
 - `retired_shim_paths`
+- `active_shim_dependency_counts`
+- `active_shim_dependents`
 - `shim_inventory_documented_count`
 - `retired_inventory_documented_count`
 
@@ -25,6 +27,7 @@ Purpose:
 
 - track how many shims are still active
 - prove at least one shim has actually retired
+- track whether the remaining active shims are spreading to new runtime dependents
 - track whether active and retired shim inventories stay aligned with docs
 - verify the shim inventory stays aligned with the protected list
 
