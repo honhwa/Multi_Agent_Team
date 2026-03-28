@@ -51,6 +51,27 @@ Purpose:
 - measure whether the repository really contains multiple usable module candidates
 - expose the gap between skeleton modules and independently demoable modules
 
+### Research-Module Operational Metrics
+
+- `research_module.gate_artifact_present`
+- `research_module.gate_case_count`
+- `research_module.source_count.avg`
+- `research_module.source_count.min`
+- `research_module.source_count.max`
+- `research_module.fetch_success_rate`
+- `research_module.evidence_completeness`
+- `research_module.degraded_response_count`
+- `research_module.empty_result_count`
+- `research_module.conflict_detected_count`
+- `research_module.result_grade_counts`
+
+Purpose:
+
+- track whether the second formal module is returning enough evidence to support stable operations
+- distinguish degraded-but-usable responses from insufficient or failed responses
+- expose whether evidence conflicts are being surfaced instead of hidden
+- keep the metrics tied to the latest research gate artifact instead of ad hoc manual inspection
+
 ### Swarm Baseline Metrics
 
 - `swarm.branch_join_runtime_present`

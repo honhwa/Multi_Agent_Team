@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 from typing import Any
@@ -99,16 +100,24 @@ class ResearchModule:
         context.selected_providers = list(result["selected_providers"])
         context.execution_policy = context.execution_policy or "research_pipeline"
         context.runtime_profile = context.runtime_profile or "research"
+        assessment = self._assess_research_result(
+            query=query,
+            result=result,
+            fetch_requested=fetch_top,
+        )
 
         if not result["ok"]:
             context.health_state = "degraded"
             return TaskResponse(
                 ok=False,
                 task_id=request.task_id,
+                text=self._build_failure_summary(query=query, assessment=assessment),
                 error=result["error"] or "web.search failed",
-                warnings=["research_module could not gather sources"],
+                warnings=list(assessment["warnings"]),
                 payload={
                     "module_id": self.manifest.module_id,
+                    "result_grade": assessment["result_grade"],
+                    "return_strategy": assessment["return_strategy"],
                     "selected_roles": list(context.selected_roles),
                     "selected_tools": list(context.selected_tools),
                     "selected_providers": list(context.selected_providers),
@@ -121,6 +130,17 @@ class ResearchModule:
                     ),
                     "research": {
                         "query": query,
+                        "result_grade": assessment["result_grade"],
+                        "return_strategy": assessment["return_strategy"],
+                        "evidence_completeness": assessment["evidence_completeness"],
+                        "provider_fallback_used": assessment["provider_fallback_used"],
+                        "source_count": 0,
+                        "fetch_success": False,
+                        "partial_results": False,
+                        "conflict_detected": False,
+                        "conflicts": [],
+                        "reliability_note": assessment["reliability_note"],
+                        "fetch": {},
                         "search": result["search"],
                         "sources": [],
                         "top_source": {},
@@ -130,6 +150,8 @@ class ResearchModule:
 
         payload = {
             "module_id": self.manifest.module_id,
+            "result_grade": assessment["result_grade"],
+            "return_strategy": assessment["return_strategy"],
             "selected_roles": list(context.selected_roles),
             "selected_tools": list(context.selected_tools),
             "selected_providers": list(context.selected_providers),
@@ -142,6 +164,15 @@ class ResearchModule:
             ),
             "research": {
                 "query": query,
+                "result_grade": assessment["result_grade"],
+                "return_strategy": assessment["return_strategy"],
+                "evidence_completeness": assessment["evidence_completeness"],
+                "provider_fallback_used": assessment["provider_fallback_used"],
+                "fetch_success": assessment["fetch_success"],
+                "partial_results": assessment["partial_results"],
+                "conflict_detected": assessment["conflict_detected"],
+                "conflicts": list(assessment["conflicts"]),
+                "reliability_note": assessment["reliability_note"],
                 "source_count": len(result["sources"]),
                 "sources": result["sources"],
                 "top_source": result["top_source"],
@@ -149,11 +180,18 @@ class ResearchModule:
                 "fetch": result["fetch"],
             },
         }
-        warnings = list(result["warnings"])
+        warnings = list(assessment["warnings"])
+        if assessment["result_grade"] != "success":
+            context.health_state = "degraded"
         return TaskResponse(
             ok=True,
             task_id=request.task_id,
-            text=self._build_summary(query=query, sources=result["sources"], fetch_result=result["fetch_result"] if result["fetch_attempted"] else None),
+            text=self._build_summary(
+                query=query,
+                sources=result["sources"],
+                fetch_result=result["fetch_result"] if result["fetch_attempted"] else None,
+                assessment=assessment,
+            ),
             payload=payload,
             warnings=warnings,
         )
@@ -553,9 +591,12 @@ class ResearchModule:
         query: str,
         sources: list[dict[str, Any]],
         fetch_result: ToolResult | None,
+        assessment: dict[str, Any],
     ) -> str:
+        grade = str(assessment.get("result_grade") or "")
+        note = str(assessment.get("reliability_note") or "").strip()
         if not sources:
-            return f"Research module found no usable sources for query: {query}"
+            return f"Research module found no usable sources for query: {query}. {note}".strip()
 
         top = sources[0]
         source_count = len(sources)
@@ -573,7 +614,159 @@ class ResearchModule:
             if fetched:
                 compact = " ".join(fetched.split())
                 lines.append(f"Fetched evidence: {compact[:320]}")
+        if grade == "degraded" and note:
+            lines.append(f"Caveat: {note}")
+        elif grade == "insufficient_evidence" and note:
+            lines.append(f"Evidence status: {note}")
         return " ".join(part for part in lines if part)
+
+    def _build_failure_summary(self, *, query: str, assessment: dict[str, Any]) -> str:
+        note = str(assessment.get("reliability_note") or "Research module could not gather usable evidence.").strip()
+        return f"Research module could not complete the request for '{query}'. {note}".strip()
+
+    def _assess_research_result(
+        self,
+        *,
+        query: str,
+        result: dict[str, Any],
+        fetch_requested: bool,
+    ) -> dict[str, Any]:
+        search_payload = dict(result.get("search") or {})
+        fetch_payload = dict(result.get("fetch") or {})
+        sources = list(result.get("sources") or [])
+        conflicts = self._detect_source_conflicts(sources)
+        source_count = len(sources)
+        fetch_attempted = bool(result.get("fetch_attempted"))
+        fetch_success = bool(result.get("fetch_ok")) if fetch_attempted else (not fetch_requested or not bool(sources))
+        provider_fallback_used = bool(search_payload.get("fallback_used")) or bool(fetch_payload.get("fallback_used"))
+        partial_results = bool(result.get("warnings")) or (fetch_attempted and not fetch_success)
+
+        if not bool(result.get("ok")):
+            return {
+                "result_grade": "failed",
+                "return_strategy": "report_failure",
+                "evidence_completeness": "none",
+                "provider_fallback_used": provider_fallback_used,
+                "fetch_success": False,
+                "partial_results": False,
+                "conflict_detected": False,
+                "conflicts": [],
+                "warnings": ["research_module could not gather sources"],
+                "reliability_note": "The search step failed before the module could gather evidence.",
+                "query": query,
+            }
+
+        if source_count == 0:
+            return {
+                "result_grade": "insufficient_evidence",
+                "return_strategy": "ask_rewrite_query",
+                "evidence_completeness": "insufficient",
+                "provider_fallback_used": provider_fallback_used,
+                "fetch_success": fetch_success,
+                "partial_results": False,
+                "conflict_detected": False,
+                "conflicts": [],
+                "warnings": ["no usable sources were found; ask the user to narrow or rephrase the query"],
+                "reliability_note": "No usable sources were found. Ask the user to narrow or rephrase the query.",
+                "query": query,
+            }
+
+        if conflicts:
+            return {
+                "result_grade": "insufficient_evidence",
+                "return_strategy": "report_unreliable_and_offer_swarm",
+                "evidence_completeness": "insufficient",
+                "provider_fallback_used": provider_fallback_used,
+                "fetch_success": fetch_success,
+                "partial_results": True,
+                "conflict_detected": True,
+                "conflicts": conflicts,
+                "warnings": ["top-source evidence conflicts across sources; do not present a confident conclusion"],
+                "reliability_note": "Top sources conflict with each other. The result is not reliable enough for a confident answer.",
+                "query": query,
+            }
+
+        if source_count < 2:
+            return {
+                "result_grade": "insufficient_evidence",
+                "return_strategy": "report_unreliable_and_offer_swarm",
+                "evidence_completeness": "insufficient",
+                "provider_fallback_used": provider_fallback_used,
+                "fetch_success": fetch_success,
+                "partial_results": True,
+                "conflict_detected": False,
+                "conflicts": [],
+                "warnings": ["only one usable source was found; evidence is too thin for a confident answer"],
+                "reliability_note": "Only one usable source was found. Return a cautious answer and suggest refining the query or escalating to Swarm.",
+                "query": query,
+            }
+
+        if fetch_attempted and not fetch_success:
+            return {
+                "result_grade": "degraded",
+                "return_strategy": "return_search_only_with_caveat",
+                "evidence_completeness": "partial",
+                "provider_fallback_used": provider_fallback_used,
+                "fetch_success": False,
+                "partial_results": True,
+                "conflict_detected": False,
+                "conflicts": [],
+                "warnings": list(result.get("warnings") or []) or ["top source fetch failed; return search-only evidence with a caveat"],
+                "reliability_note": "The search step succeeded, but the fetched evidence preview failed. The answer is usable but incomplete.",
+                "query": query,
+            }
+
+        if provider_fallback_used:
+            return {
+                "result_grade": "degraded",
+                "return_strategy": "return_answer_with_provider_fallback_note",
+                "evidence_completeness": "complete",
+                "provider_fallback_used": True,
+                "fetch_success": fetch_success,
+                "partial_results": False,
+                "conflict_detected": False,
+                "conflicts": [],
+                "warnings": ["provider fallback was used; return the answer with a degradation note"],
+                "reliability_note": "The module recovered through a fallback provider. The answer is usable, but the path was degraded.",
+                "query": query,
+            }
+
+        return {
+            "result_grade": "success",
+            "return_strategy": "deliver_answer",
+            "evidence_completeness": "complete",
+            "provider_fallback_used": False,
+            "fetch_success": fetch_success,
+            "partial_results": False,
+            "conflict_detected": False,
+            "conflicts": [],
+            "warnings": list(result.get("warnings") or []),
+            "reliability_note": "Evidence coverage is sufficient for a direct answer.",
+            "query": query,
+        }
+
+    def _detect_source_conflicts(self, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        title_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for item in sources:
+            title = str(item.get("title") or "").strip()
+            url = str(item.get("url") or "").strip()
+            if not title or not url:
+                continue
+            title_groups[title.lower()].append({"title": title, "url": url, "domain": str(item.get("domain") or "").strip()})
+
+        conflicts: list[dict[str, Any]] = []
+        for entries in title_groups.values():
+            urls = sorted({str(entry.get("url") or "") for entry in entries if str(entry.get("url") or "")})
+            if len(urls) <= 1:
+                continue
+            conflicts.append(
+                {
+                    "title": str(entries[0].get("title") or "").strip(),
+                    "urls": urls,
+                    "domains": sorted({str(entry.get("domain") or "") for entry in entries if str(entry.get("domain") or "")}),
+                }
+            )
+        return conflicts
 
     def _coerce_tool_result(self, value: Any, *, fallback_name: str) -> ToolResult:
         if isinstance(value, ToolResult):

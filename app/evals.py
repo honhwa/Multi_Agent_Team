@@ -77,7 +77,7 @@ class _EvalResearchProvider:
         return HealthReport(component_id=self.provider_id, status="healthy", summary=f"{self.fixture} eval provider ready")
 
     def _results_for_query(self, query: str) -> list[dict[str, Any]]:
-        if self.fixture == "research_normal":
+        if self.fixture in {"research_normal", "research_provider_fallback"}:
             return [
                 {
                     "title": "Agent OS overview",
@@ -127,6 +127,25 @@ class _EvalResearchProvider:
                     "score": 6.1,
                     "source": "eval_provider",
                 }
+            ]
+        if self.fixture == "research_conflict":
+            return [
+                {
+                    "title": "Shared Research Conflict",
+                    "url": "https://example.com/conflict-alpha",
+                    "snippet": "Architecture source says one thing.",
+                    "domain": "example.com",
+                    "score": 9.2,
+                    "source": "eval_provider",
+                },
+                {
+                    "title": "Shared Research Conflict",
+                    "url": "https://evidence.example.org/conflict-beta",
+                    "snippet": "Independent source points to a conflicting write-up.",
+                    "domain": "evidence.example.org",
+                    "score": 9.1,
+                    "source": "eval_provider",
+                },
             ]
         if self.fixture == "swarm_normal":
             if query == "duplicate alpha":
@@ -210,17 +229,41 @@ class _EvalResearchProvider:
         return f"Fetched evidence body for {url}."
 
 
+@dataclass
+class _FailingEvalResearchProvider:
+    provider_id: str = "eval_failing_research_provider"
+    supported_tools: list[str] = field(default_factory=lambda: ["web.search", "web.fetch"])
+
+    def execute(self, call: Any) -> ToolResult:
+        return ToolResult(
+            ok=False,
+            tool_name=call.name,
+            provider_id=self.provider_id,
+            error=f"simulated provider failure for {call.name}",
+        )
+
+    def health_check(self) -> HealthReport:
+        return HealthReport(component_id=self.provider_id, status="healthy", summary="failing eval provider ready")
+
+
 def _bind_eval_research_provider(runtime: Any, *, fixture: str) -> None:
     provider = _EvalResearchProvider(fixture=fixture)
     runtime.kernel.register_provider(provider)
+    fallback_provider_ids: list[str] = []
+    primary_provider_id = provider.provider_id
+    if fixture == "research_provider_fallback":
+        failing_provider = _FailingEvalResearchProvider()
+        runtime.kernel.register_provider(failing_provider)
+        primary_provider_id = failing_provider.provider_id
+        fallback_provider_ids = [provider.provider_id]
     for tool_name in ("web.search", "web.fetch"):
         contract = runtime.kernel.registry.get_tool_contract(tool_name)
         if contract is None:
             continue
         runtime.kernel.registry.register_tool_contract(
             contract,
-            primary_provider=provider.provider_id,
-            fallback_providers=[],
+            primary_provider=primary_provider_id,
+            fallback_providers=list(fallback_provider_ids),
         )
 
 

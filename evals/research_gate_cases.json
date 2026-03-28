@@ -138,5 +138,76 @@
         ]
       }
     }
+  },
+  {
+    "name": "research_module_conflicting_evidence",
+    "kind": "module_task",
+    "module_id": "research_module",
+    "fixture": "research_conflict",
+    "task": {
+      "task_id": "eval-research-conflict",
+      "task_type": "task.research",
+      "message": "conflicting evidence research scenario",
+      "context": {
+        "session_id": "eval-research-conflict",
+        "research_query": "conflicting evidence research scenario",
+        "fetch_top_result": true,
+        "execution_policy": "research_pipeline",
+        "runtime_profile": "research_eval"
+      }
+    },
+    "assert": {
+      "equals": {
+        "ok": true,
+        "payload.module_id": "research_module",
+        "payload.result_grade": "insufficient_evidence",
+        "payload.return_strategy": "report_unreliable_and_offer_swarm",
+        "payload.research.conflict_detected": true,
+        "payload.research.conflicts.0.title": "Shared Research Conflict"
+      },
+      "contains": {
+        "text": [
+          "Evidence status:",
+          "not reliable enough for a confident answer"
+        ],
+        "warnings.0": [
+          "conflicts"
+        ]
+      }
+    }
+  },
+  {
+    "name": "research_module_provider_fallback",
+    "kind": "module_task",
+    "module_id": "research_module",
+    "fixture": "research_provider_fallback",
+    "task": {
+      "task_id": "eval-research-provider-fallback",
+      "task_type": "task.research",
+      "message": "provider fallback research scenario",
+      "context": {
+        "session_id": "eval-research-provider-fallback",
+        "research_query": "provider fallback research scenario",
+        "fetch_top_result": true,
+        "execution_policy": "research_pipeline",
+        "runtime_profile": "research_eval"
+      }
+    },
+    "assert": {
+      "equals": {
+        "ok": true,
+        "payload.module_id": "research_module",
+        "payload.result_grade": "degraded",
+        "payload.return_strategy": "return_answer_with_provider_fallback_note",
+        "payload.research.provider_fallback_used": true,
+        "payload.research.search.fallback_used": true
+      },
+      "contains": {
+        "text": [
+          "Caveat:",
+          "fallback provider"
+        ]
+      }
+    }
   }
 ]

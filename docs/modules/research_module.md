@@ -10,6 +10,7 @@ Provide a clean research-oriented module that can:
 - gather sources through formal tool/provider contracts
 - optionally fetch the top source for evidence preview
 - return a structured summary without routing through `office_module`
+- classify the response as `success`, `degraded`, `insufficient_evidence`, or `failed`
 
 ## Formal Entry
 
@@ -61,6 +62,12 @@ python scripts/demo_research_module.py --check
 ```
 
 That demo runs `research_module` through `KernelHost` using a deterministic provider stub.
+
+## Operating Standard
+
+Operational guidance for result grades, degradation policy, and escalation rules lives in:
+
+- [docs/operations/research_module_operations.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/research_module_operations.md)
 
 ## Swarm MVP Demo
 

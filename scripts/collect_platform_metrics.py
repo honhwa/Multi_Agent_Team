@@ -24,6 +24,7 @@ SWARM_DEMO_SCRIPT = REPO_ROOT / "scripts" / "demo_research_swarm.py"
 SWARM_DEMO_DOC = REPO_ROOT / "docs" / "demo" / "research_swarm_demo.md"
 SWARM_INTEGRATION_TEST = REPO_ROOT / "tests" / "integration" / "test_kernel_research_swarm_flow.py"
 SWARM_UNIT_TEST = REPO_ROOT / "tests" / "swarm" / "test_research_swarm_pipeline.py"
+RESEARCH_GATE_SUMMARY = REPO_ROOT / "artifacts" / "evals" / "research-gate-summary.json"
 STATIC_APP = REPO_ROOT / "app" / "static" / "app.js"
 OFFICE_RUNTIME_SOURCE = REPO_ROOT / "packages" / "office_modules" / "office_agent_runtime.py"
 SHIM_INVENTORY = REPO_ROOT / "docs" / "migration" / "compatibility_shim_inventory.md"
@@ -174,11 +175,86 @@ def _swarm_metrics() -> dict[str, object]:
     }
 
 
+def _research_module_metrics() -> dict[str, object]:
+    payload = {"gate_artifact_present": RESEARCH_GATE_SUMMARY.exists()}
+    if not RESEARCH_GATE_SUMMARY.exists():
+        payload.update(
+            {
+                "gate_case_count": 0,
+                "source_count": {"avg": 0.0, "min": 0, "max": 0},
+                "fetch_success_rate": 0.0,
+                "evidence_completeness": {},
+                "degraded_response_count": 0,
+                "empty_result_count": 0,
+                "conflict_detected_count": 0,
+                "result_grade_counts": {},
+            }
+        )
+        return payload
+
+    summary = json.loads(_read(RESEARCH_GATE_SUMMARY))
+    results = list(summary.get("results") or [])
+    source_counts: list[int] = []
+    fetch_attempted = 0
+    fetch_successes = 0
+    degraded_response_count = 0
+    empty_result_count = 0
+    conflict_detected_count = 0
+    completeness_counts: dict[str, int] = {}
+    result_grade_counts: dict[str, int] = {}
+
+    for item in results:
+        case_payload = dict(item.get("payload") or {})
+        module_payload = dict(case_payload.get("payload") or {})
+        research = dict(module_payload.get("research") or {})
+        source_count = int(research.get("source_count") or 0)
+        source_counts.append(source_count)
+        if source_count == 0:
+            empty_result_count += 1
+        if bool(research.get("conflict_detected")):
+            conflict_detected_count += 1
+        if dict(research.get("fetch") or {}):
+            fetch_attempted += 1
+            if bool(research.get("fetch_success")):
+                fetch_successes += 1
+
+        completeness = str(research.get("evidence_completeness") or "").strip()
+        if completeness:
+            completeness_counts[completeness] = completeness_counts.get(completeness, 0) + 1
+
+        grade = str(module_payload.get("result_grade") or research.get("result_grade") or "").strip()
+        if grade:
+            result_grade_counts[grade] = result_grade_counts.get(grade, 0) + 1
+            if grade == "degraded":
+                degraded_response_count += 1
+
+    avg_sources = round(sum(source_counts) / len(source_counts), 3) if source_counts else 0.0
+    fetch_success_rate = round(fetch_successes / fetch_attempted, 3) if fetch_attempted else 0.0
+    payload.update(
+        {
+            "gate_case_count": len(results),
+            "source_count": {
+                "avg": avg_sources,
+                "min": min(source_counts) if source_counts else 0,
+                "max": max(source_counts) if source_counts else 0,
+            },
+            "fetch_success_rate": fetch_success_rate,
+            "evidence_completeness": completeness_counts,
+            "degraded_response_count": degraded_response_count,
+            "empty_result_count": empty_result_count,
+            "conflict_detected_count": conflict_detected_count,
+            "result_grade_counts": result_grade_counts,
+        }
+    )
+    return payload
+
+
 def main() -> int:
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "shim": _shim_metrics(),
         "second_module": _business_module_metrics(),
+        "research_module": _research_module_metrics(),
         "swarm": _swarm_metrics(),
     }
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)

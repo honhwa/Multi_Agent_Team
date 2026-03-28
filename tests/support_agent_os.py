@@ -84,9 +84,30 @@ class FakeResearchProvider:
     provider_id = "fake_research_provider"
     supported_tools = ["web.search", "web.fetch"]
 
-    def __init__(self, *, fail_once_queries: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        fail_once_queries: set[str] | None = None,
+        results_by_query: dict[str, list[dict[str, Any]]] | None = None,
+        fetch_fail_urls: set[str] | None = None,
+        fetch_content_by_url: dict[str, str] | None = None,
+        provider_id: str | None = None,
+    ) -> None:
+        if provider_id:
+            self.provider_id = str(provider_id)
         self._fail_once_queries = {str(item).strip() for item in (fail_once_queries or set()) if str(item).strip()}
         self._failed_queries: set[str] = set()
+        self._results_by_query = {
+            str(key).strip(): list(value)
+            for key, value in dict(results_by_query or {}).items()
+            if str(key).strip()
+        }
+        self._fetch_fail_urls = {str(item).strip() for item in (fetch_fail_urls or set()) if str(item).strip()}
+        self._fetch_content_by_url = {
+            str(key).strip(): str(value)
+            for key, value in dict(fetch_content_by_url or {}).items()
+            if str(key).strip()
+        }
         self._lock = Lock()
 
     def execute(self, call: ToolCall) -> ToolResult:
@@ -101,6 +122,17 @@ class FakeResearchProvider:
                         provider_id=self.provider_id,
                         error=f"simulated search failure for {query}",
                     )
+            if query in self._results_by_query:
+                return ToolResult(
+                    ok=True,
+                    tool_name=call.name,
+                    provider_id=self.provider_id,
+                    data={
+                        "ok": True,
+                        "query": query,
+                        "results": list(self._results_by_query[query]),
+                    },
+                )
             top_title = "Shared Research Conflict" if "conflict" in query.lower() else "Research Source One"
             top_url = (
                 f"https://example.com/{query.lower().replace(' ', '-')}"
@@ -135,14 +167,22 @@ class FakeResearchProvider:
                 },
             )
         if call.name == "web.fetch":
+            url = str(call.arguments.get("url") or "").strip()
+            if url in self._fetch_fail_urls:
+                return ToolResult(
+                    ok=False,
+                    tool_name=call.name,
+                    provider_id=self.provider_id,
+                    error=f"simulated fetch failure for {url}",
+                )
             return ToolResult(
                 ok=True,
                 tool_name=call.name,
                 provider_id=self.provider_id,
                 data={
                     "ok": True,
-                    "url": str(call.arguments.get("url") or ""),
-                    "content": "Fetched evidence body for the top research source.",
+                    "url": url,
+                    "content": self._fetch_content_by_url.get(url, "Fetched evidence body for the top research source."),
                 },
             )
         return ToolResult(ok=False, tool_name=call.name, provider_id=self.provider_id, error=f"unsupported tool: {call.name}")
@@ -156,8 +196,18 @@ def bind_fake_research_provider(
     *,
     fail_once_queries: set[str] | None = None,
     fallback_providers: list[str] | None = None,
+    results_by_query: dict[str, list[dict[str, Any]]] | None = None,
+    fetch_fail_urls: set[str] | None = None,
+    fetch_content_by_url: dict[str, str] | None = None,
+    provider_id: str | None = None,
 ) -> None:
-    provider = FakeResearchProvider(fail_once_queries=fail_once_queries)
+    provider = FakeResearchProvider(
+        fail_once_queries=fail_once_queries,
+        results_by_query=results_by_query,
+        fetch_fail_urls=fetch_fail_urls,
+        fetch_content_by_url=fetch_content_by_url,
+        provider_id=provider_id,
+    )
     runtime.kernel.register_provider(provider)
     for tool_name in ("web.search", "web.fetch"):
         contract = runtime.kernel.registry.get_tool_contract(tool_name)
