@@ -1,0 +1,25 @@
+{
+  "case_id": "office_attachment_followup",
+  "scenario": "office follow-up keeps attachment tooling context for evidence lookup",
+  "baseline_type": "office",
+  "input": {
+    "task_type": "conversation",
+    "message": "请根据原文定位 15h，并给出出处。"
+  },
+  "context": {
+    "session_id": "replay-office-attachment-followup",
+    "attachment_context_mode": "active_document_followup",
+    "execution_focus": "evidence_lookup"
+  },
+  "attachments": [
+    {
+      "name": "spec_excerpt.txt",
+      "kind": "document"
+    }
+  ],
+  "expected_focus": [
+    "attachment-context",
+    "route-state",
+    "evidence-lookup"
+  ]
+}

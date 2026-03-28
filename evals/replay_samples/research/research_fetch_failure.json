@@ -1,0 +1,21 @@
+{
+  "case_id": "research_fetch_failure",
+  "scenario": "research module keeps search evidence when top-source fetch fails",
+  "baseline_type": "research",
+  "input": {
+    "task_type": "task.research",
+    "message": "fetch failure research scenario"
+  },
+  "context": {
+    "module_id": "research_module",
+    "execution_policy": "research_pipeline",
+    "fetch_top_result": true,
+    "runtime_profile": "research_eval"
+  },
+  "attachments": [],
+  "expected_focus": [
+    "fetch-failure-warning",
+    "search-only-evidence",
+    "degraded-but-successful-response"
+  ]
+}

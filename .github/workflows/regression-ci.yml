@@ -59,14 +59,23 @@ jobs:
       - name: Run pytest suite
         run: pytest -q tests
 
-      - name: Run minimal Agent OS demo smoke
+      - name: Run baseline smoke
         run: python scripts/demo_minimal_agent_os.py --check
 
-      - name: Run research Swarm demo smoke
+      - name: Run module smoke
+        run: python scripts/demo_research_module.py --check
+
+      - name: Run Swarm smoke
         run: python scripts/demo_research_swarm.py --check
 
-      - name: Run regression eval harness
+      - name: Run office baseline eval gate
         run: mkdir -p artifacts/evals && python scripts/run_evals.py --cases evals/gate_cases.json --output artifacts/evals/regression-summary.json
+
+      - name: Run research-module eval gate
+        run: mkdir -p artifacts/evals && python scripts/run_evals.py --cases evals/research_gate_cases.json --output artifacts/evals/research-gate-summary.json
+
+      - name: Run Swarm eval gate
+        run: mkdir -p artifacts/evals && python scripts/run_evals.py --cases evals/swarm_gate_cases.json --output artifacts/evals/swarm-gate-summary.json
 
       - name: Upload eval artifacts
         if: always()

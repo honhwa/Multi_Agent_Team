@@ -1,0 +1,21 @@
+{
+  "case_id": "swarm_serial_replay_conflict",
+  "scenario": "research Swarm replays a failed branch sequentially and marks conflicting evidence without forced arbitration",
+  "baseline_type": "swarm",
+  "input": {
+    "task_type": "task.research",
+    "message": "run research swarm degraded gate"
+  },
+  "context": {
+    "module_id": "research_module",
+    "execution_policy": "research_swarm_pipeline",
+    "swarm_mode": "parallel_research",
+    "runtime_profile": "research_swarm_eval"
+  },
+  "attachments": [],
+  "expected_focus": [
+    "serial-replay",
+    "conflict-marking",
+    "business-readable-summary"
+  ]
+}

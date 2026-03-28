@@ -1,0 +1,21 @@
+{
+  "case_id": "swarm_fanout_merge",
+  "scenario": "research Swarm fans out three branches and deduplicates duplicate evidence during join",
+  "baseline_type": "swarm",
+  "input": {
+    "task_type": "task.research",
+    "message": "run research swarm normal gate"
+  },
+  "context": {
+    "module_id": "research_module",
+    "execution_policy": "research_swarm_pipeline",
+    "swarm_mode": "parallel_research",
+    "runtime_profile": "research_swarm_eval"
+  },
+  "attachments": [],
+  "expected_focus": [
+    "branch-fanout",
+    "join-merge",
+    "deduplicate"
+  ]
+}

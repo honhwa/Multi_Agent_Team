@@ -1,0 +1,90 @@
+[
+  {
+    "name": "research_swarm_fanout_merge_deduplicate",
+    "kind": "module_task",
+    "module_id": "research_module",
+    "fixture": "swarm_normal",
+    "task": {
+      "task_id": "eval-swarm-normal",
+      "task_type": "task.research",
+      "message": "run research swarm normal gate",
+      "context": {
+        "session_id": "eval-swarm-normal",
+        "execution_policy": "research_swarm_pipeline",
+        "runtime_profile": "research_swarm_eval",
+        "fetch_top_result": true,
+        "swarm_mode": "parallel_research",
+        "swarm_inputs": [
+          {"label": "Architecture brief", "query": "duplicate alpha", "input_ref": "brief:architecture"},
+          {"label": "Runtime brief", "query": "duplicate beta", "input_ref": "brief:runtime"},
+          {"label": "Independent brief", "query": "unique gamma", "input_ref": "brief:independent"}
+        ]
+      }
+    },
+    "assert": {
+      "equals": {
+        "ok": true,
+        "payload.module_id": "research_module",
+        "payload.swarm.branch_count": 3,
+        "payload.swarm.degradation.degraded": false,
+        "payload.swarm.aggregation.conflicts": []
+      },
+      "contains": {
+        "text": [
+          "Research swarm processed 3 input(s)",
+          "Aggregator found no conflicting top-source titles across branches."
+        ],
+        "payload.swarm.aggregation.summary": [
+          "merged 2 unique findings from 3 branch(es) and marked 0 conflict(s)"
+        ]
+      }
+    }
+  },
+  {
+    "name": "research_swarm_serial_replay_and_conflict_marking",
+    "kind": "module_task",
+    "module_id": "research_module",
+    "fixture": "swarm_degraded_conflict",
+    "task": {
+      "task_id": "eval-swarm-degraded",
+      "task_type": "task.research",
+      "message": "run research swarm degraded gate",
+      "context": {
+        "session_id": "eval-swarm-degraded",
+        "execution_policy": "research_swarm_pipeline",
+        "runtime_profile": "research_swarm_eval",
+        "fetch_top_result": true,
+        "swarm_mode": "parallel_research",
+        "swarm_inputs": [
+          {"label": "Architecture brief", "query": "conflict alpha", "input_ref": "brief:architecture"},
+          {"label": "Runtime brief", "query": "conflict beta", "input_ref": "brief:runtime"},
+          {"label": "Failure brief", "query": "branch failure note", "input_ref": "brief:degradation"}
+        ]
+      }
+    },
+    "assert": {
+      "equals": {
+        "ok": true,
+        "payload.module_id": "research_module",
+        "payload.swarm.branch_count": 3,
+        "payload.swarm.degradation.degraded": true,
+        "payload.swarm.branches.2.attempt_mode": "serial_replay",
+        "payload.swarm.aggregation.conflicts.0.title": "Shared Research Conflict"
+      },
+      "contains": {
+        "text": [
+          "Research swarm processed 3 input(s)",
+          "Degradation handling: serial replay was triggered",
+          "Aggregator marked conflict(s) without forced arbitration"
+        ],
+        "payload.swarm.aggregation.summary": [
+          "marked 1 conflict(s)"
+        ],
+        "trace_stages": [
+          "swarm_degradation",
+          "swarm_join"
+        ]
+      }
+    }
+  }
+]

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 import json
 import os
 import time
 from pathlib import Path
 from typing import Any
 
-from app.bootstrap import assemble_runtime
+from app.bootstrap import AgentOSAssembleConfig, assemble_runtime
 from app.config import load_config
+from app.contracts import HealthReport, TaskRequest, ToolResult
 from app.core.bootstrap import build_kernel_runtime
 from app.models import ChatSettings, ToolEvent
 from app import session_context as session_context_impl
@@ -18,6 +19,209 @@ from packages.office_modules.execution_state import ExecutionState
 from packages.office_modules.execution_runtime import adapt_office_execution_runtime
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CASES_PATH = ROOT / "evals" / "cases.json"
+
+
+@dataclass
+class _EvalResearchProvider:
+    fixture: str
+    provider_id: str = field(init=False)
+    supported_tools: list[str] = field(default_factory=lambda: ["web.search", "web.fetch"])
+    _failed_once_queries: set[str] = field(default_factory=set, init=False)
+
+    def __post_init__(self) -> None:
+        self.provider_id = f"eval_{self.fixture}_provider"
+
+    def execute(self, call: Any) -> ToolResult:
+        if call.name == "web.search":
+            query = str(call.arguments.get("query") or "").strip()
+            if self.fixture == "swarm_degraded_conflict" and query == "branch failure note" and query not in self._failed_once_queries:
+                self._failed_once_queries.add(query)
+                return ToolResult(
+                    ok=False,
+                    tool_name=call.name,
+                    provider_id=self.provider_id,
+                    error=f"simulated first-pass branch failure for {query}",
+                )
+            return ToolResult(
+                ok=True,
+                tool_name=call.name,
+                provider_id=self.provider_id,
+                data={
+                    "ok": True,
+                    "query": query,
+                    "results": self._results_for_query(query),
+                },
+            )
+        if call.name == "web.fetch":
+            url = str(call.arguments.get("url") or "")
+            if self.fixture == "research_fetch_failure":
+                return ToolResult(
+                    ok=False,
+                    tool_name=call.name,
+                    provider_id=self.provider_id,
+                    error=f"simulated fetch failure for {url}",
+                )
+            return ToolResult(
+                ok=True,
+                tool_name=call.name,
+                provider_id=self.provider_id,
+                data={
+                    "ok": True,
+                    "url": url,
+                    "content": self._content_for_url(url),
+                },
+            )
+        return ToolResult(ok=False, tool_name=call.name, provider_id=self.provider_id, error=f"unsupported tool: {call.name}")
+
+    def health_check(self) -> HealthReport:
+        return HealthReport(component_id=self.provider_id, status="healthy", summary=f"{self.fixture} eval provider ready")
+
+    def _results_for_query(self, query: str) -> list[dict[str, Any]]:
+        if self.fixture == "research_normal":
+            return [
+                {
+                    "title": "Agent OS overview",
+                    "url": "https://example.com/agent-os-overview",
+                    "snippet": "Agent OS separates kernel, modules, and providers into explicit layers.",
+                    "domain": "example.com",
+                    "score": 9.9,
+                    "source": "eval_provider",
+                },
+                {
+                    "title": "Agent OS runtime split",
+                    "url": "https://example.com/agent-os-runtime",
+                    "snippet": "Runtime assembly stays thin while business modules own behavior.",
+                    "domain": "example.com",
+                    "score": 9.3,
+                    "source": "eval_provider",
+                },
+            ]
+        if self.fixture == "research_fetch_failure":
+            return [
+                {
+                    "title": "Fetch Failure Source",
+                    "url": "https://example.com/fetch-failure",
+                    "snippet": "The search step succeeded, but the top-source fetch should fail.",
+                    "domain": "example.com",
+                    "score": 9.1,
+                    "source": "eval_provider",
+                },
+                {
+                    "title": "Secondary Search-Only Source",
+                    "url": "https://example.com/search-only",
+                    "snippet": "Fallback evidence remains available from search results.",
+                    "domain": "example.com",
+                    "score": 8.4,
+                    "source": "eval_provider",
+                },
+            ]
+        if self.fixture == "research_empty_sources":
+            return []
+        if self.fixture == "research_sparse_evidence":
+            return [
+                {
+                    "title": "Sparse Evidence Source",
+                    "url": "https://example.com/sparse-evidence",
+                    "snippet": "Only one weak source was available for this question.",
+                    "domain": "example.com",
+                    "score": 6.1,
+                    "source": "eval_provider",
+                }
+            ]
+        if self.fixture == "swarm_normal":
+            if query == "duplicate alpha":
+                return [
+                    {
+                        "title": "Shared Research Finding",
+                        "url": "https://example.com/shared-finding",
+                        "snippet": "Architecture branch shares the same top source.",
+                        "domain": "example.com",
+                        "score": 9.6,
+                        "source": "eval_provider",
+                    }
+                ]
+            if query == "duplicate beta":
+                return [
+                    {
+                        "title": "Shared Research Finding",
+                        "url": "https://example.com/shared-finding",
+                        "snippet": "Runtime branch points to the same top source.",
+                        "domain": "example.com",
+                        "score": 9.4,
+                        "source": "eval_provider",
+                    }
+                ]
+            return [
+                {
+                    "title": "Independent Research Finding",
+                    "url": "https://example.com/independent-finding",
+                    "snippet": "A separate branch contributes a unique source.",
+                    "domain": "example.com",
+                    "score": 8.9,
+                    "source": "eval_provider",
+                }
+            ]
+        if self.fixture == "swarm_degraded_conflict":
+            if query == "conflict alpha":
+                return [
+                    {
+                        "title": "Shared Research Conflict",
+                        "url": "https://example.com/conflict-alpha",
+                        "snippet": "Architecture branch source.",
+                        "domain": "example.com",
+                        "score": 9.8,
+                        "source": "eval_provider",
+                    }
+                ]
+            if query == "conflict beta":
+                return [
+                    {
+                        "title": "Shared Research Conflict",
+                        "url": "https://example.com/conflict-beta",
+                        "snippet": "Runtime branch source.",
+                        "domain": "example.com",
+                        "score": 9.5,
+                        "source": "eval_provider",
+                    }
+                ]
+            return [
+                {
+                    "title": "Recovered Branch Finding",
+                    "url": "https://example.com/recovered-branch",
+                    "snippet": "The failed branch succeeds during serial replay.",
+                    "domain": "example.com",
+                    "score": 8.8,
+                    "source": "eval_provider",
+                }
+            ]
+        raise ValueError(f"Unknown research eval fixture: {self.fixture}")
+
+    def _content_for_url(self, url: str) -> str:
+        if "agent-os-overview" in url:
+            return "Agent OS separates kernel orchestration from business-module execution and provider-backed tools."
+        if "sparse-evidence" in url:
+            return "Only a minimal source was available, so the summary should stay conservative."
+        if "shared-finding" in url:
+            return "Two branches independently surfaced the same evidence."
+        if "conflict" in url:
+            return f"Fetched evidence body for {url}."
+        if "recovered-branch" in url:
+            return "This evidence came from the branch recovered through serial replay."
+        return f"Fetched evidence body for {url}."
+
+
+def _bind_eval_research_provider(runtime: Any, *, fixture: str) -> None:
+    provider = _EvalResearchProvider(fixture=fixture)
+    runtime.kernel.register_provider(provider)
+    for tool_name in ("web.search", "web.fetch"):
+        contract = runtime.kernel.registry.get_tool_contract(tool_name)
+        if contract is None:
+            continue
+        runtime.kernel.registry.register_tool_contract(
+            contract,
+            primary_provider=provider.provider_id,
+            fallback_providers=[],
+        )
 
 
 def _resolve_value(value: Any) -> Any:
@@ -505,6 +709,53 @@ def _run_conversation_case(
     }
 
 
+def _run_module_task_case(case: dict[str, Any]) -> dict[str, Any]:
+    fixture = str(case.get("fixture") or "").strip()
+    module_id = str(case.get("module_id") or "").strip()
+    if not module_id:
+        raise ValueError("module_task eval case requires module_id")
+
+    cfg = load_config()
+    runtime = assemble_runtime(
+        cfg,
+        assemble_config=AgentOSAssembleConfig(
+            include_research_module=True,
+            include_coding_module=False,
+            include_adaptation_module=False,
+            enable_session_provider=True,
+        ),
+    )
+    if fixture:
+        _bind_eval_research_provider(runtime, fixture=fixture)
+
+    task_payload = _resolve_value(case.get("task") or {})
+    request = TaskRequest(
+        task_id=str(task_payload.get("task_id") or f"eval-{module_id}"),
+        task_type=str(task_payload.get("task_type") or "task.generic"),
+        message=str(task_payload.get("message") or ""),
+        context=dict(task_payload.get("context") or {}),
+        attachments=list(task_payload.get("attachments") or []),
+        settings=dict(task_payload.get("settings") or {}),
+    )
+    started = time.perf_counter()
+    response = runtime.dispatch(request, module_id=module_id)
+    elapsed_sec = time.perf_counter() - started
+    snapshot = runtime.kernel.health_snapshot()
+    recent_traces = list(snapshot.get("recent_traces") or [])
+    trace = dict(recent_traces[-1]) if recent_traces else {}
+    return {
+        "ok": bool(response.ok),
+        "task_id": response.task_id,
+        "text": response.text,
+        "warnings": list(response.warnings),
+        "error": response.error,
+        "payload": dict(response.payload),
+        "trace": trace,
+        "trace_stages": [str(item.get("stage") or "") for item in list(trace.get("events") or [])],
+        "elapsed_sec": round(elapsed_sec, 3),
+    }
+
+
 def run_regression_evals(
     *,
     cases_path: str | Path | None = None,
@@ -559,6 +810,8 @@ def run_regression_evals(
                     attachment_module=attachment_module,
                     kernel_runtime=kernel_runtime,
                 )
+            elif kind == "module_task":
+                payload = _run_module_task_case(case)
             else:
                 raise ValueError(f"Unknown eval kind: {kind}")
             errors = _assertions(payload, case.get("assert") or {})

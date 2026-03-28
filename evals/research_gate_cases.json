@@ -1,0 +1,142 @@
+[
+  {
+    "name": "research_module_normal_research",
+    "kind": "module_task",
+    "module_id": "research_module",
+    "fixture": "research_normal",
+    "task": {
+      "task_id": "eval-research-normal",
+      "task_type": "task.research",
+      "message": "agent os separation of concerns",
+      "context": {
+        "session_id": "eval-research-normal",
+        "research_query": "agent os separation of concerns",
+        "fetch_top_result": true,
+        "execution_policy": "research_pipeline",
+        "runtime_profile": "research_eval"
+      }
+    },
+    "assert": {
+      "equals": {
+        "ok": true,
+        "payload.module_id": "research_module",
+        "payload.research.source_count": 2,
+        "payload.research.fetch.ok": true,
+        "trace.module_id": "research_module",
+        "trace.execution_policy": "research_pipeline"
+      },
+      "contains": {
+        "text": [
+          "Research module gathered 2 source(s)",
+          "Top source: Agent OS overview"
+        ],
+        "trace_stages": [
+          "tool_dispatch"
+        ]
+      }
+    }
+  },
+  {
+    "name": "research_module_fetch_failure",
+    "kind": "module_task",
+    "module_id": "research_module",
+    "fixture": "research_fetch_failure",
+    "task": {
+      "task_id": "eval-research-fetch-failure",
+      "task_type": "task.research",
+      "message": "fetch failure research scenario",
+      "context": {
+        "session_id": "eval-research-fetch-failure",
+        "research_query": "fetch failure research scenario",
+        "fetch_top_result": true,
+        "execution_policy": "research_pipeline",
+        "runtime_profile": "research_eval"
+      }
+    },
+    "assert": {
+      "equals": {
+        "ok": true,
+        "payload.module_id": "research_module",
+        "payload.research.source_count": 2,
+        "payload.research.fetch.ok": false
+      },
+      "contains": {
+        "warnings.0": [
+          "top source fetch failed"
+        ],
+        "text": [
+          "Research module gathered 2 source(s)",
+          "Top source: Fetch Failure Source"
+        ]
+      },
+      "not_contains": {
+        "text": [
+          "Fetched evidence:"
+        ]
+      }
+    }
+  },
+  {
+    "name": "research_module_source_empty",
+    "kind": "module_task",
+    "module_id": "research_module",
+    "fixture": "research_empty_sources",
+    "task": {
+      "task_id": "eval-research-empty",
+      "task_type": "task.research",
+      "message": "empty source research scenario",
+      "context": {
+        "session_id": "eval-research-empty",
+        "research_query": "empty source research scenario",
+        "fetch_top_result": true,
+        "execution_policy": "research_pipeline",
+        "runtime_profile": "research_eval"
+      }
+    },
+    "assert": {
+      "equals": {
+        "ok": true,
+        "payload.module_id": "research_module",
+        "payload.research.source_count": 0,
+        "payload.module_pipeline.1.status": "error"
+      },
+      "contains": {
+        "text": [
+          "found no usable sources"
+        ]
+      }
+    }
+  },
+  {
+    "name": "research_module_sparse_evidence",
+    "kind": "module_task",
+    "module_id": "research_module",
+    "fixture": "research_sparse_evidence",
+    "task": {
+      "task_id": "eval-research-sparse",
+      "task_type": "task.research",
+      "message": "sparse evidence research scenario",
+      "context": {
+        "session_id": "eval-research-sparse",
+        "research_query": "sparse evidence research scenario",
+        "fetch_top_result": true,
+        "execution_policy": "research_pipeline",
+        "runtime_profile": "research_eval"
+      }
+    },
+    "assert": {
+      "equals": {
+        "ok": true,
+        "payload.module_id": "research_module",
+        "payload.research.source_count": 1,
+        "payload.research.top_source.title": "Sparse Evidence Source"
+      },
+      "contains": {
+        "text": [
+          "Research module gathered 1 source(s)",
+          "Top source: Sparse Evidence Source"
+        ]
+      }
+    }
+  }
+]

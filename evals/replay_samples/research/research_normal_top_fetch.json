@@ -1,0 +1,21 @@
+{
+  "case_id": "research_normal_top_fetch",
+  "scenario": "research module gathers multiple sources and fetches the top source body",
+  "baseline_type": "research",
+  "input": {
+    "task_type": "task.research",
+    "message": "agent os separation of concerns"
+  },
+  "context": {
+    "module_id": "research_module",
+    "execution_policy": "research_pipeline",
+    "fetch_top_result": true,
+    "runtime_profile": "research_eval"
+  },
+  "attachments": [],
+  "expected_focus": [
+    "source-count",
+    "top-source",
+    "fetched-evidence"
+  ]
+}
