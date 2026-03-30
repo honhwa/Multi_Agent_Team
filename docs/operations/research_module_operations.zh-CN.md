@@ -1,6 +1,6 @@
 # Research Module 运营说明
 
-English version: [research_module_operations.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/research_module_operations.md)
+English version: [research_module_operations.md](research_module_operations.md)
 
 ## 这个模块是做什么的
 

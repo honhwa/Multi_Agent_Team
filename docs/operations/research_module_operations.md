@@ -1,6 +1,6 @@
 # Research Module Operations
 
-中文版本: [research_module_operations.zh-CN.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/research_module_operations.zh-CN.md)
+中文版本: [research_module_operations.zh-CN.md](research_module_operations.zh-CN.md)
 
 
 ## What This Module Is For

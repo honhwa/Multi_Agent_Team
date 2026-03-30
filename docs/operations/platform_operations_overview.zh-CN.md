@@ -2,7 +2,7 @@
 
 这是当前平台状态的单一运营入口。它不会创建第二套状态系统。下面所有状态都来自现有 artifacts、eval summaries、metrics、smoke 文档、replay samples 和 runbook 的汇总。
 
-English version: [platform_operations_overview.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/platform_operations_overview.md)
+English version: [platform_operations_overview.md](platform_operations_overview.md)
 
 ## 当前阶段
 

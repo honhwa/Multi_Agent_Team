@@ -52,4 +52,4 @@ Each Provider contract declares:
 
 Operational follow-up:
 
-- [Tool / Provider Degradation Guide](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/tool_provider_degradation_guide.md)
+- [Tool / Provider Degradation Guide](../operations/tool_provider_degradation_guide.md)

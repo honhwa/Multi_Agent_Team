@@ -1,6 +1,6 @@
 # Research Module
 
-English version: [research_module.md](/Users/dalizhou/Desktop/new_validation_agent/docs/modules/research_module.md)
+English version: [research_module.md](research_module.md)
 
 `research_module` 是第二正式业务模块候选，也是当前默认推荐的第一个非 office 正式模块。
 
@@ -16,9 +16,9 @@ English version: [research_module.md](/Users/dalizhou/Desktop/new_validation_age
 
 ## 正式入口
 
-- [module.py](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/research_module/module.py)
-- [manifest.py](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/research_module/manifest.py)
-- [module.json](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/research_module/module.json)
+- [module.py](../../app/business_modules/research_module/module.py)
+- [manifest.py](../../app/business_modules/research_module/manifest.py)
+- [module.json](../../app/business_modules/research_module/module.json)
 
 ## 当前流水线
 
@@ -69,7 +69,7 @@ python scripts/demo_research_module.py --check
 
 关于结果等级、降级策略和升级规则的运营说明见：
 
-- [research_module_operations.zh-CN.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/research_module_operations.zh-CN.md)
+- [research_module_operations.zh-CN.md](../operations/research_module_operations.zh-CN.md)
 
 ## Swarm MVP Demo
 
@@ -94,6 +94,6 @@ python scripts/demo_research_swarm.py --check
 
 相关阅读：
 
-- [research_swarm_demo.md](/Users/dalizhou/Desktop/new_validation_agent/docs/demo/research_swarm_demo.md)
-- [swarm_mvp_operations.zh-CN.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/swarm_mvp_operations.zh-CN.md)
-- [swarm_mvp_runbook.zh-CN.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/swarm_mvp_runbook.zh-CN.md)
+- [research_swarm_demo.md](../demo/research_swarm_demo.md)
+- [swarm_mvp_operations.zh-CN.md](../operations/swarm_mvp_operations.zh-CN.md)
+- [swarm_mvp_runbook.zh-CN.md](../operations/swarm_mvp_runbook.zh-CN.md)

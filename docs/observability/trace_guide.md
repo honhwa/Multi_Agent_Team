@@ -25,7 +25,7 @@ A trace should explain:
 
 Related docs:
 
-- [Troubleshooting Guide](/Users/dalizhou/Desktop/new_validation_agent/docs/observability/troubleshooting.md)
+- [Troubleshooting Guide](troubleshooting.md)
 
 ## Common Debug Steps
 

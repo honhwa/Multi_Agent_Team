@@ -1,6 +1,6 @@
 # Swarm MVP 演示 / 发布前 Runbook
 
-English version: [swarm_mvp_runbook.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/swarm_mvp_runbook.md)
+English version: [swarm_mvp_runbook.md](swarm_mvp_runbook.md)
 
 ## 用途
 

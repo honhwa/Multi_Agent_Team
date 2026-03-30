@@ -26,9 +26,9 @@ A production module should provide:
 
 `office_module` is the reference implementation:
 
-- [`app/business_modules/office_module/module.py`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/office_module/module.py)
-- [`app/business_modules/office_module/module.json`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/office_module/module.json)
-- [`app/business_modules/office_module/manifest.py`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/office_module/manifest.py)
+- [`app/business_modules/office_module/module.py`](../../app/business_modules/office_module/module.py)
+- [`app/business_modules/office_module/module.json`](../../app/business_modules/office_module/module.json)
+- [`app/business_modules/office_module/manifest.py`](../../app/business_modules/office_module/manifest.py)
 
 ## Manifest Checklist
 
@@ -52,7 +52,7 @@ Kernel startup validates the manifest before the module becomes runnable.
 ## Registration Path
 
 1. Add the module implementation.
-2. Register it in [`app/bootstrap/assemble.py`](/Users/dalizhou/Desktop/new_validation_agent/app/bootstrap/assemble.py).
+2. Register it in [`app/bootstrap/assemble.py`](../../app/bootstrap/assemble.py).
 3. Ensure `KernelHost.init()` can initialize and health-check it.
 4. Cover the module with tests under `tests/modules/` and at least one integration test under `tests/integration/`.
 

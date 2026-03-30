@@ -12,9 +12,9 @@ If that fails, the issue is below the LLM layer and usually sits in KernelHost, 
 
 ## Where To Look
 
-- request path: [`docs/architecture/current_execution_path.md`](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/current_execution_path.md)
-- trace fields: [`docs/observability/trace_guide.md`](/Users/dalizhou/Desktop/new_validation_agent/docs/observability/trace_guide.md)
-- tool/provider degradation: [`docs/operations/tool_provider_degradation_guide.md`](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/tool_provider_degradation_guide.md)
+- request path: [`docs/architecture/current_execution_path.md`](../architecture/current_execution_path.md)
+- trace fields: [`docs/observability/trace_guide.md`](trace_guide.md)
+- tool/provider degradation: [`docs/operations/tool_provider_degradation_guide.md`](../operations/tool_provider_degradation_guide.md)
 
 ## Common Failure Modes
 

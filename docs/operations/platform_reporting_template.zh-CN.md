@@ -2,7 +2,7 @@
 
 这个模板用于项目汇报、运营汇报或里程碑汇报。保持简短，内容从当前总览、eval artifacts、metrics 和 runbook 中直接填写。
 
-English version: [platform_reporting_template.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/platform_reporting_template.md)
+English version: [platform_reporting_template.md](platform_reporting_template.md)
 
 ## 模板
 

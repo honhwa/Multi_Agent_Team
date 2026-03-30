@@ -1,6 +1,6 @@
 # Research Module
 
-中文版本: [research_module.zh-CN.md](/Users/dalizhou/Desktop/new_validation_agent/docs/modules/research_module.zh-CN.md)
+中文版本: [research_module.zh-CN.md](research_module.zh-CN.md)
 
 
 `research_module` is the second formal business-module candidate and the current default recommendation for the first non-office module to formalize.
@@ -17,9 +17,9 @@ Provide a clean research-oriented module that can:
 
 ## Formal Entry
 
-- [`app/business_modules/research_module/module.py`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/research_module/module.py)
-- [`app/business_modules/research_module/manifest.py`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/research_module/manifest.py)
-- [`app/business_modules/research_module/module.json`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/research_module/module.json)
+- [`app/business_modules/research_module/module.py`](../../app/business_modules/research_module/module.py)
+- [`app/business_modules/research_module/manifest.py`](../../app/business_modules/research_module/manifest.py)
+- [`app/business_modules/research_module/module.json`](../../app/business_modules/research_module/module.json)
 
 ## Current Pipelines
 
@@ -70,7 +70,7 @@ That demo runs `research_module` through `KernelHost` using a deterministic prov
 
 Operational guidance for result grades, degradation policy, and escalation rules lives in:
 
-- [docs/operations/research_module_operations.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/research_module_operations.md)
+- [docs/operations/research_module_operations.md](../operations/research_module_operations.md)
 
 ## Swarm MVP Demo
 
@@ -95,6 +95,6 @@ This demo proves:
 
 Readable demo notes:
 
-- [docs/demo/research_swarm_demo.md](/Users/dalizhou/Desktop/new_validation_agent/docs/demo/research_swarm_demo.md)
-- [docs/operations/swarm_mvp_operations.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/swarm_mvp_operations.md)
-- [docs/operations/swarm_mvp_runbook.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/swarm_mvp_runbook.md)
+- [docs/demo/research_swarm_demo.md](../demo/research_swarm_demo.md)
+- [docs/operations/swarm_mvp_operations.md](../operations/swarm_mvp_operations.md)
+- [docs/operations/swarm_mvp_runbook.md](../operations/swarm_mvp_runbook.md)

@@ -1,6 +1,6 @@
 # Smoke Matrix
 
-中文版本: [smoke_matrix.zh-CN.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/smoke_matrix.zh-CN.md)
+中文版本: [smoke_matrix.zh-CN.md](smoke_matrix.zh-CN.md)
 
 
 | Layer | Entry | Purpose | CI | When to Run |

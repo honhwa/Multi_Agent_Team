@@ -53,9 +53,9 @@ The ToolBus records fallback and provider failure events on the kernel trace.
 
 ## Standard Contracts
 
-Current formal tools are registered in [`app/bootstrap/assemble.py`](/Users/dalizhou/Desktop/new_validation_agent/app/bootstrap/assemble.py).
+Current formal tools are registered in [`app/bootstrap/assemble.py`](../../app/bootstrap/assemble.py).
 
-Current provider implementations live under [`app/tool_providers/`](/Users/dalizhou/Desktop/new_validation_agent/app/tool_providers).
+Current provider implementations live under [`app/tool_providers/`](../../app/tool_providers).
 
 ## How To Debug A Provider Incident
 

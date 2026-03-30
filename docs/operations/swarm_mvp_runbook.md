@@ -1,6 +1,6 @@
 # Swarm MVP Demo And Release Runbook
 
-中文版本: [swarm_mvp_runbook.zh-CN.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/swarm_mvp_runbook.zh-CN.md)
+中文版本: [swarm_mvp_runbook.zh-CN.md](swarm_mvp_runbook.zh-CN.md)
 
 
 ## Purpose

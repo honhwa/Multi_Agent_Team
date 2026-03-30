@@ -1,6 +1,6 @@
 # Smoke Matrix
 
-English version: [smoke_matrix.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/smoke_matrix.md)
+English version: [smoke_matrix.md](smoke_matrix.md)
 
 | 层级 | 入口 | 目的 | 是否进 CI | 何时运行 |
 | --- | --- | --- | --- | --- |

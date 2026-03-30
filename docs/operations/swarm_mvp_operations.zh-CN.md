@@ -1,6 +1,6 @@
 # Swarm MVP 运营说明
 
-English version: [swarm_mvp_operations.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/swarm_mvp_operations.md)
+English version: [swarm_mvp_operations.md](swarm_mvp_operations.md)
 
 ## 这个流程是做什么的
 

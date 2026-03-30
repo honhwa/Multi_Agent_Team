@@ -18,9 +18,9 @@ The chosen module must satisfy all of the following:
 
 Current non-office business-module candidates are present only as skeletons:
 
-- [`app/business_modules/research_module/module.py`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/research_module/module.py)
-- [`app/business_modules/coding_module/module.py`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/coding_module/module.py)
-- [`app/business_modules/adaptation_module/module.py`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/adaptation_module/module.py)
+- [`app/business_modules/research_module/module.py`](../../app/business_modules/research_module/module.py)
+- [`app/business_modules/coding_module/module.py`](../../app/business_modules/coding_module/module.py)
+- [`app/business_modules/adaptation_module/module.py`](../../app/business_modules/adaptation_module/module.py)
 
 As of the current baseline:
 

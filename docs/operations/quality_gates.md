@@ -1,6 +1,6 @@
 # Quality Gates
 
-中文版本: [quality_gates.zh-CN.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/quality_gates.zh-CN.md)
+中文版本: [quality_gates.zh-CN.md](quality_gates.zh-CN.md)
 
 
 ## Policy
@@ -49,14 +49,14 @@ python scripts/demo_research_swarm.py --check
 - milestone or platform operations changes: `python scripts/collect_platform_metrics.py`
 
 Use `evals/cases.json` separately when you want the broader exploratory suite.
-Use [smoke_matrix.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/smoke_matrix.md) to decide whether a smoke belongs in baseline, module, Swarm, or release-only coverage.
-Use [evals/replay_samples/README.md](/Users/dalizhou/Desktop/new_validation_agent/evals/replay_samples/README.md) when promoting replayable scenarios into future release gates.
-Use [platform_operations_overview.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/platform_operations_overview.md) as the single operations entry before drilling into individual docs or artifacts.
-Use [platform_reporting_template.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/platform_reporting_template.md) when preparing status updates.
+Use [smoke_matrix.md](smoke_matrix.md) to decide whether a smoke belongs in baseline, module, Swarm, or release-only coverage.
+Use [evals/replay_samples/README.md](../../evals/replay_samples/README.md) when promoting replayable scenarios into future release gates.
+Use [platform_operations_overview.md](platform_operations_overview.md) as the single operations entry before drilling into individual docs or artifacts.
+Use [platform_reporting_template.md](platform_reporting_template.md) when preparing status updates.
 
 ## CI Behavior
 
-[`regression-ci.yml`](/Users/dalizhou/Desktop/new_validation_agent/.github/workflows/regression-ci.yml) now checks:
+[`regression-ci.yml`](../../.github/workflows/regression-ci.yml) now checks:
 
 - platform boundary guardrails
 - platform metrics artifact

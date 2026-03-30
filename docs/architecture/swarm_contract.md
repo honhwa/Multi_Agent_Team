@@ -26,7 +26,7 @@ Each Swarm branch must declare:
 
 Formal code contract:
 
-- [`app/contracts/swarm.py`](/Users/dalizhou/Desktop/new_validation_agent/app/contracts/swarm.py)
+- [`app/contracts/swarm.py`](../../app/contracts/swarm.py)
 
 Current default branch failure policy:
 

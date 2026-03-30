@@ -335,7 +335,7 @@
 
 当前合同：
 
-- 参见 [Swarm Contract](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/swarm_contract.md)
+- 参见 [Swarm Contract](architecture/swarm_contract.md)
 - 分支失败默认策略：`serial_replay`
 
 ## 阶段 6：聚合层
@@ -357,7 +357,7 @@
 
 - Aggregator 最小职责只允许：merge / deduplicate / mark conflicts
 - 冲突默认策略：`mark_only`
-- 参见 [Swarm Contract](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/swarm_contract.md)
+- 参见 [Swarm Contract](architecture/swarm_contract.md)
 
 说明：
 

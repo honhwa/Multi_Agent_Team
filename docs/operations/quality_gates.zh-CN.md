@@ -1,6 +1,6 @@
 # 质量门禁
 
-English version: [quality_gates.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/quality_gates.md)
+English version: [quality_gates.md](quality_gates.md)
 
 ## 策略
 
@@ -58,7 +58,7 @@ python scripts/demo_research_swarm.py --check
 
 ## CI 行为
 
-当前 [`regression-ci.yml`](/Users/dalizhou/Desktop/new_validation_agent/.github/workflows/regression-ci.yml) 会检查：
+当前 [`regression-ci.yml`](../../.github/workflows/regression-ci.yml) 会检查：
 
 - 平台边界保护
 - 平台指标 artifact

@@ -24,11 +24,11 @@ Freeze the platform boundary rules and start collecting the minimum metrics requ
 
 ### Outputs
 
-- [`docs/architecture/platform_boundaries.md`](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/platform_boundaries.md)
-- [`docs/migration/compatibility_shim_inventory.md`](/Users/dalizhou/Desktop/new_validation_agent/docs/migration/compatibility_shim_inventory.md)
-- [`docs/operations/platform_metrics.md`](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/platform_metrics.md)
-- [`scripts/check_platform_boundaries.py`](/Users/dalizhou/Desktop/new_validation_agent/scripts/check_platform_boundaries.py)
-- [`scripts/collect_platform_metrics.py`](/Users/dalizhou/Desktop/new_validation_agent/scripts/collect_platform_metrics.py)
+- [`docs/architecture/platform_boundaries.md`](../architecture/platform_boundaries.md)
+- [`docs/migration/compatibility_shim_inventory.md`](../migration/compatibility_shim_inventory.md)
+- [`docs/operations/platform_metrics.md`](../operations/platform_metrics.md)
+- [`scripts/check_platform_boundaries.py`](../../scripts/check_platform_boundaries.py)
+- [`scripts/collect_platform_metrics.py`](../../scripts/collect_platform_metrics.py)
 - workflow boundary gate and metrics artifact upload
 
 ### Exit Criteria

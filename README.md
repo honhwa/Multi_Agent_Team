@@ -1,15 +1,54 @@
 # Officetool (Agent OS)
 
-这是一个 **Agent OS 风格** 的本地 Agent 系统。项目标准世界观如下：
+[English README](README.en.md)
 
-1. `KernelHost` 是稳定内核，只负责装载、调度、隔离、健康与回滚，不承载业务 prompt/角色逻辑。
-2. 模块（Module）是可升级能力单元，分为 `system_modules` 与 `business_modules`。
-3. `office_module` 是一个业务模块，不是系统主核。
-4. `Router / Planner / Worker / Reviewer / Revision` 是 `office_module` 内部角色，不是一级模块。
-5. Tool 是统一能力接口（如 `workspace.read` / `web.search` / `write.patch`）。
-6. Provider 是 Tool 的实现者（如 `LocalWorkspaceProvider` / `HttpWebProvider`），可替换、可健康检查、可隔离失效。
+[![Regression CI](https://github.com/jonhncatt/multi-agents-based-os/actions/workflows/regression-ci.yml/badge.svg?branch=main)](https://github.com/jonhncatt/multi-agents-based-os/actions/workflows/regression-ci.yml)
+[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](requirements.txt)
+[![FastAPI](https://img.shields.io/badge/FastAPI-app-009688.svg)](https://fastapi.tiangolo.com/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-详细启动方式、功能说明和 API 兼容行为见下文。
+这是一个 **Agent OS 风格** 的本地 Agent 系统。它的核心目标不是“做一个更大的 prompt”，而是把内核、模块、工具、Provider、质量门禁和运营层拆清楚，形成可维护的本地 Agent 平台。
+
+当前项目已经具备：
+
+- 稳定的 `KernelHost` 内核与模块装配边界
+- `office_module` 与 `research_module` 两条正式业务主线
+- 模块内 `Swarm MVP` 的业务可读输出
+- `gate / smoke / replay / metrics / runbook` 的基础运营闭环
+
+## 界面截图
+
+### 主产品入口（8080）
+
+![Kernel Robot home](docs/assets/screenshots/kernel_robot_home.png)
+
+### 运行时实验入口（8081）
+
+![Role Agent Lab home](docs/assets/screenshots/role_agent_lab_home.png)
+
+## 架构速览
+
+```mermaid
+flowchart LR
+    UI["Web UI / API"] --> Assemble["assemble_runtime()"]
+    Assemble --> Kernel["KernelHost"]
+    Kernel --> Registry["ModuleRegistry"]
+    Kernel --> ToolBus["ToolBus"]
+
+    Registry --> Office["office_module"]
+    Registry --> Research["research_module"]
+    Registry --> System["system_modules"]
+
+    Office --> ToolRuntime["tool_runtime_module"]
+    Research --> ToolRuntime
+    ToolRuntime --> ProviderRegistry["ProviderRegistry"]
+
+    ProviderRegistry --> Workspace["LocalWorkspaceProvider"]
+    ProviderRegistry --> Web["HttpWebProvider"]
+
+    Research --> Swarm["Module-local Swarm MVP"]
+    Swarm --> Aggregator["merge / deduplicate / mark conflicts"]
+```
 
 ## 目录
 
@@ -112,26 +151,26 @@ git pull
 
 ### 开发模块：先看哪里
 
-- 正式装配入口：[`app/bootstrap/assemble.py`](/Users/dalizhou/Desktop/new_validation_agent/app/bootstrap/assemble.py)
-- 正式内核入口：[`app/kernel/host.py`](/Users/dalizhou/Desktop/new_validation_agent/app/kernel/host.py)
-- 标准业务模块样板：[`app/business_modules/office_module/module.py`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/office_module/module.py)
-- 第二正式模块候选：[`app/business_modules/research_module/module.py`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/research_module/module.py)
-- `research_module` 说明：[docs/modules/research_module.md](/Users/dalizhou/Desktop/new_validation_agent/docs/modules/research_module.md)
-- 模块接入指南：[docs/modules/module_integration_guide.md](/Users/dalizhou/Desktop/new_validation_agent/docs/modules/module_integration_guide.md)
-- 平台边界规则：[docs/architecture/platform_boundaries.md](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/platform_boundaries.md)
-- Swarm 合同：[docs/architecture/swarm_contract.md](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/swarm_contract.md)
-- 兼容层台账：[docs/migration/compatibility_shim_inventory.md](/Users/dalizhou/Desktop/new_validation_agent/docs/migration/compatibility_shim_inventory.md)
-- 里程碑路线图：[docs/roadmap/agent_os_milestones.md](/Users/dalizhou/Desktop/new_validation_agent/docs/roadmap/agent_os_milestones.md)
-- 第二模块选择记录：[docs/roadmap/second_module_selection.md](/Users/dalizhou/Desktop/new_validation_agent/docs/roadmap/second_module_selection.md)
-- 平台指标定义：[docs/operations/platform_metrics.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/platform_metrics.md)
-- packages 边界说明：[packages/README.md](/Users/dalizhou/Desktop/new_validation_agent/packages/README.md)
+- 正式装配入口：[`app/bootstrap/assemble.py`](app/bootstrap/assemble.py)
+- 正式内核入口：[`app/kernel/host.py`](app/kernel/host.py)
+- 标准业务模块样板：[`app/business_modules/office_module/module.py`](app/business_modules/office_module/module.py)
+- 第二正式模块候选：[`app/business_modules/research_module/module.py`](app/business_modules/research_module/module.py)
+- `research_module` 说明：[docs/modules/research_module.md](docs/modules/research_module.md)
+- 模块接入指南：[docs/modules/module_integration_guide.md](docs/modules/module_integration_guide.md)
+- 平台边界规则：[docs/architecture/platform_boundaries.md](docs/architecture/platform_boundaries.md)
+- Swarm 合同：[docs/architecture/swarm_contract.md](docs/architecture/swarm_contract.md)
+- 兼容层台账：[docs/migration/compatibility_shim_inventory.md](docs/migration/compatibility_shim_inventory.md)
+- 里程碑路线图：[docs/roadmap/agent_os_milestones.md](docs/roadmap/agent_os_milestones.md)
+- 第二模块选择记录：[docs/roadmap/second_module_selection.md](docs/roadmap/second_module_selection.md)
+- 平台指标定义：[docs/operations/platform_metrics.md](docs/operations/platform_metrics.md)
+- packages 边界说明：[packages/README.md](packages/README.md)
 
 ### 调试运行时：先看哪里
 
-- 当前主路径：[docs/architecture/current_execution_path.md](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/current_execution_path.md)
-- Trace 指南：[docs/observability/trace_guide.md](/Users/dalizhou/Desktop/new_validation_agent/docs/observability/trace_guide.md)
-- 故障排查：[docs/observability/troubleshooting.md](/Users/dalizhou/Desktop/new_validation_agent/docs/observability/troubleshooting.md)
-- Tool / Provider 降级指南：[docs/operations/tool_provider_degradation_guide.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/tool_provider_degradation_guide.md)
+- 当前主路径：[docs/architecture/current_execution_path.md](docs/architecture/current_execution_path.md)
+- Trace 指南：[docs/observability/trace_guide.md](docs/observability/trace_guide.md)
+- 故障排查：[docs/observability/troubleshooting.md](docs/observability/troubleshooting.md)
+- Tool / Provider 降级指南：[docs/operations/tool_provider_degradation_guide.md](docs/operations/tool_provider_degradation_guide.md)
 - Kernel 视图：`./run-kernel-robot.sh`
 - Role 视图：`./run-role-agent-lab.sh`
 
@@ -153,7 +192,7 @@ KernelHost.dispatch
   -> TaskResponse + trace
 ```
 
-完整说明见：[docs/demo/minimal_demo.md](/Users/dalizhou/Desktop/new_validation_agent/docs/demo/minimal_demo.md)
+完整说明见：[docs/demo/minimal_demo.md](docs/demo/minimal_demo.md)
 
 第二模块独立 demo：
 
@@ -167,7 +206,7 @@ Swarm MVP demo：
 python scripts/demo_research_swarm.py --check
 ```
 
-说明见：[docs/demo/research_swarm_demo.md](/Users/dalizhou/Desktop/new_validation_agent/docs/demo/research_swarm_demo.md)
+说明见：[docs/demo/research_swarm_demo.md](docs/demo/research_swarm_demo.md)
 
 ### 质量门禁
 
@@ -203,10 +242,10 @@ CI 会在 push / pull request 上运行：
 - `evals/cases.json` 保留为更大的探索回归集合
 - compatibility shim 变更会被 platform boundary gate 检查，要求同步更新 shim 台账和退场计划
 - 平台里程碑指标会产出到 `artifacts/platform_metrics/latest.json`
-- 平台运营单一入口见：[docs/operations/platform_operations_overview.zh-CN.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/platform_operations_overview.zh-CN.md)（英文版：[platform_operations_overview.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/platform_operations_overview.md)）
-- 固定汇报模板见：[docs/operations/platform_reporting_template.zh-CN.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/platform_reporting_template.zh-CN.md)（英文版：[platform_reporting_template.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/platform_reporting_template.md)）
+- 平台运营单一入口见：[docs/operations/platform_operations_overview.zh-CN.md](docs/operations/platform_operations_overview.zh-CN.md)（英文版：[platform_operations_overview.md](docs/operations/platform_operations_overview.md)）
+- 固定汇报模板见：[docs/operations/platform_reporting_template.zh-CN.md](docs/operations/platform_reporting_template.zh-CN.md)（英文版：[platform_reporting_template.md](docs/operations/platform_reporting_template.md)）
 
-门禁说明见：[docs/operations/quality_gates.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/quality_gates.md)
+门禁说明见：[docs/operations/quality_gates.md](docs/operations/quality_gates.md)
 
 ### 127.0.0.1:8080 打不开时怎么查
 
@@ -355,32 +394,32 @@ HTTP / UI
 
 当前推荐入口：
 
-- HTTP/API：[`app/main.py`](/Users/dalizhou/Desktop/new_validation_agent/app/main.py)
-- 装配入口：[`app/bootstrap/assemble.py`](/Users/dalizhou/Desktop/new_validation_agent/app/bootstrap/assemble.py)
-- 正式内核：[`app/kernel/host.py`](/Users/dalizhou/Desktop/new_validation_agent/app/kernel/host.py)
-- 正式业务模块：[`app/business_modules/office_module/module.py`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/office_module/module.py)
+- HTTP/API：[`app/main.py`](app/main.py)
+- 装配入口：[`app/bootstrap/assemble.py`](app/bootstrap/assemble.py)
+- 正式内核：[`app/kernel/host.py`](app/kernel/host.py)
+- 正式业务模块：[`app/business_modules/office_module/module.py`](app/business_modules/office_module/module.py)
 
 当前 retired compatibility placeholder：
 
-- [`app/agent.py`](/Users/dalizhou/Desktop/new_validation_agent/app/agent.py)：runtime path 已退场，仅保留兼容 re-export 占位
+- [`app/agent.py`](app/agent.py)：runtime path 已退场，仅保留兼容 re-export 占位
 
 已退场 compatibility shim：
 
-- `packages/runtime_core/kernel_host.py` -> `AgentOSRuntime` explicit legacy facade/helper bindings + [`packages/runtime_core/legacy_host_support.py`](/Users/dalizhou/Desktop/new_validation_agent/packages/runtime_core/legacy_host_support.py)
-- `app/execution_policy.py` -> [`packages/office_modules/execution_policy.py`](/Users/dalizhou/Desktop/new_validation_agent/packages/office_modules/execution_policy.py)
-- `app/router_rules.py` -> [`packages/office_modules/router_hints.py`](/Users/dalizhou/Desktop/new_validation_agent/packages/office_modules/router_hints.py)
-- `app/request_analysis_support.py` -> [`packages/office_modules/request_analysis.py`](/Users/dalizhou/Desktop/new_validation_agent/packages/office_modules/request_analysis.py)
-- `app/router_intent_support.py` -> [`packages/office_modules/intent_support.py`](/Users/dalizhou/Desktop/new_validation_agent/packages/office_modules/intent_support.py)
+- `packages/runtime_core/kernel_host.py` -> `AgentOSRuntime` explicit legacy facade/helper bindings + [`packages/runtime_core/legacy_host_support.py`](packages/runtime_core/legacy_host_support.py)
+- `app/execution_policy.py` -> [`packages/office_modules/execution_policy.py`](packages/office_modules/execution_policy.py)
+- `app/router_rules.py` -> [`packages/office_modules/router_hints.py`](packages/office_modules/router_hints.py)
+- `app/request_analysis_support.py` -> [`packages/office_modules/request_analysis.py`](packages/office_modules/request_analysis.py)
+- `app/router_intent_support.py` -> [`packages/office_modules/intent_support.py`](packages/office_modules/intent_support.py)
 
 迁移文档：
 
-- [当前执行路径](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/current_execution_path.md)
-- [Kernel 合同](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/kernel_contract.md)
-- [Tool / Provider 合同](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/tool_provider_contract.md)
-- [Office Module](/Users/dalizhou/Desktop/new_validation_agent/docs/modules/office_module.md)
-- [Trace 指南](/Users/dalizhou/Desktop/new_validation_agent/docs/observability/trace_guide.md)
-- [Package 收敛](/Users/dalizhou/Desktop/new_validation_agent/docs/migration/package_consolidation.md)
-- [Deprecation Plan](/Users/dalizhou/Desktop/new_validation_agent/docs/migration/deprecation_plan.md)
+- [当前执行路径](docs/architecture/current_execution_path.md)
+- [Kernel 合同](docs/architecture/kernel_contract.md)
+- [Tool / Provider 合同](docs/architecture/tool_provider_contract.md)
+- [Office Module](docs/modules/office_module.md)
+- [Trace 指南](docs/observability/trace_guide.md)
+- [Package 收敛](docs/migration/package_consolidation.md)
+- [Deprecation Plan](docs/migration/deprecation_plan.md)
 
 ### Regression Evals
 
@@ -392,9 +431,9 @@ HTTP / UI
   - `OPENAI_API_KEY=... python3 scripts/run_evals.py --include-optional`
   - `EVAL_NVME_PDF=/absolute/path/to/spec.pdf python3 scripts/run_evals.py --include-optional`
 - 当前题库位置：
-  - [evals/cases.json](/Users/dalizhou/Desktop/new_validation_agent/evals/cases.json)
-  - [spec_excerpt.txt](/Users/dalizhou/Desktop/new_validation_agent/evals/fixtures/spec_excerpt.txt)
-  - [spec_without_15h.txt](/Users/dalizhou/Desktop/new_validation_agent/evals/fixtures/spec_without_15h.txt)
+  - [evals/cases.json](evals/cases.json)
+  - [spec_excerpt.txt](evals/fixtures/spec_excerpt.txt)
+  - [spec_without_15h.txt](evals/fixtures/spec_without_15h.txt)
 - 设计原则：
   - 正例和负例都要有
   - 文档里没有 `15h` 时，正确结果应是“证据不足/未命中”，不是强行判存在或不存在
