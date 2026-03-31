@@ -12,7 +12,7 @@
     <div class="bg-shape bg2"></div>
     <div class="bg-grid"></div>
 
-    <main id="appShell" class="app-shell app-shell--three-column">
+    <main id="appShell" class="app-shell app-shell--two-column">
       <header class="console-topbar">
         <div class="topbar-brand">
           <div class="brand-mark">OS</div>
@@ -308,17 +308,7 @@
             <button id="sendBtn">发送</button>
           </div>
         </div>
-      </section>
-
-      <button
-        id="rightRailResizer"
-        class="rail-resizer rail-resizer--right"
-        type="button"
-        aria-label="调整右侧栏宽度，双击可折叠"
-        title="拖动调整右侧栏宽度，双击可折叠"
-      ></button>
-
-      <aside id="opsRail" class="ops-rail">
+        <aside id="opsRail" class="ops-rail">
         <section class="ops-card ops-card--snapshot">
           <div class="ops-card-head">
             <div>
@@ -472,6 +462,7 @@ Router -> Coordinator -> [Planner?] -> [Researcher/FileReader/Summarizer?] -> Wo
 全局累计费用(USD): 0.000000</pre>
         </section>
       </aside>
+      </section>
     </main>
 
     <div id="commandPalette" class="command-palette-shell" hidden aria-hidden="true">
@@ -489,7 +480,7 @@ Router -> Coordinator -> [Planner?] -> [Researcher/FileReader/Summarizer?] -> Wo
           class="command-palette-input"
           type="text"
           autocomplete="off"
-          placeholder="搜索命令，例如：新建会话、双视图、回归测试、折叠右栏"
+          placeholder="搜索命令，例如：新建会话、双视图、回归测试、刷新总览"
         />
         <div id="commandPaletteList" class="command-palette-list">没有可用命令。</div>
       </div>

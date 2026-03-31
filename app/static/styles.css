@@ -6,7 +6,7 @@
   --accent: #126a41;
   --accent-2: #1c8f59;
   --warn: #7a3519;
-  --left-rail-width: 280px;
+  --left-rail-width: 248px;
   --right-rail-width: 320px;
   --rail-resizer-width: 14px;
   --shell-shadow: 0 20px 40px rgba(20, 39, 51, 0.08);
@@ -1829,28 +1829,22 @@ body {
   right: -10vw;
 }
 
-.app-shell--three-column {
-  max-width: 1820px;
+.app-shell--two-column {
+  max-width: 1680px;
   grid-template-columns:
     var(--left-rail-width)
     var(--rail-resizer-width)
-    minmax(0, 1fr)
-    var(--rail-resizer-width)
-    var(--right-rail-width);
+    minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-areas:
-    "top top top top top"
-    "left left-handle center right-handle right";
+    "top top top"
+    "left left-handle center";
   gap: 20px;
   padding: 20px;
 }
 
-.app-shell--three-column.left-collapsed {
+.app-shell--two-column.left-collapsed {
   --left-rail-width: 0px;
-}
-
-.app-shell--three-column.right-collapsed {
-  --right-rail-width: 0px;
 }
 
 .console-topbar {
@@ -1973,8 +1967,7 @@ body {
   box-shadow: var(--shell-shadow);
 }
 
-.app-shell--three-column.left-collapsed .control-rail,
-.app-shell--three-column.right-collapsed .ops-rail {
+.app-shell--two-column.left-collapsed .control-rail {
   opacity: 0;
   pointer-events: none;
   overflow: hidden;
@@ -2027,16 +2020,21 @@ body {
 .workspace-shell {
   grid-area: center;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 16px;
   min-width: 0;
 }
 
 .ops-rail {
-  grid-area: right;
-  align-self: start;
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+  min-width: 0;
+}
+
+.ops-card--index,
+.ops-card--inspector {
+  grid-column: 1 / -1;
 }
 
 .ops-card--inspector {
@@ -2045,7 +2043,7 @@ body {
 
 .live-ops-grid {
   display: grid;
-  grid-template-columns: 1.05fr 0.95fr;
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
   gap: 14px;
 }
 
@@ -2471,8 +2469,12 @@ textarea {
 
 .workspace-hero {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
   gap: 16px;
+}
+
+.hero-card--quality {
+  grid-column: 1 / -1;
 }
 
 .hero-card {
@@ -2819,9 +2821,8 @@ body.panel-debug-off .runtime-details {
 }
 
 @media (max-width: 1520px) {
-  .app-shell--three-column {
-    --left-rail-width: 248px;
-    --right-rail-width: 288px;
+  .app-shell--two-column {
+    --left-rail-width: 232px;
     gap: 16px;
   }
 }
@@ -2832,6 +2833,7 @@ body.panel-debug-off .runtime-details {
   .hero-mini-grid,
   .ops-gate-grid,
   .live-ops-grid,
+  .ops-rail,
   .topbar-status-strip,
   .ops-links-row {
     grid-template-columns: 1fr;
@@ -2842,13 +2844,12 @@ body.panel-debug-off .runtime-details {
     align-items: stretch;
   }
 
-  .app-shell--three-column {
+  .app-shell--two-column {
     grid-template-columns: 1fr;
     grid-template-areas:
       "top"
       "left"
-      "center"
-      "right";
+      "center";
   }
 
   .rail-resizer {
