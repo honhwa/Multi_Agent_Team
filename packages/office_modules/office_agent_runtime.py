@@ -1473,6 +1473,10 @@ class OfficeAgent:
                     "对新闻/实时信息类问题，若第一次搜索结果不足，先自动改写 query 并重试最多 2 次，"
                     "再决定是否向用户补充提问。\n"
                     "如果当前用户消息只是“上网查一下/再查一下/搜一下”这类短跟进，默认延续最近一轮用户主题，不要假装丢失上下文重新问用户想查什么。\n"
+                    "当用户给出 GitHub/仓库 URL 并要求读取仓库内容时，先直接联网抓取目录或正文，必要时用 run_shell 执行 git clone 后继续分析；"
+                    "不要以“planner 约束只能输出计划/不能联网下载”作为拒绝理由。\n"
+                    "当用户要求模块进化、自我修复、自我升级时，允许在 shadow 副本执行修复与验证；"
+                    "禁止的是未经验证直接覆盖在线核心，不要笼统回复“这是禁止能力”。\n"
                     "如果参数可合理推断（如标题、默认文件名、默认目录），请直接执行并在回复里说明假设；"
                     "不要因为参数不完整而连续多轮追问。\n"
                     "联网信息不足时，先自动换来源继续抓取；即使正文不完整，也先基于可访问到的标题/摘要给临时结论，"
@@ -2697,6 +2701,8 @@ class OfficeAgent:
                                 "用户当前请求已授权你直接继续执行。",
                                 "请立即调用必要工具完成任务（例如 read_text_file/write_text_file/append_text_file/replace_in_file），",
                                 "并直接返回最终结果。",
+                                "不要再用“planner 约束只能输出计划/不能联网下载/禁止自我更新”做拒绝理由；",
+                                "涉及模块进化时应切到 shadow 修复与验证路径。",
                             ]
                         )
                     else:
@@ -5344,6 +5350,24 @@ class OfficeAgent:
             "please provide the source file",
             "need full filename",
             "need file extension",
+            "planner constraints",
+            "can only output a plan",
+            "plan-only",
+            "cannot download from the internet",
+            "不能联网下载",
+            "不能联网抓取",
+            "不能直接读取仓库内容",
+            "planner的约束指出本轮只能输出计划",
+            "planner 约束指出本轮只能输出计划",
+            "禁止能力",
+            "这是禁止能力",
+            "不能实现或设计任何形式的自我更新",
+            "不能实现自我更新",
+            "无法自我更新",
+            "self-update is not allowed",
+            "self update is not allowed",
+            "cannot implement self-update",
+            "forbidden capability",
             "没有可用的文件读取工具",
             "没有可用文件读取工具",
             "没有文件读取工具",

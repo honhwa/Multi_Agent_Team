@@ -30,6 +30,13 @@ from tests.router.support import run_pipeline
             "web_research_full_pipeline",
         ),
         (
+            "读取 https://github.com/jonhncatt/Sequoia 里面所有内容",
+            [],
+            True,
+            "web",
+            "web_research_full_pipeline",
+        ),
+        (
             "Look up the repo function that handles retries",
             [],
             True,

@@ -157,6 +157,35 @@ def looks_like_permission_gate_text(
         return False
     if len(lowered) > 5000:
         lowered = lowered[:5000]
+    hard_refusal_patterns = (
+        "planner的约束指出本轮只能输出计划",
+        "planner 约束指出本轮只能输出计划",
+        "只能输出计划",
+        "次任务目前不能直接读取仓库内容",
+        "不能直接读取仓库内容",
+        "不能联网下载",
+        "不能联网抓取",
+        "planner constraints",
+        "can only output a plan",
+        "plan-only",
+        "cannot download from the internet",
+        "this capability is forbidden",
+        "forbidden capability",
+        "这是禁止能力",
+        "禁止能力",
+        "不能实现或设计任何形式的自我更新",
+        "不能实现自我更新",
+        "不能设计自我更新",
+        "无法实现自我更新",
+        "无法自我更新",
+        "self-update is not allowed",
+        "self update is not allowed",
+        "cannot implement self-update",
+        "cannot design self-update",
+        "cannot self-update",
+    )
+    if any(pattern in lowered for pattern in hard_refusal_patterns):
+        return True
     attachment_deferral_patterns = (
         "已完成解析", "已经完成解析", "已经完成了解析", "已解析完成", "已经解析完成", "无需调用工具",
         "无需再调用工具", "无需再次调用工具", "不需要调用工具", "不必调用工具", "already parsed",
