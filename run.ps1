@@ -41,11 +41,13 @@ if (-not $env:OPENAI_API_KEY) {
   Write-Warning "OPENAI_API_KEY is not set. Server will start, but /api/chat requests will fail until key is configured."
 }
 
+$env:OFFICETOOL_APP_PROFILE = if ($env:OFFICETOOL_APP_PROFILE) { $env:OFFICETOOL_APP_PROFILE } else { "multi_agent_robot" }
+
 $venvPython = Join-Path $rootDir ".venv\Scripts\python.exe"
 if (Test-Path $venvPython) {
-  & $venvPython -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+  & $venvPython -m uvicorn app.multi_agent_robot_main:app --host 0.0.0.0 --port 8080 --reload
   exit $LASTEXITCODE
 }
 
-py -3 -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+py -3 -m uvicorn app.multi_agent_robot_main:app --host 0.0.0.0 --port 8080 --reload
 exit $LASTEXITCODE

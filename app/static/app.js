@@ -21,10 +21,12 @@ const state = {
   commandPaletteQuery: "",
   commandPaletteIndex: 0,
   recentCommands: [],
+  workspaceView: null,
   panelLayout: { leftWidth: 280, rightWidth: 320, leftCollapsed: false, rightCollapsed: false },
 };
 const SESSION_STORAGE_KEY = "officetool.session_id";
 const RUNTIME_VIEW_STORAGE_KEY = "officetool.runtime_view";
+const WORKSPACE_VIEW_STORAGE_KEY = "officetool.workspace_view";
 const PANEL_LAYOUT_STORAGE_KEY = "officetool.panel_layout";
 const RECENT_COMMANDS_STORAGE_KEY = "officetool.recent_commands";
 
@@ -52,10 +54,13 @@ const rightRailResizer = document.getElementById("rightRailResizer");
 const appVersionView = document.getElementById("appVersionView");
 const productTitleView = document.getElementById("productTitle");
 const productHintView = document.getElementById("productHint");
+const workspaceCurrentLabel = document.getElementById("workspaceCurrentLabel");
 const commandPaletteBtn = document.getElementById("commandPaletteBtn");
 const commandPalette = document.getElementById("commandPalette");
 const commandPaletteInput = document.getElementById("commandPaletteInput");
 const commandPaletteList = document.getElementById("commandPaletteList");
+const workspaceNavButtons = Array.from(document.querySelectorAll("[data-workspace-target]"));
+const workspaceViews = Array.from(document.querySelectorAll("[data-workspace-view]"));
 const platformStatusHeadline = document.getElementById("platformStatusHeadline");
 const platformStatusMeta = document.getElementById("platformStatusMeta");
 const platformStatusSignals = document.getElementById("platformStatusSignals");
@@ -157,6 +162,15 @@ const LOG_FILTERS = [
   { id: "swarm", label: "Swarm" },
   { id: "system", label: "System" },
 ];
+const WORKSPACE_VIEWS = {
+  chat: { label: "聊天", meta: "默认极简对话视图" },
+  control: { label: "控制", meta: "模型、模式与请求设置" },
+  runtime: { label: "运行", meta: "执行链路与日志" },
+  modules: { label: "模块", meta: "主核、模块与角色运行态" },
+  operations: { label: "运营", meta: "业务结果与运营摘要" },
+  system: { label: "系统", meta: "里程碑、路径策略与统计" },
+  debug: { label: "调试", meta: "仅在 Debug 模式下显示" },
+};
 let currentRunStepId = null;
 let currentRunTone = "idle";
 
@@ -714,6 +728,12 @@ function applyPanelDebugMode(enabled, { persist = true } = {}) {
       window.localStorage.setItem(PANEL_DEBUG_STORAGE_KEY, value ? "1" : "0");
     } catch {}
   }
+  if (!value && state.workspaceView === "debug") {
+    setWorkspaceView("chat");
+  } else {
+    setWorkspaceView(state.workspaceView || getStoredWorkspaceView(), { persist: false });
+  }
+  renderCommandPalette();
   renderRunSteps(currentRunStepId, currentRunTone === "error");
 }
 
@@ -724,6 +744,63 @@ function restorePanelDebugMode() {
     enabled = raw === "1" || raw === "true" || raw === "yes" || raw === "on";
   } catch {}
   applyPanelDebugMode(enabled, { persist: false });
+}
+
+function normalizeWorkspaceView(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(WORKSPACE_VIEWS, raw) ? raw : "chat";
+}
+
+function isWorkspaceViewEnabled(view) {
+  const normalized = normalizeWorkspaceView(view);
+  if (normalized === "debug") return isPanelDebugEnabled();
+  return true;
+}
+
+function getStoredWorkspaceView() {
+  try {
+    const raw = window.localStorage.getItem(WORKSPACE_VIEW_STORAGE_KEY);
+    if (!raw) return "chat";
+    const next = normalizeWorkspaceView(raw);
+    return isWorkspaceViewEnabled(next) ? next : "chat";
+  } catch {
+    return "chat";
+  }
+}
+
+function persistWorkspaceView(view) {
+  try {
+    window.localStorage.setItem(WORKSPACE_VIEW_STORAGE_KEY, normalizeWorkspaceView(view));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function setWorkspaceView(view, { persist = true } = {}) {
+  const next = isWorkspaceViewEnabled(view) ? normalizeWorkspaceView(view) : "chat";
+  state.workspaceView = next;
+  document.body.dataset.workspaceView = next;
+
+  workspaceNavButtons.forEach((button) => {
+    const target = normalizeWorkspaceView(button.dataset.workspaceTarget);
+    const active = target === next;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-current", active ? "page" : "false");
+  });
+
+  workspaceViews.forEach((section) => {
+    const active = normalizeWorkspaceView(section.dataset.workspaceView) === next;
+    section.hidden = !active;
+    section.classList.toggle("is-active", active);
+  });
+
+  if (workspaceCurrentLabel) {
+    workspaceCurrentLabel.textContent = WORKSPACE_VIEWS[next]?.label || "聊天";
+  }
+
+  if (persist) {
+    persistWorkspaceView(next);
+  }
 }
 
 function hasAnswerBundleContent(bundle) {
@@ -1396,8 +1473,8 @@ function renderAppVersion(health = {}) {
 }
 
 function renderProductProfile(health = {}) {
-  const profile = String(health.product_profile || "kernel_robot").trim() || "kernel_robot";
-  const productTitle = String(health.product_title || "Officetool Console").trim() || "Officetool Console";
+  const profile = String(health.product_profile || "multi_agent_robot").trim() || "multi_agent_robot";
+  const productTitle = String(health.product_title || "Multi_Agent_Robot").trim() || "Multi_Agent_Robot";
   const productTagline = String(health.product_tagline || "").trim();
   const kernelTitle = String(health.product_kernel_title || "主核 / 模块舱 / 影子实验台").trim();
   const kernelSubtitle = String(health.product_kernel_subtitle || "").trim();
@@ -1406,7 +1483,7 @@ function renderProductProfile(health = {}) {
   const buildVersion = String(health.build_version || "").trim();
 
   document.body.dataset.productProfile = profile;
-  document.title = buildVersion ? `${productTitle} · ${buildVersion}` : productTitle || "Officetool Console";
+  document.title = buildVersion ? `${productTitle} · ${buildVersion}` : productTitle || "Multi_Agent_Robot";
 
   if (productTitleView) productTitleView.textContent = productTitle;
   if (productHintView) {
@@ -1430,7 +1507,7 @@ function getStoredRuntimeViewMode() {
 }
 
 function defaultRuntimeViewMode(health = {}) {
-  const profile = String(health.product_profile || "kernel_robot").trim().toLowerCase();
+  const profile = String(health.product_profile || "multi_agent_robot").trim().toLowerCase();
   if (profile === "role_agent_lab") return "roles";
   return "modules";
 }
@@ -1924,34 +2001,37 @@ function renderExecutionDag() {
 }
 
 function buildCommandPaletteItems() {
-  return [
+  const items = [
     { id: "new-session", title: "新建会话", meta: "创建新 session 并清空当前聊天区", run: () => newSessionBtn?.click() },
     { id: "send-message", title: "发送当前输入", meta: "立即发送输入框中的内容", run: () => sendMessage() },
     { id: "refresh-sessions", title: "刷新会话列表", meta: "重新拉取历史 sessions", run: () => refreshSessionsBtn?.click() },
     { id: "sandbox-drill", title: "运行沙盒演练", meta: "调用 /api/sandbox/drill", run: () => sandboxDrillBtn?.click() },
     { id: "eval-harness", title: "运行回归测试", meta: "调用 /api/evals/run", run: () => evalHarnessBtn?.click() },
     { id: "clear-stats", title: "清除 Token 统计", meta: "重置本地累计 token 统计", run: () => clearStatsBtn?.click() },
+    { id: "open-chat", title: "打开聊天视图", meta: "回到默认极简对话页", run: () => setWorkspaceView("chat") },
+    { id: "open-control", title: "打开控制视图", meta: "查看模型、模式与请求参数", run: () => setWorkspaceView("control") },
+    { id: "open-runtime", title: "打开运行视图", meta: "查看执行链路与结构化日志", run: () => setWorkspaceView("runtime") },
+    { id: "open-modules", title: "打开模块视图", meta: "查看主核、模块与角色运行态", run: () => setWorkspaceView("modules") },
+    { id: "open-operations", title: "打开运营视图", meta: "查看业务结果与运营摘要", run: () => setWorkspaceView("operations") },
+    { id: "open-system", title: "打开系统视图", meta: "查看里程碑、路径策略与统计", run: () => setWorkspaceView("system") },
     { id: "view-modules", title: "切换到模块视图", meta: "只显示主核 / 模块舱", run: () => setRuntimeViewMode("modules") },
     { id: "view-roles", title: "切换到角色视图", meta: "只显示像素小人 / Role 视图", run: () => setRuntimeViewMode("roles") },
     { id: "view-split", title: "切换到双视图", meta: "同时显示模块与角色运行态", run: () => setRuntimeViewMode("split") },
     { id: "preset-general", title: "切换到通用模式", meta: "恢复通用模型与参数预设", run: () => applyModePreset("general") },
     { id: "preset-coding", title: "切换到编码模式", meta: "恢复编码模型与参数预设", run: () => applyModePreset("coding") },
-    {
-      id: state.panelLayout?.leftCollapsed ? "expand-left" : "collapse-left",
-      title: state.panelLayout?.leftCollapsed ? "展开左侧栏" : "折叠左侧栏",
-      meta: "切换 Conversation Control 侧栏",
-      run: () => setRailCollapsed("left", !state.panelLayout?.leftCollapsed),
-    },
-    {
-      id: state.panelLayout?.rightCollapsed ? "expand-right" : "collapse-right",
-      title: state.panelLayout?.rightCollapsed ? "展开右侧栏" : "折叠右侧栏",
-      meta: "切换 Operations Overview 侧栏",
-      run: () => setRailCollapsed("right", !state.panelLayout?.rightCollapsed),
-    },
     { id: "refresh-overview", title: "刷新运营总览", meta: "重新加载 gate / smoke / replay 摘要", run: () => refreshOperationsOverview() },
     { id: "open-health", title: "打开 /api/health", meta: "新标签页打开健康检查接口", run: () => window.open("/api/health", "_blank", "noopener") },
     { id: "open-role-lab", title: "打开 8081 Role Lab", meta: "跳转到本地角色实验台", run: () => window.open("http://localhost:8081", "_blank", "noopener") },
   ];
+  if (isPanelDebugEnabled()) {
+    items.push({
+      id: "open-debug",
+      title: "打开调试视图",
+      meta: "查看 payload、trace 与 LLM 交换记录",
+      run: () => setWorkspaceView("debug"),
+    });
+  }
+  return items;
 }
 
 function fuzzyMatchCommand(command, query) {
@@ -2036,7 +2116,7 @@ function renderPlatformStatusSummary(health = {}) {
   const primaryAgent = String(hostRuntime?.primary_agent_module?.module_id || "-");
   const primaryTool = String(hostRuntime?.primary_tool_module?.module_id || "-");
   const activeCount = Array.isArray(blackboard?.active_module_ids) ? blackboard.active_module_ids.length : 0;
-  const product = String(health?.product_title || "Officetool Console").trim();
+  const product = String(health?.product_title || "Multi_Agent_Robot").trim();
   platformStatusHeadline.textContent = Object.keys(selected).length ? `${product} 已在线` : `${product} 待机`;
   platformStatusMeta.textContent = `auth=${authMode} · exec=${executionMode} · blackboard=${String(blackboard?.status || "idle")} · active_modules=${activeCount}`;
   platformStatusSignals.innerHTML = "";
@@ -4033,6 +4113,7 @@ async function runEvalHarness() {
 async function sendMessage() {
   const message = messageInput.value.trim();
   if (!message) return;
+  setWorkspaceView("chat");
   let requestSessionId = currentSessionKey();
   if (requestSessionId && isSessionSending(requestSessionId)) return;
   let stopWaitTicker = null;
@@ -4382,6 +4463,13 @@ if (runtimeViewSplitBtn) {
   runtimeViewSplitBtn.addEventListener("click", () => setRuntimeViewMode("split"));
 }
 
+workspaceNavButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const target = normalizeWorkspaceView(button.dataset.workspaceTarget);
+    setWorkspaceView(target);
+  });
+});
+
 if (sandboxDrillBtn) {
   sandboxDrillBtn.addEventListener("click", runSandboxDrill);
 }
@@ -4419,6 +4507,7 @@ newSessionBtn.addEventListener("click", async () => {
   state.attachments = [];
   refreshFileList();
   clearChat();
+  setWorkspaceView("chat");
   addBubble("system", "已新建会话。", null);
 });
 
@@ -4591,17 +4680,10 @@ if (deleteSessionBtn) {
     const restored = await restoreSessionIfPossible();
     if (!restored) {
       const dockerTip = health.docker_available ? "Docker 可用" : "Docker 未就绪";
-      const allowAllWebDomains = Boolean(health.web_allow_all_domains);
-      const webDomains = Array.isArray(health.web_allowed_domains) ? health.web_allowed_domains : [];
-      const pathPolicyTip = Boolean(health.allow_any_path)
-        ? "文件路径：不限制（ALLOW_ANY_PATH）"
-        : `文件根目录：${Array.isArray(health.allowed_roots) && health.allowed_roots.length ? health.allowed_roots.join(", ") : "(空)"}`;
-      const webPolicyTip = allowAllWebDomains
-        ? "联网域名：不限制"
-        : `联网域名白名单：${webDomains.length ? webDomains.join(", ") : "(空)"}`;
+      const buildLabel = String(health.build_version || health.app_version || "unknown");
       addBubble(
         "system",
-        `服务已启动，版本：${String(health.build_version || health.app_version || "unknown")}；默认模型：${health.model_default}；默认执行环境：${backendExecMode}（${dockerTip}）。\n${pathPolicyTip}\n${webPolicyTip}${dockerMsg ? `\nDocker: ${dockerMsg}` : ""}`
+        `Multi_Agent_Robot 已就绪。版本 ${buildLabel}，默认模型 ${health.model_default}，执行环境 ${backendExecMode}，${dockerTip}。详细环境信息已收进“系统”视图。`
       );
     }
     await refreshTokenStatsFromServer();

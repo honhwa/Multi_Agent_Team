@@ -671,7 +671,9 @@ class OfficeAgent:
         self.tools = tool_executor or self._capability_runtime.tools
         self._auth_manager = OpenAIAuthManager(config)
         self._kernel_runtime = kernel_runtime or build_kernel_runtime(config)
-        self._product_profile_key = str(os.environ.get("OFFICETOOL_APP_PROFILE") or "").strip().lower() or "kernel_robot"
+        self._product_profile_key = (
+            str(os.environ.get("OFFICETOOL_APP_PROFILE") or "").strip().lower() or "multi_agent_robot"
+        )
 
         try:
             from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage

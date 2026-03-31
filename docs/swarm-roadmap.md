@@ -31,7 +31,7 @@
 - 这条路线已经不再把 `role` 当作系统最外层模块边界
 - 最外层统一收敛成：`KernelHost -> AgentModule / ToolModule / OutputModule / MemoryModule -> Blackboard`
 - `Router / Planner / Worker / Reviewer / Revision / Structurer` 继续存在，但它们是 `office_agent` 这种 `AgentModule` 内部的工作单元
-- `Role-Agent Lab` 现在更像同一套核心运行时的实验视图，不再是终局产品形态
+- `Multi_Agent_Robot Lab` 现在更像同一套核心运行时的实验视图，不再是终局产品形态
 
 当前主链路已经具备：
 
@@ -217,7 +217,7 @@
 - 已新增 `role_registry`，把当前可独立执行的 agent 统一注册
 - 已新增 `runtime_controller`，把串行链路中的 Planner / Specialist / Conflict Detector / Reviewer / Revision / Structurer 包进统一 runtime 执行接口
 - `Router / Coordinator / Worker` 已纳入 managed runtime shell，主行为保持原样但运行态已统一登记
-- `Role-Agent Lab` 已能暴露 registry 快照、stage 4 readiness 和最近一轮 run state
+- `Multi_Agent_Robot Lab` 已能暴露 registry 快照、stage 4 readiness 和最近一轮 run state
 - 当前 stage 4 readiness 已达到：
   - `registered_roles = 12`
   - `controller_backed_role_count = 12`
@@ -302,7 +302,7 @@
 
 - `runtime_controller.execute_batch()` 已能调度同类 role 的多实例执行
 - `_debug_role_lab_multi_instance_batch()` 已验证 `researcher#1 / researcher#2` 双实例批处理
-- 主链路已加入真实试点：当 `Role-Agent Lab` 处理多附件且命中 `file_reader` 场景时，会为多个附件并行生成子简报，再合并回主流程
+- 主链路已加入真实试点：当 `Multi_Agent_Robot Lab` 处理多附件且命中 `file_reader` 场景时，会为多个附件并行生成子简报，再合并回主流程
 - `Worker` 已开始记录工具分支子节点：同一轮工具调用现在会在 runtime 中留下 `branch / join` 节点，以及局部失败 / 局部重试痕迹
 - `/api/health` 与 `/api/role-lab/runtime` 已能看到 controller 覆盖率、stage 4 readiness、最近一轮节点 / 实例快照
 

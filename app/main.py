@@ -126,7 +126,7 @@ BUILD_VERSION = _resolve_build_version()
 
 class AgentRunQueue:
     """
-    OpenClaw-style lane queue:
+    Single-workspace lane queue:
     - one active run per session
     - bounded global concurrency across sessions
     """
