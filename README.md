@@ -14,6 +14,18 @@
 
 目标是：**层级最少、代码最少、维护最简单、单 Agent 故障不影响全局**。
 
+## 一眼看懂底层逻辑
+
+只有 5 步：
+
+1. 前端请求进入 `POST /api/chat`
+2. `LLMRouter` 读取 12 个 Agent 的 `manifest.json`
+3. LLM 生成最短执行步骤（1~4 步）
+4. 对应 Agent 执行 `handle_task`
+5. 汇总返回，并写入会话
+
+如果云端 LLM 暂时不可用：系统自动进入本地稳态回复，不报红、不崩溃。
+
 ## 独立 Agent 列表（12）
 
 1. worker_agent
@@ -68,6 +80,12 @@ cp .env.example .env
 - `POST /api/agents/{name}/reload`：热重载单 Agent
 - `GET /api/health`：平台健康状态
 
+## 现在删掉了什么（为简单而删）
+
+- 旧的复杂 chat 主链路（`_process_chat_request`）已删除
+- 重复的路由包装文件已删除（`app/api/routes/chat.py`、`app/api/routes/agents.py`）
+- `main.py` 无用 import 与历史分支已清理
+
 ## LLM 环境变量（通用）
 
 ```env
@@ -90,3 +108,8 @@ OFFICETOOL_ROUTER_MODEL=gpt-4o-mini
 - Agent 热插拔：修改后调用 `POST /api/agents/{name}/reload`。
 - 不需要改 Kernel 主链路，即可演进单个 Agent。
 
+## 计划调整（简洁版）
+
+1. 只继续保留一条主链路：`/api/chat -> llm_router -> agents`
+2. 每次改动优先删代码，而不是加抽象层
+3. Agent 只做单一职责，避免再回到“工业级巨型框架”

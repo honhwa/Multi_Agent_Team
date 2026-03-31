@@ -14,6 +14,16 @@ The project now follows a **minimal kernel architecture**:
 
 Design goal: **least code, least layers, easiest maintenance, isolated failures**.
 
+## Core Logic in 5 Steps
+
+1. Request enters `POST /api/chat`
+2. `LLMRouter` reads all agent manifests
+3. LLM creates the shortest execution plan (1~4 steps)
+4. Target agents run `handle_task`
+5. System summarizes and returns, then stores the turn
+
+If cloud LLM is temporarily unavailable, the runtime switches to local stable fallback mode (no crash/no red screen).
+
 ## Independent Agents (12)
 
 1. worker_agent
@@ -68,6 +78,12 @@ Open: <http://127.0.0.1:8080>
 - `POST /api/agents/{name}/reload`
 - `GET /api/health`
 
+## What Was Removed for Simplicity
+
+- Old heavy chat pipeline (`_process_chat_request`)
+- Duplicate route wrapper files (`app/api/routes/chat.py`, `app/api/routes/agents.py`)
+- Unused imports and legacy branches in `app/main.py`
+
 ## Generic LLM Env
 
 ```env
@@ -85,3 +101,8 @@ OFFICETOOL_ROUTER_MODEL=gpt-4o-mini
 - Call `POST /api/agents/{name}/reload`
 - Validate immediately without restarting the full kernel
 
+## Plan (Adjusted)
+
+1. Keep only one production chat path: `/api/chat -> llm_router -> agents`
+2. Prefer deleting code over adding abstraction
+3. Keep each agent single-purpose and independently reloadable

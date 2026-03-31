@@ -56,3 +56,24 @@ def test_llm_router_execute_runs_agent_step() -> None:
     assert len(rows) == 1
     assert str(rows[0].get("status")) == "success"
 
+
+def test_llm_router_agent_reason_hides_connection_error(monkeypatch) -> None:
+    host = KernelHost()
+    router = LLMRouter(host)
+
+    async def _fake_complete_text(**kwargs):
+        return None
+
+    monkeypatch.setattr(router, "_complete_text", _fake_complete_text)
+    text = asyncio.run(
+        router.agent_reason(
+            agent_name="worker_agent",
+            agent_description="worker",
+            capabilities=["execution"],
+            task="你好",
+            context={},
+        )
+    )
+    lowered = text.lower()
+    assert "unavailable" not in lowered
+    assert "connection" not in lowered

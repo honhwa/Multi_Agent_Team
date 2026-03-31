@@ -35,3 +35,20 @@ def test_chat_api_runs_via_llm_router(monkeypatch) -> None:
     payload = response.json()
     assert str(payload.get("selected_business_module")) == "llm_router_core"
 
+
+def test_chat_api_without_auth_still_returns_stable_reply(monkeypatch) -> None:
+    monkeypatch.setattr(
+        main_app.OpenAIAuthManager,
+        "auth_summary",
+        lambda self: {"available": False, "mode": "unconfigured", "reason": "missing"},
+    )
+    client = TestClient(main_app.app)
+    response = client.post(
+        "/api/chat",
+        json={"message": "你好", "settings": {"enable_tools": True}},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    text = str(payload.get("text") or "").lower()
+    assert "unavailable" not in text
+    assert "connection" not in text

@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from openai import AsyncOpenAI
+from app.config import load_config
+from app.openai_auth import OpenAIAuthManager
 
 
 class LLMRouter:
@@ -21,30 +23,29 @@ class LLMRouter:
 
     def __init__(self, kernel: Any) -> None:
         self.kernel = kernel
+        self._config = load_config()
+        self._auth_manager = OpenAIAuthManager(self._config)
         self.model = str(os.environ.get("OFFICETOOL_ROUTER_MODEL") or "gpt-4o-mini").strip()
         self.client = self._build_client()
+        self._last_llm_error = ""
         self.agents: dict[str, Any] = {}
         self.manifests: dict[str, dict[str, Any]] = {}
         self._discover_lock = asyncio.Lock()
         self._reload_lock = asyncio.Lock()
 
     def _build_client(self) -> AsyncOpenAI | None:
-        api_key = (
-            str(
-                os.environ.get("OPENAI_API_KEY")
-                or os.environ.get("OFFICETOOL_LLM_API_KEY")
-                or ""
-            ).strip()
-        )
+        resolved = self._auth_manager.resolve()
+        if resolved.mode != "api_key" or not resolved.available:
+            return None
+        api_key = str(resolved.api_key or "").strip()
         if not api_key:
             return None
-        base_url = (
-            str(
-                os.environ.get("OPENAI_BASE_URL")
-                or os.environ.get("OFFICETOOL_LLM_BASE_URL")
-                or ""
-            ).strip()
-        )
+        base_url = str(
+            os.environ.get("OFFICETOOL_LLM_BASE_URL")
+            or os.environ.get("OPENAI_BASE_URL")
+            or self._config.openai_base_url
+            or ""
+        ).strip()
         kwargs: dict[str, Any] = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
@@ -52,6 +53,54 @@ class LLMRouter:
             return AsyncOpenAI(**kwargs)
         except Exception:
             return None
+
+    async def _complete_text(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+    ) -> str | None:
+        for _attempt in range(2):
+            if self.client is None:
+                self.client = self._build_client()
+            if self.client is None:
+                return None
+            try:
+                resp = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                text = str(resp.choices[0].message.content or "").strip()
+                return text or None
+            except Exception as exc:
+                self._last_llm_error = str(exc)
+                self.client = None
+                continue
+        return None
+
+    def _agent_offline_fallback(self, agent_name: str, task: str) -> str:
+        text = str(task or "").strip()
+        lowered = text.lower()
+        if agent_name == "planner_agent" or any(item in lowered for item in ("计划", "规划", "plan", "roadmap")):
+            return (
+                f"任务已接收：{text}\n"
+                "建议三步推进：\n"
+                "1. 先定义目标与完成标准。\n"
+                "2. 再拆分为可执行子任务并安排优先级。\n"
+                "3. 最后逐项验证结果并留出复盘动作。"
+            )
+        if agent_name == "researcher_agent" or any(item in lowered for item in ("调研", "research", "资料", "检索")):
+            return (
+                f"任务已接收：{text}\n"
+                "我会按“范围定义 -> 信息收集 -> 结论归纳”的顺序输出结果。"
+            )
+        return (
+            f"任务已接收：{text}\n"
+            "当前进入稳态执行模式：先完成核心结果，再做一次简短复核。"
+        )
 
     @property
     def agents_dir(self) -> Path:
@@ -178,29 +227,28 @@ class LLMRouter:
                 return {"ok": False, "error": str(exc)}
 
     async def _json_completion(self, *, system_prompt: str, user_prompt: str, temperature: float = 0.2, max_tokens: int = 900) -> dict[str, Any]:
-        if self.client is None:
-            return {"ok": False, "error": "llm client unavailable"}
+        raw = await self._complete_text(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        if not raw:
+            return {"ok": False, "error": "llm unavailable"}
         try:
-            resp = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            raw = str(resp.choices[0].message.content or "").strip()
-            if raw.startswith("```"):
-                raw = raw.strip("`")
-                if raw.lower().startswith("json"):
-                    raw = raw[4:].strip()
-            data = json.loads(raw)
+            payload = raw
+            if payload.startswith("```"):
+                payload = payload.strip("`")
+                if payload.lower().startswith("json"):
+                    payload = payload[4:].strip()
+            data = json.loads(payload)
             if isinstance(data, dict):
                 return data
-            return {"ok": False, "error": "Model did not return JSON object"}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+            return {"ok": False, "error": "invalid json object"}
+        except Exception:
+            return {"ok": False, "error": "invalid json content"}
 
     def _fallback_plan(self, user_query: str) -> dict[str, Any]:
         text = str(user_query or "").lower()
@@ -336,8 +384,6 @@ class LLMRouter:
         task: str,
         context: Any | None = None,
     ) -> str:
-        if self.client is None:
-            return f"{agent_name} fallback: {task}（LLM client unavailable）"
         system_prompt = (
             f"你现在扮演 {agent_name}。\n"
             f"角色说明：{agent_description}\n"
@@ -345,20 +391,17 @@ class LLMRouter:
             "输出要简洁、可执行、避免空话。"
         )
         user_prompt = f"任务：{task}\n上下文：{json.dumps(context or {}, ensure_ascii=False)}"
-        try:
-            resp = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.3,
-                max_tokens=900,
-            )
-            text = str(resp.choices[0].message.content or "").strip()
-            return text or f"{agent_name} 已完成任务。"
-        except Exception as exc:
-            return f"{agent_name} fallback: {task}（LLM unavailable: {exc}）"
+        text = await self._complete_text(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+            max_tokens=900,
+        )
+        if text:
+            return text
+        return self._agent_offline_fallback(agent_name, task)
 
     async def summarize(
         self,
@@ -371,18 +414,6 @@ class LLMRouter:
         results = list(execution.get("results") or [])
         if not results:
             return "当前没有可执行结果，请检查 Agent 加载状态。"
-        if self.client is None:
-            fallback_lines: list[str] = []
-            for item in results:
-                if not isinstance(item, dict):
-                    continue
-                agent = str(item.get("agent") or "unknown")
-                status = str(item.get("status") or "")
-                if status == "success":
-                    fallback_lines.append(f"[{agent}] {str(item.get('result') or '')}".strip())
-                else:
-                    fallback_lines.append(f"[{agent}] failed: {str(item.get('error') or '')}".strip())
-            return "\n".join(line for line in fallback_lines if line).strip() or "执行完成。"
 
         system_prompt = (
             "你是最终答复生成器。基于多 Agent 结果，输出简洁明确的最终答复。"
@@ -393,21 +424,16 @@ class LLMRouter:
             f"调度计划：{json.dumps(plan, ensure_ascii=False)}\n"
             f"执行结果：{json.dumps(results, ensure_ascii=False)}\n"
         )
-        try:
-            resp = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.25,
-                max_tokens=1200,
-            )
-            text = str(resp.choices[0].message.content or "").strip()
-            if text:
-                return text
-        except Exception:
-            pass
+        text = await self._complete_text(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.25,
+            max_tokens=1200,
+        )
+        if text:
+            return text
 
         fallback_lines: list[str] = []
         for item in results:
