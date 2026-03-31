@@ -57,6 +57,49 @@ def test_llm_router_execute_runs_agent_step() -> None:
     assert str(rows[0].get("status")) == "success"
 
 
+def test_llm_router_execute_passes_previous_results_to_next_agent() -> None:
+    host = KernelHost()
+    router = LLMRouter(host)
+
+    class _FirstAgent:
+        async def handle_task(self, task):
+            return {"status": "success", "result": "alpha done"}
+
+    class _SecondAgent:
+        async def handle_task(self, task):
+            previous = list((task or {}).get("context", {}).get("previous_results") or [])
+            prev_text = str((previous[-1] or {}).get("result") or "") if previous else ""
+            return {"status": "success", "result": f"reviewed: {prev_text}"}
+
+    router.agents = {"worker_agent": _FirstAgent(), "reviewer_agent": _SecondAgent()}
+    router.manifests = {
+        "worker_agent": {"name": "worker_agent"},
+        "reviewer_agent": {"name": "reviewer_agent"},
+    }
+    plan = {
+        "plan": "seq_context",
+        "parallel": False,
+        "steps": [
+            {"agent": "worker_agent", "task": "do A"},
+            {"agent": "reviewer_agent", "task": "review previous"},
+        ],
+    }
+    result = asyncio.run(router.execute(plan))
+
+    rows = list(result.get("results") or [])
+    assert len(rows) == 2
+    assert str(rows[1].get("result") or "") == "reviewed: alpha done"
+
+
+def test_llm_router_fallback_greeting_uses_single_step() -> None:
+    host = KernelHost()
+    router = LLMRouter(host)
+    plan = router._fallback_plan("你好")
+    steps = list(plan.get("steps") or [])
+    assert len(steps) == 1
+    assert str(steps[0].get("agent")) == "worker_agent"
+
+
 def test_llm_router_agent_reason_hides_connection_error(monkeypatch) -> None:
     host = KernelHost()
     router = LLMRouter(host)

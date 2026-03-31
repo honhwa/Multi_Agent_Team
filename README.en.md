@@ -24,6 +24,29 @@ Design goal: **least code, least layers, easiest maintenance, isolated failures*
 
 If cloud LLM is temporarily unavailable, the runtime switches to local stable fallback mode (no crash/no red screen).
 
+## Dispatch / Collect / Unify
+
+The core loop is fixed:
+
+`route() -> execute() -> summarize()`
+
+- Dispatch (`route`):
+  Build a short plan (1~4 steps) from user query + all agent manifests.
+- Collect (`execute`):
+  Execute step-by-step and pass `previous_results` into the next step.
+- Unify (`summarize`):
+  Return one final user-facing answer, without exposing worker/reviewer internal wording.
+
+This is the minimal closed loop: one brain, independent units, one final output.
+
+## Foundation Hardening (Still Minimal)
+
+- Plan validation: invalid agent names / empty tasks are auto-cleaned.
+- Step cap: at most 4 steps.
+- Step timeout: per-step timeout guard (`OFFICETOOL_AGENT_STEP_TIMEOUT_SEC`, default 25s).
+- Context control: only recent result chain is forwarded.
+- Offline fallback: no raw connection-error text shown to end users.
+
 ## Independent Agents (12)
 
 1. worker_agent

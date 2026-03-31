@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,12 @@ class LLMRouter:
         self._config = load_config()
         self._auth_manager = OpenAIAuthManager(self._config)
         self.model = str(os.environ.get("OFFICETOOL_ROUTER_MODEL") or "gpt-4o-mini").strip()
+        timeout_raw = str(os.environ.get("OFFICETOOL_AGENT_STEP_TIMEOUT_SEC") or "25").strip()
+        try:
+            timeout_val = int(timeout_raw)
+        except Exception:
+            timeout_val = 25
+        self.step_timeout_sec = max(5, min(120, timeout_val))
         self.client = self._build_client()
         self._last_llm_error = ""
         self.agents: dict[str, Any] = {}
@@ -54,6 +61,102 @@ class LLMRouter:
         except Exception:
             return None
 
+    def _looks_like_greeting(self, text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        markers = {
+            "hi",
+            "hello",
+            "hey",
+            "你好",
+            "您好",
+            "在吗",
+            "在不在",
+            "早上好",
+            "下午好",
+            "晚上好",
+        }
+        if lowered in markers:
+            return True
+        if len(lowered) <= 6 and any(item in lowered for item in markers):
+            return True
+        return False
+
+    def _strip_internal_markers(self, text: str) -> str:
+        raw = str(text or "").strip()
+        if not raw:
+            return ""
+        lines: list[str] = []
+        for line in raw.splitlines():
+            normalized = str(line or "").strip()
+            if not normalized:
+                continue
+            lowered = normalized.lower()
+            if "任务已接收" in normalized:
+                continue
+            if "当前进入稳态执行模式" in normalized:
+                continue
+            if "请对上一结果做精炼复核" in normalized:
+                continue
+            if lowered.startswith("[worker_agent]") or lowered.startswith("[reviewer_agent]"):
+                normalized = re.sub(r"^\[[a-z_]+\]\s*", "", normalized, flags=re.IGNORECASE).strip()
+            normalized = re.sub(r"^(worker|reviewer|planner|coder|agent)[\s_-]*agent[:：]?\s*", "", normalized, flags=re.IGNORECASE)
+            if normalized:
+                lines.append(normalized)
+        if lines:
+            return "\n".join(lines).strip()
+        return raw
+
+    def _normalize_task_text(self, text: Any) -> str:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return ""
+        if len(normalized) > 1200:
+            normalized = normalized[:1200].rstrip()
+        return normalized
+
+    def _extract_previous_output(self, context: Any | None = None) -> str:
+        if not isinstance(context, dict):
+            return ""
+        prev = list(context.get("previous_results") or [])
+        for item in reversed(prev):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("status") or "") != "success":
+                continue
+            cleaned = self._strip_internal_markers(str(item.get("result") or ""))
+            if cleaned:
+                return cleaned
+        return ""
+
+    def _normalize_plan(self, plan: dict[str, Any], *, user_query: str) -> dict[str, Any]:
+        normalized_steps: list[dict[str, str]] = []
+        for raw in list(plan.get("steps") or []):
+            if not isinstance(raw, dict):
+                continue
+            agent = str(raw.get("agent") or "").strip().lower()
+            task = self._normalize_task_text(raw.get("task"))
+            if not task:
+                continue
+            if agent not in self.agents:
+                candidates = self._manifest_name_candidates(agent)
+                agent = next((item for item in candidates if item in self.agents), "")
+            if not agent:
+                continue
+            normalized_steps.append({"agent": agent, "task": task})
+            if len(normalized_steps) >= 4:
+                break
+
+        if not normalized_steps:
+            return self._fallback_plan(user_query)
+
+        return {
+            "plan": str(plan.get("plan") or "llm_router_plan"),
+            "parallel": bool(plan.get("parallel", False)),
+            "steps": normalized_steps,
+        }
+
     async def _complete_text(
         self,
         *,
@@ -81,12 +184,18 @@ class LLMRouter:
                 continue
         return None
 
-    def _agent_offline_fallback(self, agent_name: str, task: str) -> str:
+    def _agent_offline_fallback(self, agent_name: str, task: str, context: Any | None = None) -> str:
         text = str(task or "").strip()
         lowered = text.lower()
+        if self._looks_like_greeting(text):
+            return "你好，我在。告诉我你现在要完成什么，我直接给你可执行结果。"
+        if agent_name == "reviewer_agent":
+            previous = self._extract_previous_output(context)
+            if previous:
+                return previous
+            return "我已完成复核。你给我一个更具体目标，我会直接输出最终可执行答案。"
         if agent_name == "planner_agent" or any(item in lowered for item in ("计划", "规划", "plan", "roadmap")):
             return (
-                f"任务已接收：{text}\n"
                 "建议三步推进：\n"
                 "1. 先定义目标与完成标准。\n"
                 "2. 再拆分为可执行子任务并安排优先级。\n"
@@ -94,13 +203,9 @@ class LLMRouter:
             )
         if agent_name == "researcher_agent" or any(item in lowered for item in ("调研", "research", "资料", "检索")):
             return (
-                f"任务已接收：{text}\n"
                 "我会按“范围定义 -> 信息收集 -> 结论归纳”的顺序输出结果。"
             )
-        return (
-            f"任务已接收：{text}\n"
-            "当前进入稳态执行模式：先完成核心结果，再做一次简短复核。"
-        )
+        return f"已收到你的任务：{text}。我会直接给出简洁、可执行的结果。"
 
     @property
     def agents_dir(self) -> Path:
@@ -251,7 +356,13 @@ class LLMRouter:
             return {"ok": False, "error": "invalid json content"}
 
     def _fallback_plan(self, user_query: str) -> dict[str, Any]:
-        text = str(user_query or "").lower()
+        text = self._normalize_task_text(user_query).lower()
+        if self._looks_like_greeting(text):
+            return {
+                "plan": "fallback_greeting",
+                "parallel": False,
+                "steps": [{"agent": "worker_agent", "task": self._normalize_task_text(user_query)}],
+            }
         first = "worker_agent"
         if any(key in text for key in ("research", "调研", "资料", "web", "查找", "检索")):
             first = "researcher_agent"
@@ -269,7 +380,7 @@ class LLMRouter:
             "plan": "fallback_router",
             "parallel": False,
             "steps": [
-                {"agent": first, "task": user_query},
+                {"agent": first, "task": self._normalize_task_text(user_query)},
                 {"agent": second, "task": "请对上一结果做精炼复核，输出最终可执行答复。"},
             ],
         }
@@ -313,46 +424,35 @@ class LLMRouter:
         candidate = await self._json_completion(system_prompt=system_prompt, user_prompt=user_prompt, temperature=0.25)
         if not bool(candidate.get("ok", True)) or not isinstance(candidate.get("steps"), list):
             return self._fallback_plan(user_query)
+        return self._normalize_plan(candidate, user_query=user_query)
 
-        normalized_steps: list[dict[str, str]] = []
-        for raw in list(candidate.get("steps") or []):
-            if not isinstance(raw, dict):
-                continue
-            agent = str(raw.get("agent") or "").strip().lower()
-            task = str(raw.get("task") or "").strip()
-            if not task:
-                continue
-            if agent not in self.agents:
-                fallback_candidates = self._manifest_name_candidates(agent)
-                agent = next((item for item in fallback_candidates if item in self.agents), "")
-            if not agent:
-                continue
-            normalized_steps.append({"agent": agent, "task": task})
-            if len(normalized_steps) >= 4:
-                break
-
-        if not normalized_steps:
-            return self._fallback_plan(user_query)
-
-        return {
-            "plan": str(candidate.get("plan") or "llm_router_plan"),
-            "parallel": bool(candidate.get("parallel", False)),
-            "steps": normalized_steps,
-        }
-
-    async def _run_step(self, step: dict[str, Any]) -> dict[str, Any]:
+    async def _run_step(self, step: dict[str, Any], *, context: dict[str, Any] | None = None) -> dict[str, Any]:
         name = str(step.get("agent") or "").strip().lower()
-        task = str(step.get("task") or "").strip()
+        task = self._normalize_task_text(step.get("task"))
         if name not in self.agents:
             return {"agent": name, "status": "failed", "error": "Agent not found"}
         agent = self.agents[name]
         try:
-            result = await agent.handle_task({"query": task, "context": {"router": "llm_router"}})
+            result = await agent.handle_task({"query": task, "context": context or {"router": "llm_router"}})
             if isinstance(result, dict):
                 return {"agent": name, "status": "success", **result}
             return {"agent": name, "status": "success", "result": str(result)}
         except Exception as exc:
             return {"agent": name, "status": "failed", "error": str(exc)}
+
+    async def _run_step_with_timeout(self, step: dict[str, Any], *, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        agent_name = str(step.get("agent") or "").strip().lower()
+        try:
+            return await asyncio.wait_for(
+                self._run_step(step, context=context),
+                timeout=float(self.step_timeout_sec),
+            )
+        except asyncio.TimeoutError:
+            return {
+                "agent": agent_name,
+                "status": "failed",
+                "error": f"step timeout ({self.step_timeout_sec}s)",
+            }
 
     async def execute(self, plan: dict[str, Any]) -> dict[str, Any]:
         steps = [item for item in list(plan.get("steps") or []) if isinstance(item, dict)]
@@ -360,7 +460,18 @@ class LLMRouter:
             return {"plan": str(plan.get("plan") or "empty"), "results": []}
 
         if bool(plan.get("parallel")):
-            tasks = [self._run_step(step) for step in steps]
+            tasks = [
+                self._run_step_with_timeout(
+                    step,
+                    context={
+                        "router": "llm_router",
+                        "mode": "parallel",
+                        "step_index": idx,
+                        "previous_results": [],
+                    },
+                )
+                for idx, step in enumerate(steps, start=1)
+            ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             normalized: list[dict[str, Any]] = []
             for item in results:
@@ -371,8 +482,19 @@ class LLMRouter:
             return {"plan": str(plan.get("plan") or "parallel"), "results": normalized}
 
         output: list[dict[str, Any]] = []
-        for step in steps:
-            output.append(await self._run_step(step))
+        for idx, step in enumerate(steps, start=1):
+            output.append(
+                await self._run_step_with_timeout(
+                    step,
+                    context={
+                        "router": "llm_router",
+                        "mode": "sequential",
+                        "step_index": idx,
+                        "previous_results": list(output)[-6:],
+                        "plan": str(plan.get("plan") or ""),
+                    },
+                )
+            )
         return {"plan": str(plan.get("plan") or "sequential"), "results": output}
 
     async def agent_reason(
@@ -401,7 +523,7 @@ class LLMRouter:
         )
         if text:
             return text
-        return self._agent_offline_fallback(agent_name, task)
+        return self._agent_offline_fallback(agent_name, task, context)
 
     async def summarize(
         self,
@@ -435,14 +557,14 @@ class LLMRouter:
         if text:
             return text
 
-        fallback_lines: list[str] = []
-        for item in results:
+        for item in reversed(results):
             if not isinstance(item, dict):
                 continue
-            agent = str(item.get("agent") or "unknown")
-            status = str(item.get("status") or "")
-            if status == "success":
-                fallback_lines.append(f"[{agent}] {str(item.get('result') or '')}".strip())
-            else:
-                fallback_lines.append(f"[{agent}] failed: {str(item.get('error') or '')}".strip())
-        return "\n".join(line for line in fallback_lines if line).strip() or "执行完成。"
+            if str(item.get("status") or "") != "success":
+                continue
+            cleaned = self._strip_internal_markers(str(item.get("result") or ""))
+            if cleaned:
+                return cleaned
+        if self._looks_like_greeting(user_query):
+            return "你好，我在。告诉我你想先做什么，我直接帮你完成。"
+        return "已完成执行。给我一个更具体目标，我会直接返回最终答案。"
