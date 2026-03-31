@@ -139,6 +139,7 @@ pytest
 - Research 模块：`docs/modules/research_module.md`
 - 平台指标：`docs/operations/platform_metrics.md`
 - 里程碑：`docs/roadmap/agent_os_milestones.md`
+- 进化方向（2026）：`docs/roadmap/evolution_direction_2026.md`
 - Swarm 路线图：`docs/swarm-roadmap.md`
 
 ## 说明

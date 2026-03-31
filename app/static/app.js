@@ -27,6 +27,7 @@ const state = {
 };
 const SESSION_STORAGE_KEY = "officetool.session_id";
 const RUNTIME_VIEW_STORAGE_KEY = "officetool.runtime_view";
+const RUNTIME_VIEW_SPLIT_MIGRATION_KEY = "officetool.runtime_view_split_migrated";
 const WORKSPACE_VIEW_STORAGE_KEY = "officetool.workspace_view";
 const CHAT_INFO_STORAGE_KEY = "officetool.chat_info_open";
 const RECENT_COMMANDS_STORAGE_KEY = "officetool.recent_commands";
@@ -1580,6 +1581,7 @@ function getStoredRuntimeViewMode() {
 function defaultRuntimeViewMode(health = {}) {
   const profile = String(health.product_profile || "multi_agent_robot").trim().toLowerCase();
   if (profile === "role_agent_lab") return "roles";
+  if (profile === "multi_agent_robot") return "split";
   return "modules";
 }
 
@@ -1597,7 +1599,25 @@ function updateRuntimeViewButtons(mode) {
 }
 
 function applyRuntimeViewMode(health = {}, forcedMode = null) {
-  const mode = forcedMode || state.runtimeViewMode || getStoredRuntimeViewMode() || defaultRuntimeViewMode(health);
+  const storedMode = getStoredRuntimeViewMode();
+  const defaultMode = defaultRuntimeViewMode(health);
+  let mode = forcedMode || state.runtimeViewMode || storedMode || defaultMode;
+
+  // One-time migration: multi_agent_robot previously defaulted to modules.
+  // Promote to split so the pixel-role board is visible again by default.
+  if (!forcedMode && !state.runtimeViewMode && defaultMode === "split" && storedMode === "modules") {
+    try {
+      const migrated = String(window.localStorage.getItem(RUNTIME_VIEW_SPLIT_MIGRATION_KEY) || "").trim() === "1";
+      if (!migrated) {
+        mode = "split";
+        window.localStorage.setItem(RUNTIME_VIEW_SPLIT_MIGRATION_KEY, "1");
+        window.localStorage.setItem(RUNTIME_VIEW_STORAGE_KEY, "split");
+      }
+    } catch {
+      // Ignore storage failures.
+    }
+  }
+
   const showKernelConsole = mode === "modules" || mode === "split";
   const showRoleBoard = mode === "roles" || mode === "split";
   if (kernelConsoleSection) {

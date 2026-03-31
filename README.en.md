@@ -125,6 +125,14 @@ pytest
 - `tests/`: regression coverage
 - `docs/`: architecture, modules, operations, observability
 
+## Related Docs
+
+- Module integration: `docs/modules/module_integration_guide.md`
+- Platform metrics: `docs/operations/platform_metrics.md`
+- Milestones: `docs/roadmap/agent_os_milestones.md`
+- Evolution direction (2026): `docs/roadmap/evolution_direction_2026.md`
+- Swarm roadmap: `docs/swarm-roadmap.md`
+
 ## Notes
 
 - the UI can start without `OPENAI_API_KEY`, but `/api/chat` will not work until auth is configured
