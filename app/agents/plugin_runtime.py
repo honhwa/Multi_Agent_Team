@@ -293,6 +293,253 @@ _PLUGIN_QUALITY_PRESETS: dict[str, dict[str, Any]] = {
     },
 }
 
+_SWARM_TRIGGER_KEYWORDS: tuple[str, ...] = (
+    "swarm",
+    "并行",
+    "父子",
+    "分支",
+    "协同",
+    "协作",
+    "multi-agent",
+    "multi agent",
+)
+
+_PLUGIN_SWARM_PRESETS: dict[str, dict[str, Any]] = {
+    "router_agent": {
+        "role": "root-router",
+        "enabled_by_default": False,
+        "max_depth": 3,
+        "max_children": 4,
+        "join_policy": "route_merge",
+        "failure_policy": "serial_replay",
+        "children": [
+            {
+                "plugin_id": "coordinator_agent",
+                "label": "Coordinator Branch",
+                "objective": "组织阶段、依赖和协作顺序。",
+                "required": True,
+                "propagate": True,
+            },
+            {
+                "plugin_id": "planner_agent",
+                "label": "Planner Branch",
+                "objective": "拆解任务，给出可执行计划和验收标准。",
+                "keywords": ["计划", "plan", "步骤"],
+                "propagate": True,
+            },
+            {
+                "plugin_id": "researcher_agent",
+                "label": "Research Branch",
+                "objective": "补齐外部证据与事实来源。",
+                "keywords": ["research", "搜索", "证据", "来源", "最新"],
+                "propagate": True,
+            },
+            {
+                "plugin_id": "worker_agent",
+                "label": "Execution Branch",
+                "objective": "执行主动作并返回可交付结果。",
+                "keywords": ["执行", "run", "实现", "修复", "fix"],
+                "propagate": True,
+            },
+            {
+                "plugin_id": "reviewer_agent",
+                "label": "Review Branch",
+                "objective": "最终质量门禁与风险复核。",
+                "keywords": ["审核", "review", "校验", "风险"],
+                "propagate": True,
+            },
+        ],
+    },
+    "coordinator_agent": {
+        "role": "supervisor",
+        "enabled_by_default": False,
+        "max_depth": 3,
+        "max_children": 4,
+        "join_policy": "stage_join",
+        "failure_policy": "serial_replay",
+        "children": [
+            {
+                "plugin_id": "planner_agent",
+                "label": "Planning Branch",
+                "objective": "产出阶段计划、约束和交接条件。",
+                "required": True,
+                "propagate": True,
+            },
+            {
+                "plugin_id": "researcher_agent",
+                "label": "Evidence Branch",
+                "objective": "补齐关键证据与来源清单。",
+                "keywords": ["research", "调研", "证据", "来源", "外部"],
+                "propagate": True,
+            },
+            {
+                "plugin_id": "worker_agent",
+                "label": "Execution Branch",
+                "objective": "执行关键动作并提供落地结果。",
+                "required": True,
+                "propagate": True,
+            },
+            {
+                "plugin_id": "reviewer_agent",
+                "label": "Gate Branch",
+                "objective": "做阶段结果审阅与风险评级。",
+                "keywords": ["review", "审核", "风险"],
+                "propagate": True,
+            },
+        ],
+    },
+    "planner_agent": {
+        "role": "planner-parent",
+        "enabled_by_default": False,
+        "max_depth": 2,
+        "max_children": 3,
+        "join_policy": "plan_merge",
+        "failure_policy": "serial_replay",
+        "children": [
+            {
+                "plugin_id": "researcher_agent",
+                "label": "Research Sub-Plan",
+                "objective": "为计划中的关键假设补齐证据。",
+                "required": True,
+                "propagate": True,
+            },
+            {
+                "plugin_id": "file_reader_agent",
+                "label": "Document Sub-Plan",
+                "objective": "提取文档/附件里的约束和输入信息。",
+                "keywords": ["文件", "文档", "附件", "pdf", "doc"],
+                "propagate": False,
+            },
+            {
+                "plugin_id": "worker_agent",
+                "label": "Execution Sub-Plan",
+                "objective": "验证计划步骤是否具备可执行性。",
+                "keywords": ["实现", "执行", "run", "fix"],
+                "propagate": False,
+            },
+        ],
+    },
+    "researcher_agent": {
+        "role": "research-parent",
+        "enabled_by_default": False,
+        "max_depth": 2,
+        "max_children": 3,
+        "join_policy": "evidence_merge",
+        "failure_policy": "serial_replay",
+        "children": [
+            {
+                "plugin_id": "file_reader_agent",
+                "label": "Doc Evidence Branch",
+                "objective": "在本地文档中补齐可复核证据。",
+                "required": True,
+                "propagate": False,
+            },
+            {
+                "plugin_id": "conflict_detector_agent",
+                "label": "Conflict Branch",
+                "objective": "识别证据冲突或高风险断言。",
+                "propagate": False,
+            },
+            {
+                "plugin_id": "summarizer_agent",
+                "label": "Compression Branch",
+                "objective": "对证据集合做高密度压缩。",
+                "propagate": False,
+            },
+        ],
+    },
+    "worker_agent": {
+        "role": "executor-parent",
+        "enabled_by_default": False,
+        "max_depth": 2,
+        "max_children": 4,
+        "join_policy": "execution_merge",
+        "failure_policy": "serial_replay",
+        "children": [
+            {
+                "plugin_id": "file_reader_agent",
+                "label": "Read Branch",
+                "objective": "补齐文件取证和上下文定位。",
+                "keywords": ["文件", "文档", "read", "附件"],
+                "propagate": False,
+            },
+            {
+                "plugin_id": "fixer_agent",
+                "label": "Fix Branch",
+                "objective": "定位问题并给出最小修复路径。",
+                "keywords": ["修复", "fix", "bug", "错误", "异常"],
+                "propagate": False,
+            },
+            {
+                "plugin_id": "reviewer_agent",
+                "label": "Review Branch",
+                "objective": "对执行结果进行质量复核。",
+                "keywords": ["review", "审核", "校验", "风险"],
+                "propagate": True,
+            },
+            {
+                "plugin_id": "structurer_agent",
+                "label": "Structure Branch",
+                "objective": "把执行产物整理成结构化交付。",
+                "keywords": ["结构化", "格式", "输出"],
+                "propagate": False,
+            },
+        ],
+    },
+    "conflict_detector_agent": {
+        "role": "consensus-parent",
+        "enabled_by_default": False,
+        "max_depth": 2,
+        "max_children": 2,
+        "join_policy": "consensus_vote",
+        "failure_policy": "serial_replay",
+        "children": [
+            {
+                "plugin_id": "researcher_agent",
+                "label": "Re-Check Branch",
+                "objective": "复查争议点的来源证据。",
+                "propagate": False,
+            },
+            {
+                "plugin_id": "reviewer_agent",
+                "label": "Risk Gate Branch",
+                "objective": "对冲突结论做风险门禁评级。",
+                "required": True,
+                "propagate": False,
+            },
+        ],
+    },
+    "reviewer_agent": {
+        "role": "review-parent",
+        "enabled_by_default": False,
+        "max_depth": 2,
+        "max_children": 3,
+        "join_policy": "review_gate",
+        "failure_policy": "serial_replay",
+        "children": [
+            {
+                "plugin_id": "conflict_detector_agent",
+                "label": "Consistency Branch",
+                "objective": "检查事实一致性与潜在冲突。",
+                "required": True,
+                "propagate": False,
+            },
+            {
+                "plugin_id": "revision_agent",
+                "label": "Revision Branch",
+                "objective": "根据审阅意见生成最小修订。",
+                "propagate": False,
+            },
+            {
+                "plugin_id": "structurer_agent",
+                "label": "Packaging Branch",
+                "objective": "整理最终交付结构并标注风险。",
+                "propagate": False,
+            },
+        ],
+    },
+}
+
 _JSON_LIST_HINT_KEYS: set[str] = {
     "stages",
     "handoff",
@@ -405,6 +652,26 @@ def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
 
 
 @dataclass(slots=True, frozen=True)
+class AgentSwarmChild:
+    plugin_id: str
+    label: str
+    objective: str
+    keywords: tuple[str, ...]
+    required: bool
+    propagate: bool
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "plugin_id": self.plugin_id,
+            "label": self.label,
+            "objective": self.objective,
+            "keywords": list(self.keywords),
+            "required": self.required,
+            "propagate": self.propagate,
+        }
+
+
+@dataclass(slots=True, frozen=True)
 class AgentPluginManifest:
     plugin_id: str
     title: str
@@ -426,6 +693,13 @@ class AgentPluginManifest:
     tool_expect_keywords: tuple[str, ...]
     tool_expect_min_calls: int
     tool_expect_nudge: str
+    swarm_role: str
+    swarm_enabled_by_default: bool
+    swarm_max_depth: int
+    swarm_max_children: int
+    swarm_join_policy: str
+    swarm_failure_policy: str
+    swarm_children: tuple[AgentSwarmChild, ...]
     source_path: str
 
     def to_control_panel_descriptor(self) -> dict[str, object]:
@@ -437,6 +711,13 @@ class AgentPluginManifest:
             "sprite_role": self.sprite_role,
             "supports_swarm": self.supports_swarm,
             "swarm_mode": self.swarm_mode,
+            "swarm_role": self.swarm_role,
+            "swarm_enabled_by_default": self.swarm_enabled_by_default,
+            "swarm_max_depth": self.swarm_max_depth,
+            "swarm_max_children": self.swarm_max_children,
+            "swarm_join_policy": self.swarm_join_policy,
+            "swarm_failure_policy": self.swarm_failure_policy,
+            "swarm_children": [item.to_payload() for item in self.swarm_children],
             "capability_tags": list(self.capability_tags),
             "summary": self.description,
             "tool_profile": self.tool_profile,
@@ -445,8 +726,11 @@ class AgentPluginManifest:
             "quality_profile": self.quality_profile,
             "response_mode": self.response_mode,
             "response_keys": list(self.response_keys),
+            "response_max_items": self.response_max_items,
             "stop_rules": list(self.stop_rules),
             "scope": self.scope,
+            "tool_expect_keywords": list(self.tool_expect_keywords),
+            "tool_expect_min_calls": self.tool_expect_min_calls,
             "independent_runnable": True,
         }
 
@@ -458,6 +742,13 @@ class AgentPluginManifest:
             "sprite_role": self.sprite_role,
             "supports_swarm": self.supports_swarm,
             "swarm_mode": self.swarm_mode,
+            "swarm_role": self.swarm_role,
+            "swarm_enabled_by_default": self.swarm_enabled_by_default,
+            "swarm_max_depth": self.swarm_max_depth,
+            "swarm_max_children": self.swarm_max_children,
+            "swarm_join_policy": self.swarm_join_policy,
+            "swarm_failure_policy": self.swarm_failure_policy,
+            "swarm_children": [item.to_payload() for item in self.swarm_children],
             "capability_tags": list(self.capability_tags),
             "tool_profile": self.tool_profile,
             "allowed_tools": list(self.allowed_tools),
@@ -526,6 +817,49 @@ class AgentPluginRuntime:
                 manifests.append(loaded)
         return manifests
 
+    def _parse_swarm_children(
+        self,
+        *,
+        plugin_id: str,
+        children_raw: Any,
+    ) -> tuple[AgentSwarmChild, ...]:
+        if not isinstance(children_raw, list):
+            return ()
+        out: list[AgentSwarmChild] = []
+        seen: set[str] = set()
+        for item in children_raw:
+            if not isinstance(item, dict):
+                continue
+            child_plugin_id = str(item.get("plugin_id") or item.get("target") or "").strip()
+            if not child_plugin_id or child_plugin_id == plugin_id:
+                continue
+            lowered = child_plugin_id.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            label = str(item.get("label") or child_plugin_id).strip() or child_plugin_id
+            objective = str(item.get("objective") or item.get("instruction") or f"完成 {label} 子任务。").strip()
+            if not objective:
+                objective = f"完成 {label} 子任务。"
+            keywords = tuple(
+                _normalize_str_list(
+                    item.get("keywords")
+                    or item.get("when_keywords")
+                    or []
+                )
+            )
+            out.append(
+                AgentSwarmChild(
+                    plugin_id=child_plugin_id,
+                    label=label,
+                    objective=objective,
+                    keywords=keywords,
+                    required=_as_bool(item.get("required"), default=False),
+                    propagate=_as_bool(item.get("propagate"), default=False),
+                )
+            )
+        return tuple(out)
+
     def _parse_manifest(self, path: Path) -> AgentPluginManifest | None:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -538,12 +872,15 @@ class AgentPluginRuntime:
         if not plugin_id:
             return None
         preset = dict(_PLUGIN_QUALITY_PRESETS.get(plugin_id) or {})
+        swarm_preset = dict(_PLUGIN_SWARM_PRESETS.get(plugin_id) or {})
 
         title = str(payload.get("title") or plugin_id).strip() or plugin_id
         description = str(payload.get("description") or "").strip()
         sprite_role = str(payload.get("sprite_role") or plugin_id.replace("_agent", "")).strip() or "worker"
-        supports_swarm = bool(payload.get("supports_swarm"))
-        swarm_mode = str(payload.get("swarm_mode") or ("generic-swarm" if supports_swarm else "none")).strip() or "none"
+
+        raw_swarm = payload.get("swarm") if isinstance(payload.get("swarm"), dict) else {}
+        supports_swarm = bool(payload.get("supports_swarm")) or bool(raw_swarm or swarm_preset)
+        swarm_mode = str(payload.get("swarm_mode") or raw_swarm.get("mode") or ("generic-swarm" if supports_swarm else "none")).strip() or "none"
         capability_tags = tuple(_normalize_str_list(payload.get("capability_tags")))
 
         raw_profile = str(payload.get("tool_profile") or "none").strip().lower() or "none"
@@ -590,7 +927,12 @@ class AgentPluginRuntime:
             raw_contract.get("max_items")
             if isinstance(raw_contract, dict)
             else None,
-            default=_as_int(payload.get("response_max_items"), default=_as_int(preset_contract.get("max_items"), default=6, min_value=1, max_value=20), min_value=1, max_value=20),
+            default=_as_int(
+                payload.get("response_max_items"),
+                default=_as_int(preset_contract.get("max_items"), default=6, min_value=1, max_value=20),
+                min_value=1,
+                max_value=20,
+            ),
             min_value=1,
             max_value=20,
         )
@@ -609,7 +951,12 @@ class AgentPluginRuntime:
             raw_expect.get("min_tool_calls")
             if isinstance(raw_expect, dict)
             else None,
-            default=_as_int(payload.get("tool_expect_min_calls"), default=_as_int(preset_expect.get("min_tool_calls"), default=0, min_value=0, max_value=6), min_value=0, max_value=6),
+            default=_as_int(
+                payload.get("tool_expect_min_calls"),
+                default=_as_int(preset_expect.get("min_tool_calls"), default=0, min_value=0, max_value=6),
+                min_value=0,
+                max_value=6,
+            ),
             min_value=0,
             max_value=6,
         )
@@ -621,6 +968,65 @@ class AgentPluginRuntime:
             or preset_expect.get("nudge_prompt")
             or ""
         ).strip()
+
+        swarm_role = str(
+            raw_swarm.get("role")
+            or payload.get("swarm_role")
+            or swarm_preset.get("role")
+            or ("leaf" if not supports_swarm else "parent")
+        ).strip() or "leaf"
+        swarm_enabled_by_default = _as_bool(
+            raw_swarm.get("enabled_by_default")
+            if isinstance(raw_swarm, dict)
+            else None,
+            default=_as_bool(payload.get("swarm_enabled_by_default"), default=_as_bool(swarm_preset.get("enabled_by_default"), default=False)),
+        )
+        swarm_max_depth = _as_int(
+            raw_swarm.get("max_depth")
+            if isinstance(raw_swarm, dict)
+            else None,
+            default=_as_int(payload.get("swarm_max_depth"), default=_as_int(swarm_preset.get("max_depth"), default=2, min_value=1, max_value=4), min_value=1, max_value=4),
+            min_value=1,
+            max_value=4,
+        )
+        swarm_max_children = _as_int(
+            raw_swarm.get("max_children")
+            if isinstance(raw_swarm, dict)
+            else None,
+            default=_as_int(payload.get("swarm_max_children"), default=_as_int(swarm_preset.get("max_children"), default=3, min_value=1, max_value=6), min_value=1, max_value=6),
+            min_value=1,
+            max_value=6,
+        )
+        swarm_join_policy = str(
+            raw_swarm.get("join_policy")
+            or payload.get("swarm_join_policy")
+            or swarm_preset.get("join_policy")
+            or "merge"
+        ).strip() or "merge"
+        swarm_failure_policy = str(
+            raw_swarm.get("failure_policy")
+            or payload.get("swarm_failure_policy")
+            or swarm_preset.get("failure_policy")
+            or "serial_replay"
+        ).strip() or "serial_replay"
+        swarm_children = self._parse_swarm_children(
+            plugin_id=plugin_id,
+            children_raw=(
+                raw_swarm.get("children")
+                if isinstance(raw_swarm, dict)
+                else None
+            )
+            or payload.get("swarm_children")
+            or swarm_preset.get("children")
+            or [],
+        )
+        if not supports_swarm:
+            swarm_children = ()
+            swarm_mode = "none"
+            swarm_role = "leaf"
+            swarm_enabled_by_default = False
+            swarm_max_depth = 1
+            swarm_max_children = 1
 
         return AgentPluginManifest(
             plugin_id=plugin_id,
@@ -643,6 +1049,13 @@ class AgentPluginRuntime:
             tool_expect_keywords=tool_expect_keywords,
             tool_expect_min_calls=tool_expect_min_calls,
             tool_expect_nudge=tool_expect_nudge,
+            swarm_role=swarm_role,
+            swarm_enabled_by_default=swarm_enabled_by_default,
+            swarm_max_depth=swarm_max_depth,
+            swarm_max_children=swarm_max_children,
+            swarm_join_policy=swarm_join_policy,
+            swarm_failure_policy=swarm_failure_policy,
+            swarm_children=swarm_children,
             source_path=str(path.relative_to(self._manifest_dir.parent)),
         )
 
@@ -665,6 +1078,13 @@ class AgentPluginRuntime:
                 "工具策略:\n"
                 f"- 当用户请求包含关键词 {', '.join(manifest.tool_expect_keywords[:8])} 时，"
                 f"至少调用 {manifest.tool_expect_min_calls} 次允许工具后再下结论。"
+            )
+        if manifest.supports_swarm:
+            parts.append(
+                "Swarm 协作策略:\n"
+                f"- 当前模式: {manifest.swarm_mode}。\n"
+                f"- 角色: {manifest.swarm_role}。\n"
+                f"- 分支上限: depth={manifest.swarm_max_depth}, children={manifest.swarm_max_children}。"
             )
         parts.append("通用要求: 禁止输出思维链；禁止编造未验证事实；证据不足时必须明确标注。")
         return "\n\n".join(item for item in parts if str(item).strip())
@@ -798,82 +1218,189 @@ class AgentPluginRuntime:
             f"请先调用至少一项允许工具（例如: {names}），再给出结论。"
         )
 
-    def list_manifests(self) -> list[AgentPluginManifest]:
-        return list(self._manifests)
+    def _dedup_notes(self, notes: list[str]) -> list[str]:
+        deduped: list[str] = []
+        seen_notes: set[str] = set()
+        for item in notes:
+            text_note = str(item or "").strip()
+            if not text_note:
+                continue
+            if text_note in seen_notes:
+                continue
+            seen_notes.add(text_note)
+            deduped.append(text_note)
+        return deduped
 
-    def list_api_payload(self) -> list[dict[str, object]]:
-        return [item.to_api_payload() for item in self._manifests]
+    def _merge_usage_totals(self, left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+        merged: dict[str, Any] = dict(left or {})
+        right_payload = dict(right or {})
+        for key in ("input_tokens", "output_tokens", "total_tokens", "llm_calls"):
+            merged[key] = int(merged.get(key, 0) or 0) + int(right_payload.get(key, 0) or 0)
+        merged["estimated_cost_usd"] = float(merged.get("estimated_cost_usd", 0.0) or 0.0) + float(
+            right_payload.get("estimated_cost_usd", 0.0) or 0.0
+        )
+        if "pricing_known" in merged or "pricing_known" in right_payload:
+            merged["pricing_known"] = bool(merged.get("pricing_known")) or bool(right_payload.get("pricing_known"))
+        for key in ("pricing_model", "input_price_per_1m", "output_price_per_1m"):
+            if merged.get(key) in {"", None} and right_payload.get(key) not in {"", None}:
+                merged[key] = right_payload.get(key)
+        return merged
 
-    def tool_model_payload(self) -> dict[str, object]:
-        profile_map = {
-            key: list(value)
-            for key, value in _TOOL_PROFILE_PRESETS.items()
-        }
-        tools: list[dict[str, object]] = []
-        for name in sorted(self._tool_specs_by_name.keys()):
-            spec = self._tool_specs_by_name.get(name) or {}
-            tools.append(
-                {
-                    "name": name,
-                    "description": str(spec.get("description") or "").strip(),
-                    "parameters": dict(spec.get("parameters") or {}),
-                }
-            )
-        quality_presets = {
-            key: {
-                "quality_profile": str((payload or {}).get("quality_profile") or ""),
-                "scope": str((payload or {}).get("scope") or ""),
-                "response_contract": dict((payload or {}).get("response_contract") or {}),
-                "tool_expectation": dict((payload or {}).get("tool_expectation") or {}),
-            }
-            for key, payload in _PLUGIN_QUALITY_PRESETS.items()
-        }
-        return {
-            "profiles": profile_map,
-            "tools": tools,
-            "quality_presets": quality_presets,
-        }
-
-    def control_panel_plugin_descriptors(self, slot_count: int = 12) -> list[dict[str, object]]:
-        active = [item.to_control_panel_descriptor() for item in self._manifests[:slot_count]]
-        while len(active) < slot_count:
-            slot = str(len(active) + 1).zfill(2)
-            active.append(
-                {
-                    "key": f"llm_module_{slot}",
-                    "title": f"LLM 模块 {slot}",
-                    "path": "",
-                    "exists": False,
-                    "sprite_role": "worker",
-                    "supports_swarm": False,
-                    "swarm_mode": "none",
-                    "capability_tags": [],
-                    "summary": "插件未配置",
-                    "tool_profile": "none",
-                    "allowed_tools": [],
-                    "max_tool_rounds": 0,
-                    "quality_profile": "unconfigured",
-                    "response_mode": "text",
-                    "response_keys": [],
-                    "stop_rules": [],
-                    "scope": "",
-                    "independent_runnable": False,
-                }
-            )
-        return active
-
-    def run_plugin(
+    def _tool_events_for_module(
         self,
         *,
-        plugin_id: str,
+        module_id: str,
+        module_title: str,
+        events: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    ) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for raw in list(events or []):
+            if not isinstance(raw, dict):
+                continue
+            item = dict(raw)
+            item["module_id"] = str(item.get("module_id") or module_id)
+            item["module_title"] = str(item.get("module_title") or module_title)
+            item["module_group"] = str(item.get("module_group") or "agent_plugin")
+            out.append(item)
+        return out
+
+    def _safe_preview(self, text: Any, *, limit: int = 260) -> str:
+        raw = str(text or "").strip()
+        if not raw:
+            return ""
+        compact = " ".join(raw.split())
+        if len(compact) <= limit:
+            return compact
+        return compact[: max(12, limit - 3)] + "..."
+
+    def _resolve_swarm_run_options(
+        self,
+        *,
+        manifest: AgentPluginManifest,
+        message: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        raw_swarm = context.get("swarm") if isinstance(context.get("swarm"), dict) else {}
+        raw_inputs = context.get("swarm_inputs")
+        has_legacy_swarm_inputs = isinstance(raw_inputs, list) and len(raw_inputs) >= 2
+        trigger_by_message = _contains_any(str(message or ""), _SWARM_TRIGGER_KEYWORDS)
+        default_enabled = manifest.supports_swarm and (
+            manifest.swarm_enabled_by_default or has_legacy_swarm_inputs or trigger_by_message
+        )
+        enabled = _as_bool(raw_swarm.get("enabled"), default=default_enabled)
+        if not manifest.supports_swarm:
+            enabled = False
+
+        max_depth = _as_int(
+            raw_swarm.get("max_depth"),
+            default=manifest.swarm_max_depth,
+            min_value=1,
+            max_value=4,
+        )
+        max_children = _as_int(
+            raw_swarm.get("max_children"),
+            default=manifest.swarm_max_children,
+            min_value=1,
+            max_value=6,
+        )
+        return {
+            "enabled": enabled,
+            "max_depth": max_depth,
+            "max_children": max_children,
+            "join_policy": str(raw_swarm.get("join_policy") or manifest.swarm_join_policy or "merge").strip() or "merge",
+            "failure_policy": str(raw_swarm.get("failure_policy") or manifest.swarm_failure_policy or "serial_replay").strip() or "serial_replay",
+            "expand_children": _as_bool(raw_swarm.get("expand_children"), default=True),
+            "force_all_children": _as_bool(raw_swarm.get("force_all_children"), default=False),
+            "allow_serial_replay": _as_bool(raw_swarm.get("allow_serial_replay"), default=True),
+        }
+
+    def _select_swarm_children(
+        self,
+        *,
+        manifest: AgentPluginManifest,
+        message: str,
+        ancestry: tuple[str, ...],
+        max_children: int,
+        force_all_children: bool,
+    ) -> list[AgentSwarmChild]:
+        available = [
+            item
+            for item in manifest.swarm_children
+            if item.plugin_id not in ancestry and item.plugin_id in self._manifest_map
+        ]
+        if not available:
+            return []
+        if force_all_children:
+            return available[:max_children]
+
+        selected: list[AgentSwarmChild] = []
+        selected_ids: set[str] = set()
+
+        for item in available:
+            if not item.required:
+                continue
+            selected.append(item)
+            selected_ids.add(item.plugin_id)
+            if len(selected) >= max_children:
+                return selected
+
+        for item in available:
+            if item.plugin_id in selected_ids:
+                continue
+            if item.keywords and _contains_any(message, item.keywords):
+                selected.append(item)
+                selected_ids.add(item.plugin_id)
+                if len(selected) >= max_children:
+                    return selected
+
+        if not selected:
+            return available[:max_children]
+
+        for item in available:
+            if len(selected) >= max_children:
+                break
+            if item.plugin_id in selected_ids:
+                continue
+            selected.append(item)
+            selected_ids.add(item.plugin_id)
+        return selected
+
+    def _compose_swarm_child_message(
+        self,
+        *,
+        parent_manifest: AgentPluginManifest,
+        child_rule: AgentSwarmChild,
+        root_message: str,
+        parent_text: str,
+    ) -> str:
+        lines: list[str] = [
+            f"swarm_parent_plugin: {parent_manifest.plugin_id}",
+            f"swarm_branch_label: {child_rule.label}",
+            f"swarm_branch_objective: {child_rule.objective}",
+            "",
+            "root_user_message:",
+            str(root_message or "").strip(),
+        ]
+        parent_preview = self._safe_preview(parent_text, limit=1200)
+        if parent_preview:
+            lines.extend(
+                [
+                    "",
+                    "parent_output_preview:",
+                    parent_preview,
+                ]
+            )
+        return "\n".join(lines).strip()
+
+    def _run_plugin_once(
+        self,
+        *,
+        manifest: AgentPluginManifest,
         message: str,
         settings: ChatSettings,
         context: dict[str, Any] | None = None,
         max_tool_rounds: int | None = None,
     ) -> dict[str, Any]:
-        manifest = self._manifest_map.get(str(plugin_id or "").strip())
-        if manifest is None:
-            raise ValueError(f"Unknown plugin_id: {plugin_id}")
         prompt_message = str(message or "").strip()
         if not prompt_message:
             raise ValueError("message cannot be empty")
@@ -1036,17 +1563,6 @@ class AgentPluginRuntime:
             )
         )
 
-        dedup_notes: list[str] = []
-        seen_notes: set[str] = set()
-        for item in notes:
-            text_note = str(item or "").strip()
-            if not text_note:
-                continue
-            if text_note in seen_notes:
-                continue
-            seen_notes.add(text_note)
-            dedup_notes.append(text_note)
-
         return {
             "ok": True,
             "plugin_id": manifest.plugin_id,
@@ -1054,6 +1570,435 @@ class AgentPluginRuntime:
             "effective_model": effective_model or requested_model,
             "tool_events": [item.model_dump() for item in tool_events],
             "token_usage": usage_total,
-            "notes": dedup_notes,
+            "notes": self._dedup_notes(notes),
             "decision": {},
         }
+
+    def _run_swarm_node(
+        self,
+        *,
+        manifest: AgentPluginManifest,
+        message: str,
+        root_message: str,
+        settings: ChatSettings,
+        context: dict[str, Any],
+        max_tool_rounds: int | None,
+        depth: int,
+        ancestry: tuple[str, ...],
+        branch_label: str,
+        parent_plugin_id: str,
+        allow_expand: bool,
+        options: dict[str, Any],
+        collector: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        run_context = dict(context or {})
+        swarm_context = run_context.get("swarm") if isinstance(run_context.get("swarm"), dict) else {}
+        swarm_context = dict(swarm_context or {})
+        swarm_context.update(
+            {
+                "enabled": False,
+                "depth": depth,
+                "parent_plugin": parent_plugin_id,
+                "branch_label": branch_label,
+                "ancestry": list(ancestry),
+            }
+        )
+        run_context["swarm"] = swarm_context
+
+        degraded = False
+        run_result: dict[str, Any]
+        try:
+            run_result = self._run_plugin_once(
+                manifest=manifest,
+                message=message,
+                settings=settings,
+                context=run_context,
+                max_tool_rounds=max_tool_rounds,
+            )
+        except Exception as exc:
+            run_result = {
+                "ok": False,
+                "plugin_id": manifest.plugin_id,
+                "text": "",
+                "effective_model": "",
+                "tool_events": [],
+                "token_usage": self._backend._empty_usage(),
+                "notes": [f"plugin_run_failed:{exc}"],
+                "decision": {},
+                "error": str(exc),
+            }
+
+        if (
+            not bool(run_result.get("ok"))
+            and options.get("allow_serial_replay")
+            and options.get("failure_policy") == "serial_replay"
+        ):
+            replay_context = dict(run_context)
+            replay_swarm = replay_context.get("swarm") if isinstance(replay_context.get("swarm"), dict) else {}
+            replay_swarm = dict(replay_swarm or {})
+            replay_swarm["serial_replay"] = True
+            replay_context["swarm"] = replay_swarm
+            try:
+                replay_result = self._run_plugin_once(
+                    manifest=manifest,
+                    message=message,
+                    settings=settings,
+                    context=replay_context,
+                    max_tool_rounds=max_tool_rounds,
+                )
+                if bool(replay_result.get("ok")):
+                    replay_notes = list(replay_result.get("notes") or [])
+                    replay_notes.append("swarm_serial_replay_recovered")
+                    replay_result["notes"] = self._dedup_notes(replay_notes)
+                    run_result = replay_result
+                    degraded = True
+                else:
+                    fail_notes = list(run_result.get("notes") or [])
+                    fail_notes.append("swarm_serial_replay_failed")
+                    run_result["notes"] = self._dedup_notes(fail_notes)
+            except Exception as replay_exc:
+                fail_notes = list(run_result.get("notes") or [])
+                fail_notes.append(f"swarm_serial_replay_failed:{replay_exc}")
+                run_result["notes"] = self._dedup_notes(fail_notes)
+
+        children_nodes: list[dict[str, Any]] = []
+        can_expand = (
+            allow_expand
+            and options.get("expand_children")
+            and manifest.supports_swarm
+            and bool(manifest.swarm_children)
+            and depth < int(options.get("max_depth") or 1)
+        )
+        if can_expand:
+            child_rules = self._select_swarm_children(
+                manifest=manifest,
+                message=message,
+                ancestry=ancestry,
+                max_children=int(options.get("max_children") or 1),
+                force_all_children=bool(options.get("force_all_children")),
+            )
+            for child_rule in child_rules:
+                child_manifest = self._manifest_map.get(child_rule.plugin_id)
+                if child_manifest is None:
+                    children_nodes.append(
+                        {
+                            "plugin_id": child_rule.plugin_id,
+                            "title": child_rule.label,
+                            "depth": depth + 1,
+                            "branch_label": child_rule.label,
+                            "parent_plugin_id": manifest.plugin_id,
+                            "ok": False,
+                            "effective_model": "",
+                            "text_preview": "missing manifest",
+                            "tool_event_count": 0,
+                            "token_usage": self._backend._empty_usage(),
+                            "notes": [f"missing_manifest:{child_rule.plugin_id}"],
+                            "children": [],
+                            "degraded": False,
+                            "swarm_mode": "none",
+                            "swarm_role": "leaf",
+                        }
+                    )
+                    continue
+                child_message = self._compose_swarm_child_message(
+                    parent_manifest=manifest,
+                    child_rule=child_rule,
+                    root_message=root_message,
+                    parent_text=str(run_result.get("text") or ""),
+                )
+                child_context = dict(run_context)
+                child_context.update(
+                    {
+                        "swarm_parent_output": str(run_result.get("text") or ""),
+                        "swarm_parent_plugin": manifest.plugin_id,
+                        "swarm_branch_objective": child_rule.objective,
+                    }
+                )
+                child_node = self._run_swarm_node(
+                    manifest=child_manifest,
+                    message=child_message,
+                    root_message=root_message,
+                    settings=settings,
+                    context=child_context,
+                    max_tool_rounds=max_tool_rounds,
+                    depth=depth + 1,
+                    ancestry=ancestry + (child_manifest.plugin_id,),
+                    branch_label=child_rule.label,
+                    parent_plugin_id=manifest.plugin_id,
+                    allow_expand=child_rule.propagate,
+                    options=options,
+                    collector=collector,
+                )
+                children_nodes.append(child_node)
+
+        node = {
+            "plugin_id": manifest.plugin_id,
+            "title": manifest.title,
+            "depth": depth,
+            "branch_label": branch_label,
+            "parent_plugin_id": parent_plugin_id,
+            "ok": bool(run_result.get("ok")),
+            "effective_model": str(run_result.get("effective_model") or ""),
+            "text_preview": self._safe_preview(run_result.get("text"), limit=320),
+            "tool_event_count": len(run_result.get("tool_events") or []),
+            "token_usage": dict(run_result.get("token_usage") or {}),
+            "notes": list(run_result.get("notes") or []),
+            "children": children_nodes,
+            "degraded": degraded,
+            "swarm_mode": manifest.swarm_mode,
+            "swarm_role": manifest.swarm_role,
+        }
+        collector.append(
+            {
+                "plugin_id": manifest.plugin_id,
+                "title": manifest.title,
+                "depth": depth,
+                "branch_label": branch_label,
+                "parent_plugin_id": parent_plugin_id,
+                "degraded": degraded,
+                "result": run_result,
+                "swarm_mode": manifest.swarm_mode,
+                "swarm_role": manifest.swarm_role,
+            }
+        )
+        return node
+
+    def _summarize_swarm_tree(
+        self,
+        *,
+        root_manifest: AgentPluginManifest,
+        root_result: dict[str, Any],
+        root_node: dict[str, Any],
+        options: dict[str, Any],
+        collector: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        usage_total = self._backend._empty_usage()
+        aggregated_tool_events: list[dict[str, Any]] = []
+        notes: list[str] = []
+        highlights: list[str] = []
+        failed_count = 0
+        degraded_count = 0
+
+        for item in collector:
+            result = dict(item.get("result") or {})
+            usage_total = self._merge_usage_totals(usage_total, dict(result.get("token_usage") or {}))
+            aggregated_tool_events.extend(
+                self._tool_events_for_module(
+                    module_id=str(item.get("plugin_id") or ""),
+                    module_title=str(item.get("title") or ""),
+                    events=list(result.get("tool_events") or []),
+                )
+            )
+            item_notes = [str(note or "").strip() for note in list(result.get("notes") or []) if str(note or "").strip()]
+            if str(item.get("plugin_id") or "") == root_manifest.plugin_id:
+                notes.extend(item_notes)
+            else:
+                notes.extend([f"{item.get('plugin_id')}:{note}" for note in item_notes])
+            if not bool(result.get("ok")):
+                failed_count += 1
+            if bool(item.get("degraded")):
+                degraded_count += 1
+            highlights.append(
+                f"d{int(item.get('depth') or 0)} · {item.get('plugin_id')} · {self._safe_preview(result.get('text'), limit=120) or '(empty)'}"
+            )
+
+        notes.extend(
+            [
+                f"swarm_enabled:{root_manifest.plugin_id}",
+                f"swarm_join_policy:{options.get('join_policy')}",
+                f"swarm_failure_policy:{options.get('failure_policy')}",
+                f"swarm_nodes:{len(collector)}",
+                f"swarm_branches:{max(0, len(collector) - 1)}",
+            ]
+        )
+        if failed_count:
+            notes.append(f"swarm_failed_nodes:{failed_count}")
+        if degraded_count:
+            notes.append(f"swarm_degraded_nodes:{degraded_count}")
+
+        decision_payload = dict(root_result.get("decision") or {})
+        decision_payload["swarm"] = {
+            "enabled": True,
+            "root_plugin": root_manifest.plugin_id,
+            "swarm_mode": root_manifest.swarm_mode,
+            "swarm_role": root_manifest.swarm_role,
+            "join_policy": options.get("join_policy"),
+            "failure_policy": options.get("failure_policy"),
+            "max_depth": int(options.get("max_depth") or 1),
+            "max_children": int(options.get("max_children") or 1),
+            "node_count": len(collector),
+            "branch_count": max(0, len(collector) - 1),
+            "failed_node_count": failed_count,
+            "degraded_node_count": degraded_count,
+            "tree": root_node,
+            "highlights": highlights[:24],
+        }
+
+        text = str(root_result.get("text") or "").strip()
+        if not text:
+            text = (
+                f"swarm root={root_manifest.plugin_id} "
+                f"nodes={len(collector)} "
+                f"failed={failed_count} "
+                f"degraded={degraded_count}"
+            )
+
+        return {
+            "ok": bool(root_result.get("ok")),
+            "plugin_id": root_manifest.plugin_id,
+            "text": text,
+            "effective_model": str(root_result.get("effective_model") or "swarm"),
+            "tool_events": aggregated_tool_events,
+            "token_usage": usage_total,
+            "notes": self._dedup_notes(notes),
+            "decision": decision_payload,
+        }
+
+    def list_manifests(self) -> list[AgentPluginManifest]:
+        return list(self._manifests)
+
+    def list_api_payload(self) -> list[dict[str, object]]:
+        return [item.to_api_payload() for item in self._manifests]
+
+    def tool_model_payload(self) -> dict[str, object]:
+        profile_map = {
+            key: list(value)
+            for key, value in _TOOL_PROFILE_PRESETS.items()
+        }
+        tools: list[dict[str, object]] = []
+        for name in sorted(self._tool_specs_by_name.keys()):
+            spec = self._tool_specs_by_name.get(name) or {}
+            tools.append(
+                {
+                    "name": name,
+                    "description": str(spec.get("description") or "").strip(),
+                    "parameters": dict(spec.get("parameters") or {}),
+                }
+            )
+        quality_presets = {
+            key: {
+                "quality_profile": str((payload or {}).get("quality_profile") or ""),
+                "scope": str((payload or {}).get("scope") or ""),
+                "response_contract": dict((payload or {}).get("response_contract") or {}),
+                "tool_expectation": dict((payload or {}).get("tool_expectation") or {}),
+            }
+            for key, payload in _PLUGIN_QUALITY_PRESETS.items()
+        }
+        swarm_presets = {}
+        for key, payload in _PLUGIN_SWARM_PRESETS.items():
+            data = dict(payload or {})
+            swarm_presets[key] = {
+                "role": str(data.get("role") or ""),
+                "enabled_by_default": _as_bool(data.get("enabled_by_default"), default=False),
+                "max_depth": _as_int(data.get("max_depth"), default=2, min_value=1, max_value=4),
+                "max_children": _as_int(data.get("max_children"), default=3, min_value=1, max_value=6),
+                "join_policy": str(data.get("join_policy") or ""),
+                "failure_policy": str(data.get("failure_policy") or ""),
+                "children": list(data.get("children") or []),
+            }
+        return {
+            "profiles": profile_map,
+            "tools": tools,
+            "quality_presets": quality_presets,
+            "swarm_presets": swarm_presets,
+        }
+
+    def control_panel_plugin_descriptors(self, slot_count: int = 12) -> list[dict[str, object]]:
+        active = [item.to_control_panel_descriptor() for item in self._manifests[:slot_count]]
+        while len(active) < slot_count:
+            slot = str(len(active) + 1).zfill(2)
+            active.append(
+                {
+                    "key": f"llm_module_{slot}",
+                    "title": f"LLM 模块 {slot}",
+                    "path": "",
+                    "exists": False,
+                    "sprite_role": "worker",
+                    "supports_swarm": False,
+                    "swarm_mode": "none",
+                    "swarm_role": "leaf",
+                    "swarm_enabled_by_default": False,
+                    "swarm_max_depth": 1,
+                    "swarm_max_children": 1,
+                    "swarm_join_policy": "none",
+                    "swarm_failure_policy": "none",
+                    "swarm_children": [],
+                    "capability_tags": [],
+                    "summary": "插件未配置",
+                    "tool_profile": "none",
+                    "allowed_tools": [],
+                    "max_tool_rounds": 0,
+                    "quality_profile": "unconfigured",
+                    "response_mode": "text",
+                    "response_keys": [],
+                    "response_max_items": 0,
+                    "stop_rules": [],
+                    "scope": "",
+                    "tool_expect_keywords": [],
+                    "tool_expect_min_calls": 0,
+                    "independent_runnable": False,
+                }
+            )
+        return active
+
+    def run_plugin(
+        self,
+        *,
+        plugin_id: str,
+        message: str,
+        settings: ChatSettings,
+        context: dict[str, Any] | None = None,
+        max_tool_rounds: int | None = None,
+    ) -> dict[str, Any]:
+        manifest = self._manifest_map.get(str(plugin_id or "").strip())
+        if manifest is None:
+            raise ValueError(f"Unknown plugin_id: {plugin_id}")
+        prompt_message = str(message or "").strip()
+        if not prompt_message:
+            raise ValueError("message cannot be empty")
+        context_payload = dict(context or {})
+
+        swarm_options = self._resolve_swarm_run_options(
+            manifest=manifest,
+            message=prompt_message,
+            context=context_payload,
+        )
+        if bool(swarm_options.get("enabled")) and manifest.supports_swarm and manifest.swarm_children:
+            collector: list[dict[str, Any]] = []
+            root_node = self._run_swarm_node(
+                manifest=manifest,
+                message=prompt_message,
+                root_message=prompt_message,
+                settings=settings,
+                context=context_payload,
+                max_tool_rounds=max_tool_rounds,
+                depth=0,
+                ancestry=(manifest.plugin_id,),
+                branch_label="root",
+                parent_plugin_id="",
+                allow_expand=True,
+                options=swarm_options,
+                collector=collector,
+            )
+            root_result = dict(collector[-1].get("result") or {}) if collector else self._run_plugin_once(
+                manifest=manifest,
+                message=prompt_message,
+                settings=settings,
+                context=context_payload,
+                max_tool_rounds=max_tool_rounds,
+            )
+            return self._summarize_swarm_tree(
+                root_manifest=manifest,
+                root_result=root_result,
+                root_node=root_node,
+                options=swarm_options,
+                collector=collector,
+            )
+
+        return self._run_plugin_once(
+            manifest=manifest,
+            message=prompt_message,
+            settings=settings,
+            context=context_payload,
+            max_tool_rounds=max_tool_rounds,
+        )

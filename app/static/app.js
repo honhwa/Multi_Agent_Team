@@ -115,6 +115,13 @@ function normalizeAgentPluginModules(health, pluginRegistry) {
         sprite_role: item?.sprite_role,
         supports_swarm: item?.supports_swarm,
         swarm_mode: item?.swarm_mode,
+        swarm_role: item?.swarm_role,
+        swarm_enabled_by_default: item?.swarm_enabled_by_default,
+        swarm_max_depth: item?.swarm_max_depth,
+        swarm_max_children: item?.swarm_max_children,
+        swarm_join_policy: item?.swarm_join_policy,
+        swarm_failure_policy: item?.swarm_failure_policy,
+        swarm_children: item?.swarm_children,
         capability_tags: item?.capability_tags,
         summary: item?.description,
         tool_profile: item?.tool_profile,
@@ -164,6 +171,29 @@ function normalizeAgentPluginModules(health, pluginRegistry) {
         ? registryItem.tool_expect_keywords
         : [];
     const toolExpectKeywords = uniqueStrings(toolExpectKeywordsRaw.map((line) => String(line || "").trim()).filter(Boolean));
+    const swarmChildrenRaw = Array.isArray(item?.swarm_children)
+      ? item.swarm_children
+      : Array.isArray(registryItem?.swarm_children)
+        ? registryItem.swarm_children
+        : [];
+    const swarmChildren = swarmChildrenRaw
+      .map((child) => {
+        if (!child || typeof child !== "object") return null;
+        const pluginId = String(child.plugin_id || child.target || "").trim();
+        if (!pluginId) return null;
+        const keywordsRaw = Array.isArray(child.keywords) ? child.keywords : Array.isArray(child.when_keywords) ? child.when_keywords : [];
+        return {
+          pluginId,
+          label: String(child.label || pluginId).trim() || pluginId,
+          objective: String(child.objective || child.instruction || "").trim(),
+          keywords: uniqueStrings(keywordsRaw.map((item) => String(item || "").trim()).filter(Boolean)),
+          required: Boolean(child.required),
+          propagate: Boolean(child.propagate),
+        };
+      })
+      .filter(Boolean);
+    const swarmMaxDepth = Number(item?.swarm_max_depth ?? registryItem?.swarm_max_depth ?? 1);
+    const swarmMaxChildren = Number(item?.swarm_max_children ?? registryItem?.swarm_max_children ?? 1);
     return {
       key: moduleId,
       title: String(item?.title || registryItem?.title || "").trim() || titleFromAgentKey(moduleId),
@@ -177,6 +207,13 @@ function normalizeAgentPluginModules(health, pluginRegistry) {
       description: String(item?.summary || registryItem?.description || "").trim(),
       supportsSwarm: Boolean(item?.supports_swarm ?? registryItem?.supports_swarm),
       swarmMode: String(item?.swarm_mode || registryItem?.swarm_mode || "none").trim() || "none",
+      swarmRole: String(item?.swarm_role || registryItem?.swarm_role || "leaf").trim() || "leaf",
+      swarmEnabledByDefault: Boolean(item?.swarm_enabled_by_default ?? registryItem?.swarm_enabled_by_default),
+      swarmMaxDepth: Number.isFinite(swarmMaxDepth) ? Math.max(1, Math.min(4, Math.floor(swarmMaxDepth))) : 1,
+      swarmMaxChildren: Number.isFinite(swarmMaxChildren) ? Math.max(1, Math.min(6, Math.floor(swarmMaxChildren))) : 1,
+      swarmJoinPolicy: String(item?.swarm_join_policy || registryItem?.swarm_join_policy || "none").trim() || "none",
+      swarmFailurePolicy: String(item?.swarm_failure_policy || registryItem?.swarm_failure_policy || "none").trim() || "none",
+      swarmChildren,
       capabilityTags,
       spriteRole,
       toolProfile,
@@ -234,6 +271,13 @@ function buildModuleTopology(health, pluginRegistry) {
     independentRunnable: false,
     supportsSwarm: false,
     swarmMode: "none",
+    swarmRole: "leaf",
+    swarmEnabledByDefault: false,
+    swarmMaxDepth: 1,
+    swarmMaxChildren: 1,
+    swarmJoinPolicy: "none",
+    swarmFailurePolicy: "none",
+    swarmChildren: [],
     capabilityTags: [],
     description: "系统主核（启动、上下文与状态管理）",
     spriteRole: "kernel",
@@ -264,6 +308,13 @@ function buildModuleTopology(health, pluginRegistry) {
     independentRunnable: false,
     supportsSwarm: true,
     swarmMode: "fanout-router",
+    swarmRole: "parent",
+    swarmEnabledByDefault: false,
+    swarmMaxDepth: 2,
+    swarmMaxChildren: 4,
+    swarmJoinPolicy: "route_merge",
+    swarmFailurePolicy: "serial_replay",
+    swarmChildren: [],
     capabilityTags: ["routing", "policy-gate"],
     description: "LLM 中央调度器（意图路由、插件分发）",
     spriteRole: "router",
@@ -290,6 +341,13 @@ function buildModuleTopology(health, pluginRegistry) {
       roles: [],
       supportsSwarm: false,
       swarmMode: "none",
+      swarmRole: "leaf",
+      swarmEnabledByDefault: false,
+      swarmMaxDepth: 1,
+      swarmMaxChildren: 1,
+      swarmJoinPolicy: "none",
+      swarmFailurePolicy: "none",
+      swarmChildren: [],
       capabilityTags: [],
       spriteRole: "worker",
       description: "",
@@ -866,6 +924,14 @@ function App() {
             source: "avatar_panel",
             session_id: sessionId || "",
             selected_tools: selectedAvatarModule.allowedTools || [],
+            swarm: {
+              enabled: Boolean(selectedAvatarModule.supportsSwarm),
+              max_depth: Number(selectedAvatarModule.swarmMaxDepth || 2),
+              max_children: Number(selectedAvatarModule.swarmMaxChildren || 3),
+              join_policy: String(selectedAvatarModule.swarmJoinPolicy || "merge"),
+              failure_policy: String(selectedAvatarModule.swarmFailurePolicy || "serial_replay"),
+              expand_children: true,
+            },
           },
           settings: {
             ...DEFAULT_SETTINGS,
@@ -1221,6 +1287,22 @@ function App() {
                                 <span>独立运行</span>
                                 <strong>${selectedControlModule.independentRunnable ? "支持" : "不支持"}</strong>
                               </div>
+                              <div className="module-action-meta-row">
+                                <span>Swarm</span>
+                                <strong>${selectedControlModule.supportsSwarm ? "支持" : "不支持"}</strong>
+                              </div>
+                              <div className="module-action-meta-row">
+                                <span>Swarm 角色</span>
+                                <code>${selectedControlModule.swarmRole || "leaf"}</code>
+                              </div>
+                              <div className="module-action-meta-row">
+                                <span>Swarm 深度</span>
+                                <strong>${selectedControlModule.swarmMaxDepth || 1}</strong>
+                              </div>
+                              <div className="module-action-meta-row">
+                                <span>Swarm 子分支</span>
+                                <strong>${selectedControlModule.swarmMaxChildren || 1}</strong>
+                              </div>
                             </div>
                             ${selectedControlModule.scope
                               ? html`<div className="avatar-detail-desc">${selectedControlModule.scope}</div>`
@@ -1290,6 +1372,33 @@ function App() {
                                   </div>
                                 `
                               : html`<div className="module-empty">此模块未绑定工具。</div>`}
+                            ${selectedControlModule.supportsSwarm
+                              ? html`
+                                  <div className="module-empty">
+                                    join=${selectedControlModule.swarmJoinPolicy || "merge"} · failure=${selectedControlModule.swarmFailurePolicy || "serial_replay"}
+                                  </div>
+                                  ${(selectedControlModule.swarmChildren || []).length
+                                    ? html`
+                                        <div className="module-tool-list">
+                                          ${(selectedControlModule.swarmChildren || []).map((child) => {
+                                            const pluginId = String(child.pluginId || child.plugin_id || "").trim();
+                                            const label = String(child.label || pluginId || "").trim() || pluginId;
+                                            const keywords = Array.isArray(child.keywords) ? child.keywords : [];
+                                            const hint = [
+                                              pluginId ? `plugin=${pluginId}` : "",
+                                              child.required ? "required=true" : "required=false",
+                                              child.propagate ? "propagate=true" : "propagate=false",
+                                              keywords.length ? `keywords=${keywords.join(",")}` : "",
+                                            ]
+                                              .filter(Boolean)
+                                              .join(" | ");
+                                            return html`<span key=${`${selectedControlModule.key}-swarm-child-${pluginId || label}`} className="capability-chip swarm" title=${hint || label}>${label}</span>`;
+                                          })}
+                                        </div>
+                                      `
+                                    : html`<div className="module-empty">当前 Swarm 未配置子分支。</div>`}
+                                `
+                              : null}
                             <div className="module-action-row">
                               <button
                                 className="ghost"
@@ -1387,6 +1496,26 @@ function App() {
                               <code>${selectedAvatarModule.supportsSwarm ? selectedAvatarModule.swarmMode || "generic" : "none"}</code>
                             </div>
                             <div className="avatar-detail-row">
+                              <span>Swarm 角色</span>
+                              <code>${selectedAvatarModule.supportsSwarm ? selectedAvatarModule.swarmRole || "parent" : "leaf"}</code>
+                            </div>
+                            <div className="avatar-detail-row">
+                              <span>Swarm 深度</span>
+                              <strong>${selectedAvatarModule.supportsSwarm ? selectedAvatarModule.swarmMaxDepth || 1 : 1}</strong>
+                            </div>
+                            <div className="avatar-detail-row">
+                              <span>Swarm 子分支上限</span>
+                              <strong>${selectedAvatarModule.supportsSwarm ? selectedAvatarModule.swarmMaxChildren || 1 : 1}</strong>
+                            </div>
+                            <div className="avatar-detail-row">
+                              <span>Join 策略</span>
+                              <code>${selectedAvatarModule.supportsSwarm ? selectedAvatarModule.swarmJoinPolicy || "merge" : "none"}</code>
+                            </div>
+                            <div className="avatar-detail-row">
+                              <span>失败策略</span>
+                              <code>${selectedAvatarModule.supportsSwarm ? selectedAvatarModule.swarmFailurePolicy || "serial_replay" : "none"}</code>
+                            </div>
+                            <div className="avatar-detail-row">
                               <span>Quality</span>
                               <code>${selectedAvatarModule.qualityProfile || "-"}</code>
                             </div>
@@ -1452,6 +1581,33 @@ function App() {
                                 </div>
                               `
                             : html`<div className="module-empty">此插件未绑定工具。</div>`}
+                          ${selectedAvatarModule.supportsSwarm
+                            ? html`
+                                <div className="module-empty">
+                                  Swarm 默认状态：${selectedAvatarModule.swarmEnabledByDefault ? "开启" : "关闭（可手动触发）"}
+                                </div>
+                                ${(selectedAvatarModule.swarmChildren || []).length
+                                  ? html`
+                                      <div className="avatar-capability-list">
+                                        ${(selectedAvatarModule.swarmChildren || []).map((child) => {
+                                          const label = String(child.label || child.pluginId || "").trim() || String(child.pluginId || "");
+                                          const pluginId = String(child.pluginId || "").trim();
+                                          const hint = [
+                                            pluginId ? `plugin=${pluginId}` : "",
+                                            child.required ? "required=true" : "required=false",
+                                            child.propagate ? "propagate=true" : "propagate=false",
+                                            Array.isArray(child.keywords) && child.keywords.length ? `keywords=${child.keywords.join(",")}` : "",
+                                            child.objective ? `objective=${child.objective}` : "",
+                                          ]
+                                            .filter(Boolean)
+                                            .join(" | ");
+                                          return html`<span key=${`${selectedAvatarModule.key}-swarm-child-${pluginId || label}`} className="capability-chip swarm" title=${hint || label}>${label}</span>`;
+                                        })}
+                                      </div>
+                                    `
+                                  : html`<div className="module-empty">当前 Swarm 未配置子分支。</div>`}
+                              `
+                            : null}
                           <div className="avatar-capability-list">
                             ${(selectedAvatarModule.capabilityTags || []).length
                               ? selectedAvatarModule.capabilityTags.map(
@@ -1488,6 +1644,21 @@ function App() {
                                     <div className="plugin-run-result-head">
                                       model=${pluginRunResult.effective_model || "-"} · tools=${(pluginRunResult.tool_events || []).length}
                                     </div>
+                                    ${pluginRunResult?.decision && pluginRunResult.decision.swarm
+                                      ? html`
+                                          <div className="plugin-run-result-head">
+                                            swarm: nodes=${pluginRunResult.decision.swarm.node_count || 0}
+                                            · branches=${pluginRunResult.decision.swarm.branch_count || 0}
+                                            · failed=${pluginRunResult.decision.swarm.failed_node_count || 0}
+                                            · degraded=${pluginRunResult.decision.swarm.degraded_node_count || 0}
+                                          </div>
+                                          <div className="module-empty">
+                                            mode=${pluginRunResult.decision.swarm.swarm_mode || "none"}
+                                            · role=${pluginRunResult.decision.swarm.swarm_role || "-"}
+                                            · join=${pluginRunResult.decision.swarm.join_policy || "-"}
+                                          </div>
+                                        `
+                                      : null}
                                     <div className="plugin-run-result-text">${pluginRunResult.ok ? String(pluginRunResult.text || "") : String(pluginRunResult.error || "运行失败")}</div>
                                     ${Array.isArray(pluginRunResult.notes) && pluginRunResult.notes.length
                                       ? html`

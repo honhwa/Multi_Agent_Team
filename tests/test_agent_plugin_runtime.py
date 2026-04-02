@@ -103,12 +103,19 @@ def _build_runtime(
     tmp_path: Path,
     monkeypatch,
     *,
-    manifest_payload: dict[str, Any],
+    manifest_payload: dict[str, Any] | None = None,
+    manifest_payloads: list[dict[str, Any]] | None = None,
     scripted_messages: list[_FakeMessage],
 ):
     backend = _FakeBackend(scripted_messages)
     manifest_dir = tmp_path / "manifests"
-    _write_manifest(manifest_dir / f"{manifest_payload['plugin_id']}.json", manifest_payload)
+    payloads = list(manifest_payloads or [])
+    if manifest_payload is not None:
+        payloads.append(dict(manifest_payload))
+    if not payloads:
+        raise ValueError("manifest payload is required")
+    for payload in payloads:
+        _write_manifest(manifest_dir / f"{payload['plugin_id']}.json", payload)
 
     monkeypatch.setattr(plugin_runtime_mod, "create_office_runtime_backend", lambda *args, **kwargs: backend)
     monkeypatch.setattr(
@@ -207,3 +214,83 @@ def test_tool_expectation_nudges_when_no_tool_call(tmp_path, monkeypatch):
 
     assert backend.recovery_calls >= 1
     assert any(str(note).startswith("tool_expectation_not_met") for note in result["notes"])
+
+
+def test_swarm_parent_child_tree_is_returned(tmp_path, monkeypatch):
+    runtime, _backend = _build_runtime(
+        tmp_path,
+        monkeypatch,
+        manifest_payloads=[
+            {
+                "plugin_id": "coordinator_agent",
+                "title": "Coordinator Agent",
+                "description": "coord",
+                "supports_swarm": True,
+                "swarm_mode": "supervisor",
+                "tool_profile": "none",
+                "allowed_tools": [],
+                "max_tool_rounds": 0,
+                "system_prompt": "你是 Coordinator Agent。",
+            },
+            {
+                "plugin_id": "planner_agent",
+                "title": "Planner Agent",
+                "description": "planner",
+                "supports_swarm": True,
+                "swarm_mode": "plan-then-swarm",
+                "tool_profile": "none",
+                "allowed_tools": [],
+                "max_tool_rounds": 0,
+                "system_prompt": "你是 Planner Agent。",
+            },
+        ],
+        scripted_messages=[
+            _FakeMessage(content='{"objective":"coord","constraints":[],"plan":[],"watchouts":[],"success_signals":[]}'),
+            _FakeMessage(content='{"objective":"plan","constraints":[],"plan":[],"watchouts":[],"success_signals":[]}'),
+        ],
+    )
+
+    result = runtime.run_plugin(
+        plugin_id="coordinator_agent",
+        message="请用 swarm 父子分支并行拆解这个任务。",
+        settings=plugin_runtime_mod.ChatSettings(model="gpt-test", max_output_tokens=1200, max_context_turns=20, enable_tools=False),
+        context={"swarm": {"enabled": True, "max_depth": 2, "max_children": 2}},
+    )
+
+    assert result["ok"] is True
+    swarm = dict((result.get("decision") or {}).get("swarm") or {})
+    assert swarm.get("enabled") is True
+    assert int(swarm.get("node_count") or 0) >= 2
+    tree = dict(swarm.get("tree") or {})
+    assert tree.get("plugin_id") == "coordinator_agent"
+    assert len(list(tree.get("children") or [])) >= 1
+    assert any(str(note).startswith("swarm_enabled:coordinator_agent") for note in result.get("notes") or [])
+
+
+def test_swarm_can_be_disabled_for_swarm_plugin(tmp_path, monkeypatch):
+    runtime, _backend = _build_runtime(
+        tmp_path,
+        monkeypatch,
+        manifest_payload={
+            "plugin_id": "researcher_agent",
+            "title": "Researcher Agent",
+            "description": "research",
+            "supports_swarm": True,
+            "swarm_mode": "parallel-research",
+            "tool_profile": "none",
+            "allowed_tools": [],
+            "max_tool_rounds": 0,
+            "system_prompt": "你是 Researcher Agent。",
+        },
+        scripted_messages=[_FakeMessage(content='{"summary":"ok","evidence":[],"sources":[],"open_questions":[],"next_steps":[]}')],
+    )
+
+    result = runtime.run_plugin(
+        plugin_id="researcher_agent",
+        message="swarm 测试，但这次禁用。",
+        settings=plugin_runtime_mod.ChatSettings(model="gpt-test", max_output_tokens=900, max_context_turns=20, enable_tools=False),
+        context={"swarm": {"enabled": False}},
+    )
+
+    assert result["ok"] is True
+    assert "swarm" not in dict(result.get("decision") or {})

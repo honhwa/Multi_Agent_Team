@@ -130,7 +130,10 @@ flowchart LR
 
 ## Swarm and Tool Status
 
-- Swarm is currently a formal capability inside `research_module` (parallel branch execution + join + serial replay degradation).
+- Swarm now has two formal paths:
+  - `research_module` internal Swarm (parallel branch execution + join + serial replay degradation).
+  - `AgentPluginRuntime` plugin-level Swarm (manifest-driven parent-child branches, bounded recursive depth, join policy, and serial replay fallback).
 - `office_module` has internal role orchestration (`Router/Planner/Worker/Reviewer/Revision`), but this is module-internal, not kernel-level 12-plugin dispatch.
 - Tool execution path is `KernelHost.dispatch -> business module -> tool_runtime_module -> ToolBus/ToolRegistry -> ProviderRegistry`.
 - Providers are assembled in `app/bootstrap/assemble.py` (`local_workspace`, `local_file`, `http_web`, `patch_write`, optional `session_store`).
+- `POST /api/agent-plugins/run` supports standalone plugin runs; for swarm-capable plugins, pass `context.swarm.enabled=true` and optional `max_depth/max_children/join_policy/failure_policy`.

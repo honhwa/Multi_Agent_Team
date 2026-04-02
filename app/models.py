@@ -377,6 +377,13 @@ class AgentPluginInfo(BaseModel):
     sprite_role: str = "worker"
     supports_swarm: bool = False
     swarm_mode: str = "none"
+    swarm_role: str = "leaf"
+    swarm_enabled_by_default: bool = False
+    swarm_max_depth: int = 1
+    swarm_max_children: int = 1
+    swarm_join_policy: str = "none"
+    swarm_failure_policy: str = "none"
+    swarm_children: list[dict[str, Any]] = Field(default_factory=list)
     capability_tags: list[str] = Field(default_factory=list)
     tool_profile: str = "none"
     allowed_tools: list[str] = Field(default_factory=list)
