@@ -1,8 +1,8 @@
-# Officetool (Agent OS)
+# Multi Agent Team (Agent OS)
 
 [English README](README.en.md)
 
-[![Regression CI](https://github.com/jonhncatt/multi-agents-based-os/actions/workflows/regression-ci.yml/badge.svg?branch=main)](https://github.com/jonhncatt/multi-agents-based-os/actions/workflows/regression-ci.yml)
+[![Regression CI](https://github.com/jonhncatt/Multi_Agent_Team/actions/workflows/regression-ci.yml/badge.svg?branch=main)](https://github.com/jonhncatt/Multi_Agent_Team/actions/workflows/regression-ci.yml)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](requirements.txt)
 [![FastAPI](https://img.shields.io/badge/FastAPI-app-009688.svg)](https://fastapi.tiangolo.com/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -71,15 +71,18 @@ flowchart LR
 
 ```bash
 cd /Users/<YOU>/Desktop
-git clone https://github.com/jonhncatt/multi-agents-based-os.git
-cd multi-agents-based-os
+git clone https://github.com/jonhncatt/Multi_Agent_Team.git
+cd Multi_Agent_Team
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# 编辑 .env，填入 OPENAI_API_KEY
-# 如需接公司网关，再填 OFFICETOOL_OPENAI_BASE_URL=https://<YOUR_COMPANY_API_BASE>/v1
-# 如需内部根证书，再填 OFFICETOOL_CA_CERT_PATH=/absolute/path/to/your-root-ca.cer
+# 编辑 .env，至少配置以下之一：
+#   MULTI_AGENT_TEAM_PROVIDER_OPENAI_API_KEY=...
+#   MULTI_AGENT_TEAM_LLM_API_KEY=...
+#   OPENAI_API_KEY=... (通用兼容)
+# 如需接公司网关，再填 MULTI_AGENT_TEAM_LLM_BASE_URL=https://<YOUR_COMPANY_API_BASE>/v1
+# 如需内部根证书，再填 MULTI_AGENT_TEAM_LLM_CA_CERT_PATH=/absolute/path/to/your-root-ca.cer
 ./run.sh
 ```
 
@@ -94,20 +97,20 @@ cp .env.example .env
 实验台地址：<http://127.0.0.1:8081>
 
 - 应用会自动读取项目根目录 `.env`，无需再手动 `export` 或 `setx`
-- 未配置 `OPENAI_API_KEY` 也会启动并监听端口，但 `/api/chat` 会报错直到配置好 key
+- 未配置可用 API key 也会启动并监听端口，但 `/api/chat` 会报错直到配置好 key
 
 ### Windows 启动（PowerShell）
 
 ```powershell
 cd $HOME\Desktop
-git clone https://github.com/jonhncatt/multi-agents-based-os.git
-cd .\multi-agents-based-os
+git clone https://github.com/jonhncatt/Multi_Agent_Team.git
+cd .\Multi_Agent_Team
 
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 Copy-Item .env.example .env
-# 编辑 .env（填 OPENAI_API_KEY；需要的话再填公司网关和 CA）
+# 编辑 .env（填 provider API key；需要的话再填公司网关和 CA）
 
 .\run.ps1
 ```
@@ -116,14 +119,14 @@ Copy-Item .env.example .env
 
 ```bat
 cd %USERPROFILE%\Desktop
-git clone https://github.com/jonhncatt/multi-agents-based-os.git
-cd multi-agents-based-os
+git clone https://github.com/jonhncatt/Multi_Agent_Team.git
+cd Multi_Agent_Team
 
 py -3.11 -m venv .venv
 .venv\Scripts\python.exe -m pip install --upgrade pip
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 copy .env.example .env
-rem 编辑 .env（填 OPENAI_API_KEY；需要的话再填公司网关和 CA）
+rem 编辑 .env（填 provider API key；需要的话再填公司网关和 CA）
 
 powershell -ExecutionPolicy Bypass -File .\run.ps1
 ```
@@ -133,7 +136,7 @@ powershell -ExecutionPolicy Bypass -File .\run.ps1
 首次配置完成后，后续每天只需要下面几步：
 
 ```powershell
-cd $HOME\Desktop\multi-agents-based-os
+cd $HOME\Desktop\Multi_Agent_Team
 git pull
 .\run.ps1
 ```
@@ -263,15 +266,15 @@ netstat -ano | findstr :8080
 
 如果没有输出，通常是服务没启动成功。常见原因包括端口被占用、Python/依赖未安装、或启动命令未在项目根目录执行。
 
-如果 `OPENAI_API_KEY` 没有配置，启动脚本会打印警告（但不会阻止监听）：
+如果可用 API key 没有配置，启动脚本会打印警告（但不会阻止监听）：
 
 ```text
-WARN: OPENAI_API_KEY is not set. Server will start, but /api/chat requests will fail until key is configured.
+WARN: No API key found for provider=openai. Expected env: MULTI_AGENT_TEAM_PROVIDER_OPENAI_API_KEY (or MULTI_AGENT_TEAM_LLM_API_KEY / OPENAI_API_KEY).
 ```
 
 建议按下面顺序排查：
 
-1. 检查 `.env` 是否存在且包含 `OPENAI_API_KEY=...`
+1. 检查 `.env` 是否存在且包含 provider 对应的 API key（例如 `MULTI_AGENT_TEAM_PROVIDER_OPENAI_API_KEY=...`，或 `MULTI_AGENT_TEAM_LLM_API_KEY=...`）
 2. 在项目根目录执行启动命令（macOS/Linux: `./run.sh`；Windows: `.\run.ps1`），确认终端出现 `Uvicorn running on http://0.0.0.0:8080`
 3. 用健康检查验证服务（macOS/Linux: `curl http://127.0.0.1:8080/api/health`；Windows PowerShell: `Invoke-RestMethod http://127.0.0.1:8080/api/health`）
 4. 浏览器务必使用 `http://127.0.0.1:8080`（不要用 `https://`）
@@ -284,14 +287,14 @@ taskkill /PID <PID> /F
 
 清理后再启动 `.\run.ps1`。
 
-检查 `OFFICETOOL_EXTRA_ALLOWED_ROOTS` 是否生效：
+检查 `MULTI_AGENT_TEAM_EXTRA_ALLOWED_ROOTS` 是否生效：
 
 ```powershell
-cd $HOME\Desktop\multi-agents-based-os
+cd $HOME\Desktop\Multi_Agent_Team
 .\.venv\Scripts\python.exe -c "from app.config import load_config; c=load_config(); print(c.allowed_roots)"
 ```
 
-默认额外可读目录按平台推导，目前会包含工作台目录和下载目录（例如 macOS/Windows 常见的 `~/Desktop/workbench`、`~/Downloads`；Linux 会优先读取 XDG user dirs）。如果你要读别的目录，再通过 `OFFICETOOL_EXTRA_ALLOWED_ROOTS` 追加。前端设置栏和 `/api/health` 会显示当前生效的路径策略与允许根目录。
+默认额外可读目录按平台推导，目前会包含工作台目录和下载目录（例如 macOS/Windows 常见的 `~/Desktop/workbench`、`~/Downloads`；Linux 会优先读取 XDG user dirs）。如果你要读别的目录，再通过 `MULTI_AGENT_TEAM_EXTRA_ALLOWED_ROOTS` 追加。前端设置栏和 `/api/health` 会显示当前生效的路径策略与允许根目录。
 
 如果助手仍说“只能看当前目录”，先确认：
 
@@ -341,22 +344,22 @@ cd $HOME\Desktop\multi-agents-based-os
 
 安全约束：
 
-- 命令白名单（`OFFICETOOL_ALLOWED_COMMANDS`）
-- 路径默认只能在 workspace 根目录内；可用 `OFFICETOOL_EXTRA_ALLOWED_ROOTS` 扩展
-- 可用 `OFFICETOOL_ALLOW_ANY_PATH=true` 完全放开（仅建议内网可信环境；兼容旧名 `OFFCIATOOL_ALLOW_ANY_PATH`）
-- 联网抓取可用 `OFFICETOOL_WEB_ALLOWED_DOMAINS` 限定域名白名单（为空则不限制）
+- 命令白名单（`MULTI_AGENT_TEAM_ALLOWED_COMMANDS`）
+- 路径默认只能在 workspace 根目录内；可用 `MULTI_AGENT_TEAM_EXTRA_ALLOWED_ROOTS` 扩展
+- 可用 `MULTI_AGENT_TEAM_ALLOW_ANY_PATH=true` 完全放开（仅建议内网可信环境）
+- 联网抓取可用 `MULTI_AGENT_TEAM_WEB_ALLOWED_DOMAINS` 限定域名白名单（为空则不限制）
 - 网页抓取会自动从 HTML 提取正文文本；若目标站点是 JS 动态渲染/反爬页面，仍可能信息较少
 - `fetch_web` 遇到 PDF 会尽量抽取正文文本；需要原始文件时请用 `download_web_file`
 - 上传附件会把“本地路径”注入上下文；压缩包建议直接 `extract_zip(zip_path=该路径, ...)`
 - 同一会话内，若本轮未显式携带附件，但提问明显在引用“这个/上个附件”，后端会自动关联最近活动附件；若不想关联，可直接说“忽略之前附件/清空附件”
 - 同一会话内，若用户上一轮已直接粘贴原文，本轮是“翻译/提炼/改写”类跟进，后端会默认复用上一轮原文上下文，不要求重复粘贴
 - 对 `.msg` 邮件中附件（xlsx/png 等）可先 `extract_msg_attachments(msg_path=该路径, ...)` 再读取
-- 可用 `OFFICETOOL_ENABLE_SESSION_TOOLS=false` 关闭会话检索工具（`list_sessions/read_session_history`）
+- 可用 `MULTI_AGENT_TEAM_ENABLE_SESSION_TOOLS=false` 关闭会话检索工具（`list_sessions/read_session_history`）
 - 联网任务建议先 `search_web` 再 `fetch_web`，可减少“先问网址”的来回交互
 - 对“新闻/实时”类问题，后端会自动做一次 `search_web` 预搜索并把候选链接注入上下文，减少反复追问
 - 对“棒球新闻”等体育场景，`search_web` 会优先尝试 MLB/ESPN/Yahoo 等 RSS 源；搜索页被反爬时也会回退到可访问入口
 - 结构化证据包会区分 `Evidence` 与 `Search Candidates`：前者表示已抓取正文或本地证据，后者只是搜索候选链接，不应单独视为已证实来源
-- 如遇证书链异常，可设置 `OFFICETOOL_WEB_CA_CERT_PATH` 指定 CA；若仍失败可临时用 `OFFICETOOL_WEB_SKIP_TLS_VERIFY=true`（仅建议内网）
+- 如遇证书链异常，可设置 `MULTI_AGENT_TEAM_WEB_CA_CERT_PATH` 指定 CA；若仍失败可临时用 `MULTI_AGENT_TEAM_WEB_SKIP_TLS_VERIFY=true`（仅建议内网）
 - 若未配置上述参数且遇到证书校验失败，`fetch_web` 也会自动降级重试一次（返回 `warning` 提示）
 - 若要“完整复制一个文件”，请让助手使用 `copy_file`，不要用 `read_text_file + write_text_file`（前者是全量复制，后者可能按 `max_chars` 截断）
 - 解压 zip 请使用 `extract_zip`（内置路径穿越防护与体积/文件数限制）
@@ -428,7 +431,7 @@ HTTP / UI
 - GitHub Actions 也会运行同一套非 optional regression cases，作为 push / PR 的基础检查
 - 默认运行工具级 regression cases，不依赖在线模型
 - 可选 case：
-  - `OPENAI_API_KEY=... python3 scripts/run_evals.py --include-optional`
+  - `MULTI_AGENT_TEAM_LLM_API_KEY=... python3 scripts/run_evals.py --include-optional`（或使用 `MULTI_AGENT_TEAM_PROVIDER_<PROVIDER>_API_KEY`）
   - `EVAL_NVME_PDF=/absolute/path/to/spec.pdf python3 scripts/run_evals.py --include-optional`
 - 当前题库位置：
   - [evals/cases.json](evals/cases.json)
@@ -489,7 +492,8 @@ HTTP / UI
 - `最大输出 tokens`：单次回复的 token 上限。默认 `128000`（网关若有限制会报错）。
 - `上下文消息条数`：每次请求带入最近多少条历史消息。默认 `2000`，页面最高可设置到 `2000`。
 - `回答长度`：输出风格开关（短/中/长），用于控制回答详细程度，不等于固定 token 数。
-- `执行环境`：`Host（本机）` 或 `Docker（沙盒）`。默认跟随后端 `OFFICETOOL_EXECUTION_MODE`；也可在页面按请求覆盖。
+- 左侧会话控制区支持 `模型预设 + 自定义模型名`，可在运行后直接切换到 Qwen（例如 `qwen2.5:14b`）。
+- `执行环境`：`Host（本机）` 或 `Docker（沙盒）`。默认跟随后端 `MULTI_AGENT_TEAM_EXECUTION_MODE`；也可在页面按请求覆盖。
 - `Token 统计`：
   - 输入 tokens = 你发给模型的内容（system + history + 当前问题 + 工具结果等）
   - 输出 tokens = 模型回给你的内容
@@ -497,19 +501,22 @@ HTTP / UI
 
 ### API 地址配置
 
-- 默认直接访问 OpenAI 官方地址
-- 如需脱敏并改走公司代理，请在 `.env` 设置：`OFFICETOOL_OPENAI_BASE_URL`
-- 如需公司 CA 证书，请设置：`OFFICETOOL_CA_CERT_PATH`（等价 `curl --cacert`）
-- 如需强制走 Chat Completions/tool calling 语义，请设置：`OFFICETOOL_USE_RESPONSES_API=false`
-- 模型 fallback 顺序可设置：`OFFICETOOL_MODEL_FALLBACKS=modelA,modelB`
-- 失败后模型冷却参数：`OFFICETOOL_MODEL_COOLDOWN_BASE_SEC`、`OFFICETOOL_MODEL_COOLDOWN_MAX_SEC`
-- 摘要模型变量为 `OFFICETOOL_SUMMARY_MODEL`（兼容别名 `OFFICETOOL_SUMMARY_MODE`）
-- 温度默认不强制传参；如需指定可设置 `OFFICETOOL_TEMPERATURE`（例如 `0` 或 `1`）
-- 如网页抓取报 `CERTIFICATE_VERIFY_FAILED`（如 basic constraints not marked critical），请设置：`OFFICETOOL_WEB_SKIP_TLS_VERIFY=true`
-- 会话并发队列参数：`OFFICETOOL_MAX_CONCURRENT_RUNS`、`OFFICETOOL_RUN_QUEUE_WAIT_NOTICE_MS`
-- 执行环境参数（`run_shell`）：`OFFICETOOL_EXECUTION_MODE`（`host`/`docker`）、`OFFICETOOL_DOCKER_IMAGE`、`OFFICETOOL_DOCKER_NETWORK`、`OFFICETOOL_DOCKER_MEMORY`、`OFFICETOOL_DOCKER_CPUS`、`OFFICETOOL_DOCKER_PIDS_LIMIT`、`OFFICETOOL_DOCKER_CONTAINER_PREFIX`
-- 工具上下文裁剪参数：`OFFICETOOL_TOOL_RESULT_SOFT_TRIM_CHARS`、`OFFICETOOL_TOOL_RESULT_HARD_CLEAR_CHARS`、`OFFICETOOL_TOOL_RESULT_HEAD_CHARS`、`OFFICETOOL_TOOL_RESULT_TAIL_CHARS`、`OFFICETOOL_TOOL_CONTEXT_PRUNE_KEEP_LAST`
-- 模型价格来源：OpenAI 官方定价页（[openai.com/api/pricing](https://openai.com/api/pricing/)），当前内置表按 2026-02-12 的公开价格写入 `app/pricing.py`
+- 通过 `MULTI_AGENT_TEAM_LLM_PROVIDER` 选择模型供应商（如 `openai` / `deepseek` / `qwen` / `moonshot` / `openrouter` / `groq` / `ollama` / `custom`）
+- API key 推荐按 provider 配置：`MULTI_AGENT_TEAM_PROVIDER_<PROVIDER>_API_KEY`（例如 `MULTI_AGENT_TEAM_PROVIDER_OPENAI_API_KEY`）
+- 也可用通用 key：`MULTI_AGENT_TEAM_LLM_API_KEY`；也支持 `OPENAI_API_KEY`
+- 如需脱敏并改走公司代理，请设置：`MULTI_AGENT_TEAM_PROVIDER_<PROVIDER>_BASE_URL` 或 `MULTI_AGENT_TEAM_LLM_BASE_URL`
+- 如需公司 CA 证书，请设置：`MULTI_AGENT_TEAM_PROVIDER_<PROVIDER>_CA_CERT_PATH` 或 `MULTI_AGENT_TEAM_LLM_CA_CERT_PATH`（也可用 `MULTI_AGENT_TEAM_CA_CERT_PATH`）
+- 如需强制走 Chat Completions/tool calling 语义，请设置：`MULTI_AGENT_TEAM_PROVIDER_<PROVIDER>_USE_RESPONSES_API=false` 或 `MULTI_AGENT_TEAM_LLM_USE_RESPONSES_API=false`
+- `MULTI_AGENT_TEAM_LLM_AUTH_MODE` 支持 `auto / api_key / codex_auth`；其中 `codex_auth` 仅在 `MULTI_AGENT_TEAM_LLM_PROVIDER=openai` 时可用
+- 模型 fallback 顺序可设置：`MULTI_AGENT_TEAM_MODEL_FALLBACKS=modelA,modelB`
+- 失败后模型冷却参数：`MULTI_AGENT_TEAM_MODEL_COOLDOWN_BASE_SEC`、`MULTI_AGENT_TEAM_MODEL_COOLDOWN_MAX_SEC`
+- 摘要模型变量为 `MULTI_AGENT_TEAM_SUMMARY_MODEL`（兼容别名 `MULTI_AGENT_TEAM_SUMMARY_MODE`）
+- 温度默认不强制传参；如需指定可设置 `MULTI_AGENT_TEAM_PROVIDER_<PROVIDER>_TEMPERATURE` 或 `MULTI_AGENT_TEAM_LLM_TEMPERATURE`（也可用 `MULTI_AGENT_TEAM_TEMPERATURE`）
+- 如网页抓取报 `CERTIFICATE_VERIFY_FAILED`（如 basic constraints not marked critical），请设置：`MULTI_AGENT_TEAM_WEB_SKIP_TLS_VERIFY=true`
+- 会话并发队列参数：`MULTI_AGENT_TEAM_MAX_CONCURRENT_RUNS`、`MULTI_AGENT_TEAM_RUN_QUEUE_WAIT_NOTICE_MS`
+- 执行环境参数（`run_shell`）：`MULTI_AGENT_TEAM_EXECUTION_MODE`（`host`/`docker`）、`MULTI_AGENT_TEAM_DOCKER_IMAGE`、`MULTI_AGENT_TEAM_DOCKER_NETWORK`、`MULTI_AGENT_TEAM_DOCKER_MEMORY`、`MULTI_AGENT_TEAM_DOCKER_CPUS`、`MULTI_AGENT_TEAM_DOCKER_PIDS_LIMIT`、`MULTI_AGENT_TEAM_DOCKER_CONTAINER_PREFIX`
+- 工具上下文裁剪参数：`MULTI_AGENT_TEAM_TOOL_RESULT_SOFT_TRIM_CHARS`、`MULTI_AGENT_TEAM_TOOL_RESULT_HARD_CLEAR_CHARS`、`MULTI_AGENT_TEAM_TOOL_RESULT_HEAD_CHARS`、`MULTI_AGENT_TEAM_TOOL_RESULT_TAIL_CHARS`、`MULTI_AGENT_TEAM_TOOL_CONTEXT_PRUNE_KEEP_LAST`
+- 模型价格来源：当前内置表仍按 OpenAI 官方定价页（[openai.com/api/pricing](https://openai.com/api/pricing/)）维护，第三方 provider 可按需扩展 `app/pricing.py`
 
 > 注意：Docker 模式需要本机已安装并启动 Docker Desktop；当前先作用于 `run_shell` 命令执行链路。
 

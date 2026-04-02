@@ -468,8 +468,9 @@ _INITIAL_CONTENT_TRIAGE_HINTS = (
     "can you make sense",
 )
 
-_ROUTE_TRACE_ENV = "OFFICETOOL_ROUTE_TRACE"
-_route_trace_logger = logging.getLogger("officetool.router")
+_ROUTE_TRACE_ENV = "MULTI_AGENT_TEAM_ROUTE_TRACE"
+_ROUTE_TRACE_ENV_LEGACY = "MULTI_AGENT_TEAM_ROUTE_TRACE"
+_route_trace_logger = logging.getLogger("multi_agent_team.router")
 
 @dataclass
 class ExecutionState:
@@ -671,7 +672,12 @@ class OfficeAgent:
         self.tools = tool_executor or self._capability_runtime.tools
         self._auth_manager = OpenAIAuthManager(config)
         self._kernel_runtime = kernel_runtime or build_kernel_runtime(config)
-        self._product_profile_key = str(os.environ.get("OFFICETOOL_APP_PROFILE") or "").strip().lower() or "kernel_robot"
+        self._product_profile_key = (
+            str(
+                os.environ.get("MULTI_AGENT_TEAM_APP_PROFILE") or ""
+            ).strip().lower()
+            or "kernel_robot"
+        )
 
         try:
             from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -6924,7 +6930,12 @@ class OfficeAgent:
         return updated_route, updated_raw, notes, actions
 
     def _route_trace_enabled(self) -> bool:
-        return str(os.environ.get(_ROUTE_TRACE_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}
+        raw = (
+            os.environ.get(_ROUTE_TRACE_ENV)
+            or os.environ.get(_ROUTE_TRACE_ENV_LEGACY)
+            or ""
+        )
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
     def _record_route_trace(self, trace: RouteTrace) -> None:
         try:

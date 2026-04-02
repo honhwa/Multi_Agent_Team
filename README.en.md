@@ -1,13 +1,13 @@
-# Officetool (Agent OS)
+# Multi Agent Team (Agent OS)
 
 [中文 README](README.md)
 
-[![Regression CI](https://github.com/jonhncatt/multi-agents-based-os/actions/workflows/regression-ci.yml/badge.svg?branch=main)](https://github.com/jonhncatt/multi-agents-based-os/actions/workflows/regression-ci.yml)
+[![Regression CI](https://github.com/jonhncatt/Multi_Agent_Team/actions/workflows/regression-ci.yml/badge.svg?branch=main)](https://github.com/jonhncatt/Multi_Agent_Team/actions/workflows/regression-ci.yml)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](requirements.txt)
 [![FastAPI](https://img.shields.io/badge/FastAPI-app-009688.svg)](https://fastapi.tiangolo.com/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Officetool is a local **Agent OS-style** system with a stable kernel, formal business modules, tool/provider contracts, quality gates, and operational runbooks.
+Multi Agent Team is a local **Agent OS-style** system with a stable kernel, formal business modules, tool/provider contracts, quality gates, and operational runbooks.
 
 ## What It Is
 
@@ -20,12 +20,16 @@ Officetool is a local **Agent OS-style** system with a stable kernel, formal bus
 ## Quick Start
 
 ```bash
-git clone https://github.com/jonhncatt/multi-agents-based-os.git
-cd multi-agents-based-os
+git clone https://github.com/jonhncatt/Multi_Agent_Team.git
+cd Multi_Agent_Team
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+# edit .env and set one API key:
+#   MULTI_AGENT_TEAM_PROVIDER_OPENAI_API_KEY=... (recommended)
+#   or MULTI_AGENT_TEAM_LLM_API_KEY=...
+#   or OPENAI_API_KEY=... (legacy compatibility)
 ./run.sh
 ```
 
