@@ -268,6 +268,14 @@ def _build_agent_plugin_descriptor(*, key: str, path: str, exists: bool) -> dict
         "tool_profile": "none",
         "allowed_tools": [],
         "max_tool_rounds": 0,
+        "quality_profile": "fallback",
+        "scope": "",
+        "stop_rules": [],
+        "response_mode": "text",
+        "response_keys": [],
+        "response_max_items": 0,
+        "tool_expect_keywords": [],
+        "tool_expect_min_calls": 0,
         "independent_runnable": bool(exists),
     }
 
@@ -324,6 +332,14 @@ def _build_control_panel_topology(
                         "tool_profile": "none",
                         "allowed_tools": [],
                         "max_tool_rounds": 0,
+                        "quality_profile": "unconfigured",
+                        "scope": "",
+                        "stop_rules": [],
+                        "response_mode": "text",
+                        "response_keys": [],
+                        "response_max_items": 0,
+                        "tool_expect_keywords": [],
+                        "tool_expect_min_calls": 0,
                         "independent_runnable": False,
                     }
                 )

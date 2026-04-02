@@ -381,6 +381,14 @@ class AgentPluginInfo(BaseModel):
     tool_profile: str = "none"
     allowed_tools: list[str] = Field(default_factory=list)
     max_tool_rounds: int = 0
+    quality_profile: str = ""
+    scope: str = ""
+    stop_rules: list[str] = Field(default_factory=list)
+    response_mode: str = "text"
+    response_keys: list[str] = Field(default_factory=list)
+    response_max_items: int = 0
+    tool_expect_keywords: list[str] = Field(default_factory=list)
+    tool_expect_min_calls: int = 0
     source_path: str = ""
     independent_runnable: bool = True
 

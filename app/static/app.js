@@ -120,6 +120,14 @@ function normalizeAgentPluginModules(health, pluginRegistry) {
         tool_profile: item?.tool_profile,
         allowed_tools: item?.allowed_tools,
         max_tool_rounds: item?.max_tool_rounds,
+        quality_profile: item?.quality_profile,
+        scope: item?.scope,
+        stop_rules: item?.stop_rules,
+        response_mode: item?.response_mode,
+        response_keys: item?.response_keys,
+        response_max_items: item?.response_max_items,
+        tool_expect_keywords: item?.tool_expect_keywords,
+        tool_expect_min_calls: item?.tool_expect_min_calls,
         independent_runnable: item?.independent_runnable,
       }));
   return sourcePlugins.map((item, index) => {
@@ -138,6 +146,24 @@ function normalizeAgentPluginModules(health, pluginRegistry) {
     const allowedTools = uniqueStrings(allowedToolsRaw.map((toolName) => String(toolName || "").trim()).filter(Boolean));
     const toolProfile = String(item?.tool_profile || registryItem?.tool_profile || "none").trim() || "none";
     const maxToolRounds = Number(item?.max_tool_rounds ?? registryItem?.max_tool_rounds ?? 0);
+    const responseKeysRaw = Array.isArray(item?.response_keys)
+      ? item.response_keys
+      : Array.isArray(registryItem?.response_keys)
+        ? registryItem.response_keys
+        : [];
+    const responseKeys = uniqueStrings(responseKeysRaw.map((key) => String(key || "").trim()).filter(Boolean));
+    const stopRulesRaw = Array.isArray(item?.stop_rules)
+      ? item.stop_rules
+      : Array.isArray(registryItem?.stop_rules)
+        ? registryItem.stop_rules
+        : [];
+    const stopRules = uniqueStrings(stopRulesRaw.map((line) => String(line || "").trim()).filter(Boolean));
+    const toolExpectKeywordsRaw = Array.isArray(item?.tool_expect_keywords)
+      ? item.tool_expect_keywords
+      : Array.isArray(registryItem?.tool_expect_keywords)
+        ? registryItem.tool_expect_keywords
+        : [];
+    const toolExpectKeywords = uniqueStrings(toolExpectKeywordsRaw.map((line) => String(line || "").trim()).filter(Boolean));
     return {
       key: moduleId,
       title: String(item?.title || registryItem?.title || "").trim() || titleFromAgentKey(moduleId),
@@ -156,6 +182,14 @@ function normalizeAgentPluginModules(health, pluginRegistry) {
       toolProfile,
       allowedTools,
       maxToolRounds: Number.isFinite(maxToolRounds) ? Math.max(0, Math.floor(maxToolRounds)) : 0,
+      qualityProfile: String(item?.quality_profile || registryItem?.quality_profile || "").trim(),
+      scope: String(item?.scope || registryItem?.scope || "").trim(),
+      stopRules,
+      responseMode: String(item?.response_mode || registryItem?.response_mode || "text").trim() || "text",
+      responseKeys,
+      responseMaxItems: Number(item?.response_max_items ?? registryItem?.response_max_items ?? 0) || 0,
+      toolExpectKeywords,
+      toolExpectMinCalls: Number(item?.tool_expect_min_calls ?? registryItem?.tool_expect_min_calls ?? 0) || 0,
       independentRunnable: Boolean(item?.independent_runnable ?? registryItem?.independent_runnable),
     };
   });
@@ -189,6 +223,14 @@ function buildModuleTopology(health, pluginRegistry) {
     toolProfile: "kernel-core",
     allowedTools: [],
     maxToolRounds: 0,
+    qualityProfile: "kernel-core",
+    scope: "系统主核（启动、上下文与状态管理）",
+    stopRules: [],
+    responseMode: "text",
+    responseKeys: [],
+    responseMaxItems: 0,
+    toolExpectKeywords: [],
+    toolExpectMinCalls: 0,
     independentRunnable: false,
     supportsSwarm: false,
     swarmMode: "none",
@@ -211,6 +253,14 @@ function buildModuleTopology(health, pluginRegistry) {
     toolProfile: "route-only",
     allowedTools: [],
     maxToolRounds: 0,
+    qualityProfile: "router-core",
+    scope: "意图路由与插件分发",
+    stopRules: [],
+    responseMode: "text",
+    responseKeys: [],
+    responseMaxItems: 0,
+    toolExpectKeywords: [],
+    toolExpectMinCalls: 0,
     independentRunnable: false,
     supportsSwarm: true,
     swarmMode: "fanout-router",
@@ -246,6 +296,14 @@ function buildModuleTopology(health, pluginRegistry) {
       toolProfile: "none",
       allowedTools: [],
       maxToolRounds: 0,
+      qualityProfile: "unconfigured",
+      scope: "",
+      stopRules: [],
+      responseMode: "text",
+      responseKeys: [],
+      responseMaxItems: 0,
+      toolExpectKeywords: [],
+      toolExpectMinCalls: 0,
       independentRunnable: false,
     };
   });
@@ -1122,7 +1180,7 @@ function App() {
                               ${mod.kindLabel ? html`<div className="module-tags">${mod.kindLabel}</div>` : null}
                               ${mod.roles && mod.roles.length ? html`<div className="module-tags">roles: ${mod.roles.join(" / ")}</div>` : null}
                               <div className="module-tags">
-                                tool profile: ${mod.toolProfile || "none"} · tools: ${(mod.allowedTools || []).length} · rounds: ${mod.maxToolRounds || 0}
+                                quality: ${mod.qualityProfile || "-"} · tool profile: ${mod.toolProfile || "none"} · tools: ${(mod.allowedTools || []).length} · rounds: ${mod.maxToolRounds || 0}
                               </div>
                             </div>
                             <div className="module-status-stack">
@@ -1144,6 +1202,10 @@ function App() {
                             </div>
                             <div className="module-action-meta-grid">
                               <div className="module-action-meta-row">
+                                <span>Quality</span>
+                                <code>${selectedControlModule.qualityProfile || "-"}</code>
+                              </div>
+                              <div className="module-action-meta-row">
                                 <span>Tool Profile</span>
                                 <code>${selectedControlModule.toolProfile || "none"}</code>
                               </div>
@@ -1160,6 +1222,64 @@ function App() {
                                 <strong>${selectedControlModule.independentRunnable ? "支持" : "不支持"}</strong>
                               </div>
                             </div>
+                            ${selectedControlModule.scope
+                              ? html`<div className="avatar-detail-desc">${selectedControlModule.scope}</div>`
+                              : null}
+                            ${(selectedControlModule.responseMode || "text") === "json"
+                              ? html`
+                                  <div className="module-action-meta-grid">
+                                    <div className="module-action-meta-row">
+                                      <span>Output</span>
+                                      <strong>JSON</strong>
+                                    </div>
+                                    <div className="module-action-meta-row">
+                                      <span>Keys</span>
+                                      <strong>${(selectedControlModule.responseKeys || []).length}</strong>
+                                    </div>
+                                    <div className="module-action-meta-row">
+                                      <span>Max Items</span>
+                                      <strong>${selectedControlModule.responseMaxItems || 0}</strong>
+                                    </div>
+                                  </div>
+                                  ${(selectedControlModule.responseKeys || []).length
+                                    ? html`
+                                        <div className="module-tool-list">
+                                          ${(selectedControlModule.responseKeys || []).map(
+                                            (keyName) =>
+                                              html`<span key=${`${selectedControlModule.key}-contract-${keyName}`} className="capability-chip plain">${keyName}</span>`,
+                                          )}
+                                        </div>
+                                      `
+                                    : null}
+                                `
+                              : html`<div className="module-empty">输出契约: text</div>`}
+                            ${(selectedControlModule.stopRules || []).length
+                              ? html`
+                                  <div className="module-tool-list">
+                                    ${(selectedControlModule.stopRules || []).map(
+                                      (rule, idx) =>
+                                        html`<span key=${`${selectedControlModule.key}-rule-${idx}`} className="capability-chip plain">${rule}</span>`,
+                                    )}
+                                  </div>
+                                `
+                              : null}
+                            ${selectedControlModule.toolExpectMinCalls > 0
+                              ? html`
+                                  <div className="module-empty">
+                                    工具触发策略: 关键词命中后至少 ${selectedControlModule.toolExpectMinCalls} 次工具调用
+                                  </div>
+                                  ${(selectedControlModule.toolExpectKeywords || []).length
+                                    ? html`
+                                        <div className="module-tool-list">
+                                          ${(selectedControlModule.toolExpectKeywords || []).map(
+                                            (keyword) =>
+                                              html`<span key=${`${selectedControlModule.key}-trigger-${keyword}`} className="capability-chip plain">${keyword}</span>`,
+                                          )}
+                                        </div>
+                                      `
+                                    : null}
+                                `
+                              : null}
                             ${(selectedControlModule.allowedTools || []).length
                               ? html`
                                   <div className="module-tool-list">
@@ -1267,6 +1387,10 @@ function App() {
                               <code>${selectedAvatarModule.supportsSwarm ? selectedAvatarModule.swarmMode || "generic" : "none"}</code>
                             </div>
                             <div className="avatar-detail-row">
+                              <span>Quality</span>
+                              <code>${selectedAvatarModule.qualityProfile || "-"}</code>
+                            </div>
+                            <div className="avatar-detail-row">
                               <span>Tool Profile</span>
                               <code>${selectedAvatarModule.toolProfile || "none"}</code>
                             </div>
@@ -1280,6 +1404,44 @@ function App() {
                             </div>
                           </div>
                           <div className="avatar-detail-note">调度入口：app/kernel/llm_router.py</div>
+                          ${selectedAvatarModule.scope
+                            ? html`<div className="avatar-detail-desc">${selectedAvatarModule.scope}</div>`
+                            : null}
+                          ${(selectedAvatarModule.responseMode || "text") === "json"
+                            ? html`
+                                <div className="avatar-capability-list">
+                                  ${(selectedAvatarModule.responseKeys || []).map(
+                                    (keyName) => html`<span key=${`${selectedAvatarModule.key}-response-key-${keyName}`} className="capability-chip plain">${keyName}</span>`,
+                                  )}
+                                </div>
+                              `
+                            : html`<div className="module-empty">输出契约: text</div>`}
+                          ${(selectedAvatarModule.stopRules || []).length
+                            ? html`
+                                <div className="avatar-capability-list">
+                                  ${(selectedAvatarModule.stopRules || []).map(
+                                    (rule, idx) => html`<span key=${`${selectedAvatarModule.key}-stop-rule-${idx}`} className="capability-chip plain">${rule}</span>`,
+                                  )}
+                                </div>
+                              `
+                            : null}
+                          ${selectedAvatarModule.toolExpectMinCalls > 0
+                            ? html`
+                                <div className="module-empty">
+                                  工具触发策略: 关键词命中后至少 ${selectedAvatarModule.toolExpectMinCalls} 次工具调用
+                                </div>
+                                ${(selectedAvatarModule.toolExpectKeywords || []).length
+                                  ? html`
+                                      <div className="avatar-capability-list">
+                                        ${(selectedAvatarModule.toolExpectKeywords || []).map(
+                                          (keyword) =>
+                                            html`<span key=${`${selectedAvatarModule.key}-trigger-${keyword}`} className="capability-chip plain">${keyword}</span>`,
+                                        )}
+                                      </div>
+                                    `
+                                  : null}
+                              `
+                            : null}
                           ${(selectedAvatarModule.allowedTools || []).length
                             ? html`
                                 <div className="avatar-capability-list">
@@ -1327,6 +1489,13 @@ function App() {
                                       model=${pluginRunResult.effective_model || "-"} · tools=${(pluginRunResult.tool_events || []).length}
                                     </div>
                                     <div className="plugin-run-result-text">${pluginRunResult.ok ? String(pluginRunResult.text || "") : String(pluginRunResult.error || "运行失败")}</div>
+                                    ${Array.isArray(pluginRunResult.notes) && pluginRunResult.notes.length
+                                      ? html`
+                                          <div className="plugin-run-result-head">
+                                            notes: ${pluginRunResult.notes.slice(0, 6).join(" | ")}
+                                          </div>
+                                        `
+                                      : null}
                                   </div>
                                 `
                               : null}

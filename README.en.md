@@ -84,6 +84,7 @@ Plugin runtime surface:
 
 - `GET /api/agent-plugins`: returns 12 plugin descriptors + tool model (`tool_profile / allowed_tools / max_tool_rounds`).
 - `POST /api/agent-plugins/run`: runs one plugin independently by `plugin_id` (router uses rule route; other plugins use restricted tool loops).
+- Legacy quality standards are applied per plugin at runtime (`quality_profile / scope / stop_rules / response_contract / tool_expectation`), including JSON contract coercion, tool-evidence nudges, and quality notes.
 
 ## Operations Entry
 

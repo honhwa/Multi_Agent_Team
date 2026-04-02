@@ -410,6 +410,7 @@ HTTP / UI
 - `Swarm` 当前是 `research_module` 内的正式能力：当 `request.context.swarm_inputs` 至少 2 条时，进入并行 branch + join 聚合；失败分支会触发 `serial_replay` 降级回放。
 - `office_module` 内部有 `Router/Planner/Worker/Reviewer/Revision` 多角色协作，但这是模块内编排，不是 Kernel 顶层“12 插件调度”主路径。
 - `Agent 插件 Tool 关系`：`app/agents/manifests/*.json` 为每个插件声明 `tool_profile / allowed_tools / max_tool_rounds`；运行时由 `app/agents/plugin_runtime.py` 解析，并暴露到 `GET /api/health`（control_panel_topology）与 `GET /api/agent-plugins`。
+- `Agent 插件质量标准`：运行时对每个插件应用 legacy 经验基线（`quality_profile / scope / stop_rules / response_contract / tool_expectation`），并在独立运行接口里执行 JSON 契约校验、工具取证 nudge 和质量 notes。
 - `插件独立运行`：`POST /api/agent-plugins/run` 可按 `plugin_id` 单独执行插件（含路由插件的 rule route 与其他插件的受限工具调用循环）。
 - Tool 执行主链路为：`KernelHost.dispatch -> business module -> tool_runtime_module -> ToolBus/ToolRegistry -> ProviderRegistry`。
 - Provider 在 `app/bootstrap/assemble.py` 装配（`local_workspace/local_file/http_web/patch_write/session_store`），再由业务模块按策略选择调用。
