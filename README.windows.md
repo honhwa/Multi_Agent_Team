@@ -10,7 +10,7 @@ py -3.11 -m venv .venv
 Copy-Item .env.example .env
 .venv\Scripts\python.exe -m pip install --upgrade pip
 .venv\Scripts\python.exe -m pip install -r requirements.txt
-.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8080
 ```
 
 打开：
@@ -38,6 +38,8 @@ MULTI_AGENT_TEAM_PROVIDER_OPENAI_CA_CERT_PATH=C:\certs\your-root-ca.pem
 ## 接口说明
 
 `/api/chat`、`/api/health`、`/api/chat/stream` 都是这个本地应用自己的接口，不是 OpenAI 官方 API。
+
+主工作台是 Codex 风格的单主 agent 界面：左侧线程，中间消息，底部常驻输入框和状态条。
 
 ## 如果你一定要激活虚拟环境
 

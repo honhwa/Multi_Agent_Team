@@ -14,11 +14,16 @@ if (!ReactRuntime || !ReactDomRuntime || !htmRuntime) {
   throw new Error("Local frontend vendor scripts are unavailable.");
 }
 
-const { useEffect, useRef, useState } = ReactRuntime;
+const { useEffect, useMemo, useRef, useState } = ReactRuntime;
 const { createRoot } = ReactDomRuntime;
 const html = htmRuntime.bind(ReactRuntime.createElement);
 
 const SESSION_STORAGE_KEY = "vintage_programmer.session_id";
+const STARTER_PROMPTS = [
+  "帮我疏通这个仓库的主链路",
+  "检查当前工作区并给我一个重构计划",
+  "把这个页面改得更像 Codex",
+];
 const DEFAULT_SETTINGS = {
   model: "",
   max_output_tokens: 128000,
@@ -29,11 +34,12 @@ const DEFAULT_SETTINGS = {
 
 function createMessage(role, text, options = {}) {
   return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: options.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     role,
     text,
     pending: Boolean(options.pending),
     error: Boolean(options.error),
+    createdAt: options.createdAt || "",
   };
 }
 
@@ -46,7 +52,7 @@ function createLog(type, text) {
   };
 }
 
-function formatSessionTime(raw) {
+function formatTime(raw) {
   const text = String(raw || "").trim();
   if (!text) return "";
   const date = new Date(text);
@@ -74,51 +80,81 @@ function parseSseChunk(chunk) {
   });
   if (!dataLines.length) return null;
   try {
-    return {
-      event,
-      payload: JSON.parse(dataLines.join("\n")),
-    };
+    return { event, payload: JSON.parse(dataLines.join("\n")) };
   } catch {
-    return {
-      event,
-      payload: { raw: dataLines.join("\n") },
-    };
+    return { event, payload: { raw: dataLines.join("\n") } };
   }
 }
 
 function roleLabel(role) {
-  if (role === "user") return "你";
+  if (role === "user") return "You";
   if (role === "assistant") return "Vintage Programmer";
-  return "系统";
+  return "System";
 }
 
 function pushLogWithLimit(setter, type, text) {
-  setter((prev) => [createLog(type, text), ...prev].slice(0, 20));
+  setter((prev) => [createLog(type, text), ...prev].slice(0, 24));
 }
 
 function fileNameFromHealth(health) {
+  const label = String(((health || {}).runtime_status || {}).workspace_label || "").trim();
+  if (label) return label;
   const path = String((health && health.workspace_root) || "").trim();
   if (!path) return "workspace";
-  const parts = path.split("/");
+  const parts = path.replace(/\\/g, "/").split("/");
   return parts[parts.length - 1] || "workspace";
+}
+
+function extractSessionMessages(data) {
+  const turns = Array.isArray(data.turns) ? data.turns : [];
+  return turns.map((turn) =>
+    createMessage(
+      String(turn.role || "").toLowerCase() === "user" ? "user" : "assistant",
+      String(turn.text || ""),
+      {
+        createdAt: String(turn.created_at || ""),
+      },
+    ),
+  );
+}
+
+function starterPromptChips(setDraft, handleSend) {
+  return STARTER_PROMPTS.map((text) =>
+    html`
+      <button
+        key=${text}
+        className="starter-chip"
+        type="button"
+        onClick=${() => {
+          setDraft(text);
+          setTimeout(() => handleSend(text), 0);
+        }}
+      >
+        ${text}
+      </button>
+    `,
+  );
 }
 
 function App() {
   const [health, setHealth] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [sessionId, setSessionId] = useState("");
+  const [sessionAgentState, setSessionAgentState] = useState({});
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [loadingSession, setLoadingSession] = useState(false);
-  const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [drawerView, setDrawerView] = useState("");
   const [logs, setLogs] = useState([]);
   const [lastResponse, setLastResponse] = useState(null);
   const [pendingUploads, setPendingUploads] = useState([]);
   const [chatSettings, setChatSettings] = useState(DEFAULT_SETTINGS);
   const [modelTouched, setModelTouched] = useState(false);
   const [lastError, setLastError] = useState("");
+  const [toolTimeline, setToolTimeline] = useState([]);
+  const [stageTimeline, setStageTimeline] = useState([]);
+  const [draftingPendingMessageId, setDraftingPendingMessageId] = useState("");
   const fileInputRef = useRef(null);
   const chatListRef = useRef(null);
 
@@ -146,7 +182,7 @@ function App() {
   useEffect(() => {
     if (!chatListRef.current) return;
     chatListRef.current.scrollTop = chatListRef.current.scrollHeight;
-  }, [messages]);
+  }, [messages, drawerView]);
 
   useEffect(() => {
     async function boot() {
@@ -200,6 +236,9 @@ function App() {
     setSessionId(sid);
     setMessages([]);
     setLastResponse(null);
+    setSessionAgentState({});
+    setToolTimeline([]);
+    setStageTimeline([]);
     await refreshSessions();
     pushLogWithLimit(setLogs, "system", `已创建新线程 ${sid.slice(0, 8)}`);
     return sid;
@@ -216,16 +255,12 @@ function App() {
         throw new Error(`session ${res.status}`);
       }
       const data = await res.json();
-      const turns = Array.isArray(data.turns) ? data.turns : [];
-      const normalized = turns.map((turn) =>
-        createMessage(
-          String(turn.role || "").toLowerCase() === "user" ? "user" : "assistant",
-          String(turn.text || ""),
-        ),
-      );
-      setMessages(normalized);
+      setMessages(extractSessionMessages(data));
+      setSessionAgentState((data && data.agent_state) || {});
       setSessionId(sid);
       setLastResponse(null);
+      setToolTimeline([]);
+      setStageTimeline([]);
       pushLogWithLimit(setLogs, "system", `已载入线程 ${sid.slice(0, 8)}`);
       return true;
     } catch (err) {
@@ -292,12 +327,15 @@ function App() {
     setPendingUploads((prev) => prev.filter((item) => item.id !== fileId));
   }
 
-  async function handleSend() {
-    const messageText = draft.trim();
+  async function handleSend(overrideText) {
+    const messageText = String(overrideText != null ? overrideText : draft).trim();
     if (!messageText || sending) return;
 
     setSending(true);
     setLastError("");
+    setDrawerView("run");
+    setToolTimeline([]);
+    setStageTimeline([]);
 
     let sid = sessionId;
     let pendingMessage = null;
@@ -306,8 +344,9 @@ function App() {
 
       const userMessage = createMessage("user", messageText);
       pendingMessage = createMessage("assistant", "正在准备上下文...", { pending: true });
+      setDraftingPendingMessageId(pendingMessage.id);
       setMessages((prev) => [...prev, userMessage, pendingMessage]);
-      setDraft("");
+      if (overrideText == null) setDraft("");
 
       const body = {
         session_id: sid,
@@ -358,15 +397,28 @@ function App() {
           if (parsed) {
             const { event, payload } = parsed;
             if (event === "stage") {
-              const detail = String(payload.detail || payload.code || "处理中...");
+              const detail = String(payload.detail || payload.label || payload.code || "处理中...");
               replacePendingText(detail);
+              setStageTimeline((prev) => [
+                {
+                  id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                  phase: String(payload.phase || payload.code || ""),
+                  label: String(payload.label || payload.phase || payload.code || "stage"),
+                  status: String(payload.status || "running"),
+                  detail,
+                },
+                ...prev,
+              ].slice(0, 20));
               pushLogWithLimit(setLogs, "stage", detail);
             } else if (event === "trace") {
               const detail = String(payload.message || payload.raw || "");
               if (detail) pushLogWithLimit(setLogs, "trace", detail);
             } else if (event === "tool") {
-              const name = String((payload.item || {}).name || "tool");
-              pushLogWithLimit(setLogs, "tool", `工具调用：${name}`);
+              const item = payload.item || {};
+              const name = String(item.name || "tool");
+              const summary = String(payload.summary || item.summary || item.output_preview || "工具调用");
+              setToolTimeline((prev) => [item, ...prev].slice(0, 24));
+              pushLogWithLimit(setLogs, "tool", `${name}: ${summary}`);
             } else if (event === "final") {
               finalPayload = payload.response || null;
             } else if (event === "error") {
@@ -390,7 +442,17 @@ function App() {
       );
       setLastResponse(finalPayload);
       setPendingUploads([]);
-      setInspectorOpen(true);
+      setDrawerView("run");
+      setSessionAgentState({
+        agent_id: finalPayload.agent_id || "vintage_programmer",
+        current_goal: String((((finalPayload.inspector || {}).run_state || {}).goal) || messageText),
+        phase: String((((finalPayload.inspector || {}).run_state || {}).phase) || "report"),
+        last_run_id: String(finalPayload.run_id || ""),
+        last_model: String(finalPayload.effective_model || ""),
+        tool_count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0,
+        tool_names: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.map((item) => item.name) : [],
+        evidence_status: String((((finalPayload.inspector || {}).evidence || {}).status) || "not_needed"),
+      });
       pushLogWithLimit(
         setLogs,
         "response",
@@ -407,6 +469,7 @@ function App() {
         return next;
       });
     } finally {
+      setDraftingPendingMessageId("");
       setSending(false);
     }
   }
@@ -419,23 +482,41 @@ function App() {
   }
 
   const workspaceLabel = fileNameFromHealth(health);
-  const activeInspector = lastResponse ? lastResponse.inspector || {} : {};
-  const agentInfo = activeInspector.agent || (health && health.agent) || {};
-  const toolEvents = Array.isArray(lastResponse && lastResponse.tool_events) ? lastResponse.tool_events : [];
+  const runtimeStatus = (health && health.runtime_status) || {};
+  const lastInspector = (lastResponse && lastResponse.inspector) || {};
+  const runState = lastInspector.run_state || {};
+  const evidence = lastInspector.evidence || {};
+  const agentInfo = lastInspector.agent || (health && health.agent) || {};
+  const activeToolTimeline = Array.isArray(lastInspector.tool_timeline) && lastInspector.tool_timeline.length
+    ? lastInspector.tool_timeline
+    : toolTimeline;
   const tokenUsage = (lastResponse && lastResponse.token_usage) || {};
+  const activeModel = String((lastResponse && lastResponse.effective_model) || chatSettings.model || (health && health.default_model) || "").trim();
+  const statusPills = useMemo(
+    () => [
+      `mode:${runtimeStatus.execution_mode || "host"}`,
+      runtimeStatus.auth_ready ? `auth:${runtimeStatus.auth_mode || "ready"}` : "auth:missing",
+      `agent:${agentInfo.title || "Vintage Programmer"}`,
+      `model:${activeModel || "-"}`,
+      `branch:${runtimeStatus.git_branch || "-"}`,
+    ],
+    [runtimeStatus, agentInfo, activeModel],
+  );
 
   return html`
-    <div className=${`shell ${inspectorOpen ? "inspector-open" : "inspector-closed"}`} id="appShell">
-      <aside className="thread-sidebar" id="threadSidebar">
-        <div className="rail-head">
+    <div className="workstation-shell" id="appShell">
+      <aside className="thread-rail" id="threadSidebar">
+        <div className="rail-brand">
+          <div className="brand-mark">VP</div>
           <div>
-            <div className="rail-kicker">线程</div>
-            <div className="rail-title">${workspaceLabel}</div>
+            <div className="brand-title">Vintage Programmer</div>
+            <div className="brand-sub">${workspaceLabel}</div>
           </div>
-          <div className="rail-actions">
-            <button className="ghost-btn" type="button" onClick=${refreshSessions} disabled=${loadingSession || sending}>刷新</button>
-            <button className="primary-btn" type="button" onClick=${handleNewSession} disabled=${loadingSession || sending}>新线程</button>
-          </div>
+        </div>
+
+        <div className="rail-actions">
+          <button className="solid-btn" type="button" onClick=${handleNewSession} disabled=${loadingSession || sending}>新线程</button>
+          <button className="ghost-btn" type="button" onClick=${refreshSessions} disabled=${loadingSession || sending}>刷新</button>
         </div>
 
         <div className="thread-list">
@@ -444,87 +525,227 @@ function App() {
                 (item) => html`
                   <button
                     key=${item.session_id}
-                    className=${`thread-item ${item.session_id === sessionId ? "active" : ""}`}
+                    className=${`thread-row ${item.session_id === sessionId ? "active" : ""}`}
                     type="button"
                     onClick=${() => loadSession(item.session_id)}
                     disabled=${loadingSession || sending}
                   >
-                    <div className="thread-title">${item.title || "新线程"}</div>
-                    <div className="thread-meta">${formatSessionTime(item.updated_at)} · ${item.turn_count || 0} 轮</div>
-                    <div className="thread-preview">${item.preview || "暂无预览"}</div>
+                    <div className="thread-row-title">${item.title || "新线程"}</div>
+                    <div className="thread-row-preview">${item.preview || "暂无预览"}</div>
+                    <div className="thread-row-meta">${formatTime(item.updated_at)} · ${item.turn_count || 0} 轮</div>
                   </button>
                 `,
               )
-            : html`<div className="thread-empty">还没有线程。</div>`}
+            : html`<div className="thread-empty">还没有线程，先开始一轮工作。</div>`}
         </div>
-
-        <button className="settings-entry" type="button" onClick=${() => setSettingsOpen(true)}>设置</button>
       </aside>
 
-      <main className="chat-pane" id="chatPane">
-        <header className="chat-head">
+      <main className="main-pane" id="chatPane">
+        <div className="main-head">
           <div>
-            <div className="chat-head-title">开始构建</div>
-            <div className="chat-head-sub">${workspaceLabel}</div>
+            <div className="main-head-kicker">${agentInfo.title || "Vintage Programmer"}</div>
+            <div className="main-head-title">${sessionId ? (sessions.find((item) => item.session_id === sessionId)?.title || "新线程") : "开始构建"}</div>
           </div>
-          <button className="ghost-btn" type="button" onClick=${() => setInspectorOpen((prev) => !prev)}>
-            ${inspectorOpen ? "隐藏检查栏" : "打开检查栏"}
-          </button>
-        </header>
+          <div className="head-actions">
+            <button className=${`mini-btn ${drawerView === "run" ? "active" : ""}`} type="button" onClick=${() => setDrawerView(drawerView === "run" ? "" : "run")}>Run Details</button>
+            <button className=${`mini-btn ${drawerView === "tools" ? "active" : ""}`} type="button" onClick=${() => setDrawerView(drawerView === "tools" ? "" : "tools")}>Tools</button>
+            <button className=${`mini-btn ${drawerView === "session" ? "active" : ""}`} type="button" onClick=${() => setDrawerView(drawerView === "session" ? "" : "session")}>Session</button>
+            <button className=${`mini-btn ${drawerView === "settings" ? "active" : ""}`} type="button" onClick=${() => setDrawerView(drawerView === "settings" ? "" : "settings")}>Settings</button>
+          </div>
+        </div>
 
-        <section className="message-list" id="messageList" ref=${chatListRef}>
-          ${messages.length
-            ? messages.map(
-                (item) => html`
-                  <article key=${item.id} className=${`message-row role-${item.role} ${item.pending ? "pending" : ""} ${item.error ? "error" : ""}`}>
-                    <div className="message-label">${roleLabel(item.role)}</div>
-                    <div className="message-bubble">${item.text}</div>
-                  </article>
-                `,
-              )
-            : html`
-                <div className="empty-state" id="emptyState">
-                  <div className="empty-icon">✦</div>
-                  <div className="empty-title">Vintage Programmer</div>
-                  <div className="empty-copy">一个默认只有单主 agent 的本地工作台。线程在左边，聊天在中间，检查信息在右边。</div>
-                </div>
-              `}
+        <section className="chat-scroll" id="messageList" ref=${chatListRef}>
+          <div className="reading-column">
+            ${messages.length
+              ? messages.map(
+                  (item) => html`
+                    <article key=${item.id} className=${`message-block role-${item.role} ${item.pending ? "pending" : ""} ${item.error ? "error" : ""}`}>
+                      <div className="message-block-head">
+                        <span className="message-role">${roleLabel(item.role)}</span>
+                        ${item.createdAt ? html`<span className="message-time">${formatTime(item.createdAt)}</span>` : null}
+                      </div>
+                      <div className="message-block-body">${item.text}</div>
+                    </article>
+                  `,
+                )
+              : html`
+                  <section className="empty-panel">
+                    <div className="empty-kicker">Single-Agent Workstation</div>
+                    <h1 className="empty-title">输入框始终在底部，线程在左边，细节通过抽屉展开。</h1>
+                    <p className="empty-copy">
+                      这里默认只有一个主 agent：<strong>vintage_programmer</strong>。它按 explore、plan、execute、verify、report 这条主线工作。
+                    </p>
+                    <div className="starter-list">${starterPromptChips(setDraft, handleSend)}</div>
+                  </section>
+                `}
+          </div>
         </section>
 
-        <section className="composer-shell" id="composerShell">
-          <div className="composer-toolbar">
-            <button className="icon-btn" type="button" onClick=${() => fileInputRef.current && fileInputRef.current.click()} disabled=${sending}>+</button>
-            <select
-              value=${chatSettings.response_style}
-              onChange=${(event) => setChatSettings((prev) => ({ ...prev, response_style: event.currentTarget.value }))}
-              disabled=${sending}
-            >
-              <option value="short">简短</option>
-              <option value="normal">正常</option>
-              <option value="long">详细</option>
-            </select>
-            <input
-              className="model-input"
-              type="text"
-              value=${chatSettings.model}
-              onInput=${(event) => {
-                setModelTouched(true);
-                setChatSettings((prev) => ({ ...prev, model: event.currentTarget.value }));
-              }}
-              placeholder=${(health && health.default_model) || "模型名"}
-              disabled=${sending}
-            />
-            <label className="tool-toggle">
-              <input
-                type="checkbox"
-                checked=${chatSettings.enable_tools}
-                onChange=${(event) => setChatSettings((prev) => ({ ...prev, enable_tools: event.currentTarget.checked }))}
-                disabled=${sending}
-              />
-              工具
-            </label>
-          </div>
+        <div className=${`surface-drawer ${drawerView ? "open" : ""}`} id="detailDrawer">
+          ${drawerView === "run"
+            ? html`
+                <div className="drawer-head">
+                  <div className="drawer-title">Run Details</div>
+                  <button className="drawer-close" type="button" onClick=${() => setDrawerView("")}>关闭</button>
+                </div>
+                <div className="drawer-grid">
+                  <div className="drawer-card">
+                    <div className="drawer-card-title">当前状态</div>
+                    <div className="meta-line">goal: ${runState.goal || sessionAgentState.current_goal || "-"}</div>
+                    <div className="meta-line">phase: ${runState.phase || sessionAgentState.phase || "idle"}</div>
+                    <div className="meta-line">network: ${runState.network_mode || (((agentInfo || {}).network || {}).mode) || "explicit_tools"}</div>
+                  </div>
+                  <div className="drawer-card">
+                    <div className="drawer-card-title">证据</div>
+                    <div className="meta-line">status: ${evidence.status || sessionAgentState.evidence_status || "not_needed"}</div>
+                    <div className="meta-line">required: ${String(Boolean(evidence.required))}</div>
+                    <div className="meta-line">${evidence.warning || "当前无额外警告。"}</div>
+                  </div>
+                  <div className="drawer-card wide">
+                    <div className="drawer-card-title">阶段时间线</div>
+                    <div className="timeline-list">
+                      ${stageTimeline.length
+                        ? stageTimeline.map(
+                            (item) => html`
+                              <div key=${item.id} className="timeline-row">
+                                <span className="timeline-phase">${item.phase || item.label}</span>
+                                <span className="timeline-status">${item.status}</span>
+                                <span className="timeline-detail">${item.detail}</span>
+                              </div>
+                            `,
+                          )
+                        : html`<div className="empty-inline">本轮还没有阶段记录。</div>`}
+                    </div>
+                  </div>
+                </div>
+              `
+            : null}
 
+          ${drawerView === "tools"
+            ? html`
+                <div className="drawer-head">
+                  <div className="drawer-title">Tools</div>
+                  <button className="drawer-close" type="button" onClick=${() => setDrawerView("")}>关闭</button>
+                </div>
+                <div className="drawer-grid">
+                  <div className="drawer-card wide">
+                    <div className="drawer-card-title">工具时间线</div>
+                    <div className="timeline-list">
+                      ${activeToolTimeline.length
+                        ? activeToolTimeline.map(
+                            (item, index) => html`
+                              <div key=${`${item.name || "tool"}-${index}`} className="tool-row">
+                                <div className="tool-row-name">${item.name || "tool"}</div>
+                                <div className="tool-row-summary">${item.summary || item.output_preview || "无摘要"}</div>
+                                <div className="tool-row-meta">${item.status || "ok"} · ${(item.source_refs || []).join(" · ") || "no refs"}</div>
+                              </div>
+                            `,
+                          )
+                        : html`<div className="empty-inline">这一轮没有工具调用。</div>`}
+                    </div>
+                  </div>
+                </div>
+              `
+            : null}
+
+          ${drawerView === "session"
+            ? html`
+                <div className="drawer-head">
+                  <div className="drawer-title">Session</div>
+                  <button className="drawer-close" type="button" onClick=${() => setDrawerView("")}>关闭</button>
+                </div>
+                <div className="drawer-grid">
+                  <div className="drawer-card">
+                    <div className="drawer-card-title">线程</div>
+                    <div className="meta-line">session: ${sessionId || "(未创建)"}</div>
+                    <div className="meta-line">turns: ${messages.length}</div>
+                    <div className="meta-line">uploads: ${pendingUploads.length}</div>
+                  </div>
+                  <div className="drawer-card">
+                    <div className="drawer-card-title">Agent State</div>
+                    <div className="meta-line">goal: ${sessionAgentState.current_goal || "-"}</div>
+                    <div className="meta-line">phase: ${sessionAgentState.phase || "idle"}</div>
+                    <div className="meta-line">evidence: ${sessionAgentState.evidence_status || "not_needed"}</div>
+                    <div className="meta-line">last model: ${sessionAgentState.last_model || "-"}</div>
+                  </div>
+                  <div className="drawer-card wide">
+                    <div className="drawer-card-title">Recent Logs</div>
+                    <div className="timeline-list">
+                      ${logs.length
+                        ? logs.map(
+                            (item) => html`
+                              <div key=${item.id} className=${`log-row tone-${item.type}`}>
+                                <span className="timeline-detail">${item.text}</span>
+                              </div>
+                            `,
+                          )
+                        : html`<div className="empty-inline">暂无额外日志。</div>`}
+                    </div>
+                  </div>
+                </div>
+              `
+            : null}
+
+          ${drawerView === "settings"
+            ? html`
+                <div className="drawer-head" id="settingsModal">
+                  <div className="drawer-title">Settings</div>
+                  <button className="drawer-close" type="button" onClick=${() => setDrawerView("")}>关闭</button>
+                </div>
+                <div className="drawer-grid">
+                  <div className="drawer-card">
+                    <div className="drawer-card-title">模型</div>
+                    <input
+                      className="drawer-input"
+                      type="text"
+                      value=${chatSettings.model}
+                      onInput=${(event) => {
+                        setModelTouched(true);
+                        setChatSettings((prev) => ({ ...prev, model: event.currentTarget.value }));
+                      }}
+                      placeholder=${(health && health.default_model) || "模型名"}
+                      disabled=${sending}
+                    />
+                  </div>
+                  <div className="drawer-card">
+                    <div className="drawer-card-title">响应风格</div>
+                    <select
+                      className="drawer-input"
+                      value=${chatSettings.response_style}
+                      onChange=${(event) => setChatSettings((prev) => ({ ...prev, response_style: event.currentTarget.value }))}
+                      disabled=${sending}
+                    >
+                      <option value="short">简短</option>
+                      <option value="normal">正常</option>
+                      <option value="long">详细</option>
+                    </select>
+                  </div>
+                  <div className="drawer-card">
+                    <div className="drawer-card-title">输出上限</div>
+                    <input
+                      className="drawer-input"
+                      type="number"
+                      value=${chatSettings.max_output_tokens}
+                      onInput=${(event) => setChatSettings((prev) => ({ ...prev, max_output_tokens: Number(event.currentTarget.value || 0) || 1024 }))}
+                      disabled=${sending}
+                    />
+                  </div>
+                  <div className="drawer-card">
+                    <div className="drawer-card-title">上下文轮数</div>
+                    <input
+                      className="drawer-input"
+                      type="number"
+                      value=${chatSettings.max_context_turns}
+                      onInput=${(event) => setChatSettings((prev) => ({ ...prev, max_context_turns: Number(event.currentTarget.value || 0) || 20 }))}
+                      disabled=${sending}
+                    />
+                  </div>
+                </div>
+              `
+            : null}
+        </div>
+
+        <section className="composer-shell" id="composerShell">
           ${pendingUploads.length
             ? html`
                 <div className="attachment-strip">
@@ -540,153 +761,60 @@ function App() {
               `
             : null}
 
-          <div className="composer-row">
+          <div className="composer-controls">
+            <button className="icon-btn" type="button" onClick=${() => fileInputRef.current && fileInputRef.current.click()} disabled=${sending}>+</button>
+            <select
+              value=${chatSettings.response_style}
+              onChange=${(event) => setChatSettings((prev) => ({ ...prev, response_style: event.currentTarget.value }))}
+              disabled=${sending}
+            >
+              <option value="short">简短</option>
+              <option value="normal">正常</option>
+              <option value="long">详细</option>
+            </select>
+            <label className="tool-toggle">
+              <input
+                type="checkbox"
+                checked=${chatSettings.enable_tools}
+                onChange=${(event) => setChatSettings((prev) => ({ ...prev, enable_tools: event.currentTarget.checked }))}
+                disabled=${sending}
+              />
+              工具
+            </label>
+          </div>
+
+          <div className="composer-frame">
             <textarea
               value=${draft}
               onInput=${(event) => setDraft(event.currentTarget.value)}
               onKeyDown=${handleComposerKeyDown}
-              placeholder="输入消息。Enter 发送，Shift+Enter 换行。"
+              placeholder="给 Vintage Programmer 一个清晰任务。Enter 发送，Shift+Enter 换行。"
               disabled=${sending}
             ></textarea>
-            <button className="send-btn" type="button" onClick=${handleSend} disabled=${sending || !draft.trim()}>
-              ${sending ? "发送中" : "发送"}
+            <button className="send-btn" type="button" onClick=${() => handleSend()} disabled=${sending || !draft.trim()}>
+              ${sending ? "运行中" : "发送"}
             </button>
           </div>
           <input ref=${fileInputRef} type="file" multiple hidden onChange=${handleSelectFiles} />
         </section>
+
+        <footer className="status-bar" id="statusBar">
+          <div className="status-left">
+            ${statusPills.map((item) => html`<span key=${item} className="status-pill">${item}</span>`)}
+          </div>
+          <div className="status-right">
+            <span>${runtimeStatus.permission_summary || "permissions: unknown"}</span>
+            ${lastError ? html`<span className="status-error">${lastError}</span>` : null}
+          </div>
+        </footer>
       </main>
-
-      <aside className="inspector-pane" id="inspectorPane">
-        <button className="inspector-tab" type="button" onClick=${() => setInspectorOpen((prev) => !prev)} id="inspectorToggle">
-          ${inspectorOpen ? "›" : "‹"}
-        </button>
-        <div className="inspector-body">
-          <section className="inspector-card">
-            <div className="inspector-title">Agent</div>
-            <div className="inspector-value">${agentInfo.title || "Vintage Programmer"}</div>
-            <div className="inspector-meta">id=${agentInfo.agent_id || "vintage_programmer"}</div>
-            <div className="inspector-meta">model=${(lastResponse && lastResponse.effective_model) || (health && health.default_model) || "-"}</div>
-            <div className="inspector-meta">tools=${Array.isArray(agentInfo.allowed_tools) ? agentInfo.allowed_tools.length : 0}</div>
-          </section>
-
-          <section className="inspector-card">
-            <div className="inspector-title">Session</div>
-            <div className="inspector-meta">session=${sessionId || "(未创建)"}</div>
-            <div className="inspector-meta">turns=${messages.length}</div>
-            <div className="inspector-meta">attachments=${pendingUploads.length}</div>
-          </section>
-
-          <section className="inspector-card">
-            <div className="inspector-title">Token</div>
-            <div className="inspector-meta">input=${tokenUsage.input_tokens || 0}</div>
-            <div className="inspector-meta">output=${tokenUsage.output_tokens || 0}</div>
-            <div className="inspector-meta">total=${tokenUsage.total_tokens || 0}</div>
-            <div className="inspector-meta">cost=${tokenUsage.estimated_cost_usd || 0}</div>
-          </section>
-
-          <section className="inspector-card">
-            <div className="inspector-title">Tool Events</div>
-            <div className="tool-event-list" id="toolEventList">
-              ${toolEvents.length
-                ? toolEvents.map(
-                    (item, index) => html`
-                      <div key=${`${item.name}-${index}`} className="tool-event">
-                        <div className="tool-event-name">${item.name}</div>
-                        <div className="tool-event-preview">${item.output_preview || "no preview"}</div>
-                      </div>
-                    `,
-                  )
-                : html`<div className="inspector-empty">这一轮没有工具调用。</div>`}
-            </div>
-          </section>
-
-          <section className="inspector-card">
-            <div className="inspector-title">Notes</div>
-            <div className="note-list">
-              ${Array.isArray(activeInspector.notes) && activeInspector.notes.length
-                ? activeInspector.notes.map((item, index) => html`<div key=${index} className="note-item">${item}</div>`)
-                : html`<div className="inspector-empty">暂无附加说明。</div>`}
-            </div>
-          </section>
-
-          <section className="inspector-card">
-            <div className="inspector-title">Recent Logs</div>
-            <div className="note-list" id="logPanel">
-              ${logs.length
-                ? logs.map(
-                    (item) => html`
-                      <div key=${item.id} className=${`note-item tone-${item.type}`}>
-                        <span>${item.text}</span>
-                      </div>
-                    `,
-                  )
-                : html`<div className="inspector-empty">暂无日志。</div>`}
-            </div>
-          </section>
-
-          ${lastError
-            ? html`
-                <section className="inspector-card error-card">
-                  <div className="inspector-title">Last Error</div>
-                  <div className="error-text">${lastError}</div>
-                </section>
-              `
-            : null}
-        </div>
-      </aside>
-
-      ${settingsOpen
-        ? html`
-            <div className="modal-backdrop" onClick=${() => setSettingsOpen(false)}>
-              <div className="settings-modal" id="settingsModal" onClick=${(event) => event.stopPropagation()}>
-                <div className="modal-head">
-                  <div>
-                    <div className="rail-kicker">设置</div>
-                    <div className="rail-title">运行参数</div>
-                  </div>
-                  <button className="ghost-btn" type="button" onClick=${() => setSettingsOpen(false)}>关闭</button>
-                </div>
-                <label className="settings-field">
-                  <span>模型</span>
-                  <input
-                    type="text"
-                    value=${chatSettings.model}
-                    onInput=${(event) => {
-                      setModelTouched(true);
-                      setChatSettings((prev) => ({ ...prev, model: event.currentTarget.value }));
-                    }}
-                  />
-                </label>
-                <label className="settings-field">
-                  <span>最大输出 Token</span>
-                  <input
-                    type="number"
-                    value=${chatSettings.max_output_tokens}
-                    onInput=${(event) =>
-                      setChatSettings((prev) => ({ ...prev, max_output_tokens: Number(event.currentTarget.value || 0) || 128000 }))
-                    }
-                  />
-                </label>
-                <label className="settings-field">
-                  <span>上下文轮数</span>
-                  <input
-                    type="number"
-                    value=${chatSettings.max_context_turns}
-                    onInput=${(event) =>
-                      setChatSettings((prev) => ({ ...prev, max_context_turns: Number(event.currentTarget.value || 0) || 2000 }))
-                    }
-                  />
-                </label>
-                <div className="settings-summary">
-                  workspace=${(health && health.workspace_root) || "-"}<br />
-                  auth=${(health && health.auth_mode) || "-"} · provider=${(health && health.llm_provider) || "-"}
-                </div>
-              </div>
-            </div>
-          `
-        : null}
     </div>
   `;
 }
 
-createRoot(document.getElementById("root")).render(html`<${App} />`);
+const root = document.getElementById("root");
+if (!root) {
+  throw new Error("Missing #root");
+}
+
+createRoot(root).render(html`<${App} />`);

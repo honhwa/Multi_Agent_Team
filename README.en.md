@@ -5,6 +5,13 @@
 
 This is a local single-agent workstation. The default main agent is `vintage_programmer`.
 
+The current UI shape is Codex-like:
+- left thread rail
+- narrow reading column
+- always-visible bottom composer
+- bottom status bar
+- expandable detail drawer
+
 ## Run
 
 ### macOS / Linux
@@ -30,7 +37,7 @@ py -3.11 -m venv .venv
 Copy-Item .env.example .env
 .venv\Scripts\python.exe -m pip install --upgrade pip
 .venv\Scripts\python.exe -m pip install -r requirements.txt
-.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8080
 ```
 
 More detail: [README.windows.md](README.windows.md)
@@ -73,8 +80,9 @@ The web UI talks to these local endpoints.
 
 ## Agent Specs
 
-The main agent is defined by:
+The main agent is defined by four markdown specs:
 
 - [agents/vintage_programmer/soul.md](agents/vintage_programmer/soul.md)
+- [agents/vintage_programmer/identity.md](agents/vintage_programmer/identity.md)
 - [agents/vintage_programmer/agent.md](agents/vintage_programmer/agent.md)
 - [agents/vintage_programmer/tools.md](agents/vintage_programmer/tools.md)

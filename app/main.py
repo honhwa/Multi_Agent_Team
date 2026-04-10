@@ -85,6 +85,23 @@ vintage_programmer_runtime = VintageProgrammerRuntime(
 APP_VERSION = "0.3.5"
 
 
+def _git_value(*args: str) -> str:
+    repo_root = Path(__file__).resolve().parent.parent
+    try:
+        return (
+            subprocess.run(
+                ["git", *args],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=2,
+            ).stdout.strip()
+        )
+    except Exception:
+        return ""
+
+
 def _resolve_build_version() -> str:
     override = str(
         os.environ.get("MULTI_AGENT_TEAM_BUILD_VERSION") or ""
@@ -92,33 +109,8 @@ def _resolve_build_version() -> str:
     if override:
         return override
 
-    repo_root = Path(__file__).resolve().parent.parent
-    try:
-        commit = (
-            subprocess.run(
-                ["git", "rev-parse", "--short", "HEAD"],
-                cwd=str(repo_root),
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=2,
-            ).stdout.strip()
-        )
-    except Exception:
-        commit = ""
-    try:
-        branch = (
-            subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=str(repo_root),
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=2,
-            ).stdout.strip()
-        )
-    except Exception:
-        branch = ""
+    commit = _git_value("rev-parse", "--short", "HEAD")
+    branch = _git_value("rev-parse", "--abbrev-ref", "HEAD")
 
     parts = [f"v{APP_VERSION}"]
     if branch and commit:
@@ -129,6 +121,7 @@ def _resolve_build_version() -> str:
 
 
 BUILD_VERSION = _resolve_build_version()
+GIT_BRANCH = _git_value("rev-parse", "--abbrev-ref", "HEAD")
 
 
 class AgentRunQueue:
@@ -246,6 +239,11 @@ def health() -> HealthResponse:
     docker_ok, docker_msg = runtime.legacy_tools().docker_status()
     auth_summary = OpenAIAuthManager(config).auth_summary()
     agent_descriptor = get_vintage_programmer_runtime().descriptor()
+    if config.allow_any_path:
+        permission_summary = "full filesystem access enabled"
+    else:
+        root_names = [path.name or str(path) for path in config.allowed_roots[:4]]
+        permission_summary = f"{len(config.allowed_roots)} allowed roots: {', '.join(root_names)}"
     return HealthResponse(
         ok=True,
         app_title=APP_TITLE,
@@ -263,6 +261,15 @@ def health() -> HealthResponse:
         max_upload_mb=config.max_upload_mb,
         web_allow_all_domains=config.web_allow_all_domains,
         web_allowed_domains=config.web_allowed_domains,
+        runtime_status={
+            "execution_mode": config.execution_mode,
+            "auth_ready": bool(auth_summary.get("available")),
+            "auth_mode": str(auth_summary.get("mode") or ""),
+            "permission_summary": permission_summary,
+            "workspace_label": config.workspace_root.name or str(config.workspace_root),
+            "git_branch": GIT_BRANCH,
+            "build_version": BUILD_VERSION,
+        },
         agent=agent_descriptor,
     )
 
@@ -796,6 +803,7 @@ def get_session(session_id: str, max_turns: int = 200) -> SessionDetailResponse:
         title=str(loaded.get("title") or ""),
         summary=str(loaded.get("summary") or ""),
         turn_count=len(turns_raw),
+        agent_state=dict(loaded.get("agent_state") or {}),
         turns=turns,
     )
 
@@ -1067,6 +1075,9 @@ def _process_chat_request(
         progress_cb,
         "stage",
         code="backend_start",
+        phase="bootstrap",
+        label="Bootstrap",
+        status="running",
         detail=f"后端已接收请求，开始处理。run_id={run_id}, auth_mode={auth_summary.get('mode')}",
         run_id=run_id,
     )
@@ -1092,6 +1103,9 @@ def _process_chat_request(
             progress_cb,
             "stage",
             code="session_ready",
+            phase="bootstrap",
+            label="Session",
+            status="completed",
             detail=f"会话已就绪: {session.get('id')}",
             run_id=run_id,
             queue_wait_ms=queue_wait_ms,
@@ -1142,6 +1156,9 @@ def _process_chat_request(
             progress_cb,
             "stage",
             code="attachments_ready",
+            phase="explore",
+            label="Attachments",
+            status="completed",
             detail=(
                 f"附件检查完成: mode={attachment_context_mode}, "
                 f"请求 {len(effective_attachment_ids)} 个，命中 {len(attachments)} 个。"
@@ -1205,6 +1222,9 @@ def _process_chat_request(
             progress_cb,
             "stage",
             code="agent_run_start",
+            phase="execute",
+            label="Agent Run",
+            status="running",
             detail="开始通过 vintage_programmer 执行。",
             run_id=run_id,
         )
@@ -1243,7 +1263,16 @@ def _process_chat_request(
         inspector = dict(runtime_result.get("inspector") or {})
         attachment_note = ""
 
-        _emit_progress(progress_cb, "stage", code="agent_run_done", detail="模型推理结束，开始写入会话与统计。", run_id=run_id)
+        _emit_progress(
+            progress_cb,
+            "stage",
+            code="agent_run_done",
+            phase="report",
+            label="Agent Run",
+            status="completed",
+            detail="模型推理结束，开始写入会话与统计。",
+            run_id=run_id,
+        )
         inspector_notes = list(inspector.get("notes") or [])
         if missing_attachment_ids:
             warning_msg = f"警告: {len(missing_attachment_ids)} 个附件未找到，可能已被清理或会话刷新，请重新上传。"
@@ -1276,6 +1305,21 @@ def _process_chat_request(
             attachments=[{"id": item.get("id"), "name": item.get("original_name")} for item in attachments],
         )
         session_store.append_turn(session, role="assistant", text=text, answer_bundle=answer_bundle)
+        session["agent_state"] = {
+            "agent_id": "vintage_programmer",
+            "current_goal": str(((inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}).get("goal") or req.message[:140]),
+            "phase": str(((inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}).get("phase") or "report"),
+            "last_run_id": run_id,
+            "last_model": effective_model or req.settings.model or config.default_model,
+            "tool_count": len(tool_events),
+            "tool_names": [
+                str(item.get("name") or "")
+                for item in tool_events
+                if isinstance(item, dict) and str(item.get("name") or "").strip()
+            ],
+            "evidence_status": str(((inspector.get("evidence") or {}) if isinstance(inspector.get("evidence"), dict) else {}).get("status") or "not_needed"),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
         try:
             attachment_module.store_scoped_route_state(
                 session=session,
@@ -1299,7 +1343,16 @@ def _process_chat_request(
                 route_state=route_state,
             )
         session_store.save(session)
-        _emit_progress(progress_cb, "stage", code="session_saved", detail="会话已写入本地存储。", run_id=run_id)
+        _emit_progress(
+            progress_cb,
+            "stage",
+            code="session_saved",
+            phase="report",
+            label="Session",
+            status="completed",
+            detail="会话已写入本地存储。",
+            run_id=run_id,
+        )
 
         selected_model = effective_model or req.settings.model or config.default_model
         pricing_meta = estimate_usage_cost(
@@ -1329,7 +1382,16 @@ def _process_chat_request(
             usage=token_usage,
             model=selected_model,
         )
-        _emit_progress(progress_cb, "stage", code="stats_saved", detail="Token 统计已更新。", run_id=run_id)
+        _emit_progress(
+            progress_cb,
+            "stage",
+            code="stats_saved",
+            phase="report",
+            label="Usage",
+            status="completed",
+            detail="Token 统计已更新。",
+            run_id=run_id,
+        )
         try:
             evolution_event = get_evolution_store().record_turn(
                 session_id=session["id"],
@@ -1421,7 +1483,16 @@ def _process_chat_request(
             turn_count=len(session.get("turns", [])),
             summarized=summarized,
         )
-        _emit_progress(progress_cb, "stage", code="ready", detail="本轮结果已准备完成。", run_id=run_id)
+        _emit_progress(
+            progress_cb,
+            "stage",
+            code="ready",
+            phase="report",
+            label="Ready",
+            status="completed",
+            detail="本轮结果已准备完成。",
+            run_id=run_id,
+        )
         return response
 
 

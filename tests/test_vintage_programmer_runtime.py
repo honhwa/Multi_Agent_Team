@@ -99,12 +99,25 @@ def _write_specs(agent_dir: Path, *, include_soul: bool = True, include_tools: b
     agent_dir.mkdir(parents=True, exist_ok=True)
     if include_soul:
         (agent_dir / "soul.md").write_text("soul rules", encoding="utf-8")
+    (agent_dir / "identity.md").write_text(
+        "# Identity\n\n角色定义：\n- primary agent\n",
+        encoding="utf-8",
+    )
     (agent_dir / "agent.md").write_text(
         "---\n"
         "id: vintage_programmer\n"
         "title: Vintage Programmer\n"
         "default_model: gpt-test\n"
         "tool_policy: read_only\n"
+        "network_mode: explicit_tools\n"
+        "approval_policy: on_failure_or_high_impact\n"
+        "evidence_policy: required_for_external_or_runtime_facts\n"
+        "workflow_phases:\n"
+        "  - explore\n"
+        "  - plan\n"
+        "  - execute\n"
+        "  - verify\n"
+        "  - report\n"
         "max_tool_rounds: 4\n"
         "---\n"
         "\n"
@@ -119,6 +132,18 @@ def test_runtime_requires_soul_and_agent_specs(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir, include_soul=False)
 
+    with pytest.raises(RuntimeError, match="Missing required agent spec file"):
+        VintageProgrammerRuntime(
+            config=load_config(),
+            kernel_runtime=object(),
+            agent_dir=agent_dir,
+            backend=_FakeBackend([_FakeMessage(content="ok")]),
+        )
+
+    agent_dir = tmp_path / "agents" / "missing_identity"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "soul.md").write_text("soul", encoding="utf-8")
+    (agent_dir / "agent.md").write_text("---\nid: vintage_programmer\n---\nagent\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="Missing required agent spec file"):
         VintageProgrammerRuntime(
             config=load_config(),
@@ -143,7 +168,9 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
 
     assert descriptor["agent_id"] == "vintage_programmer"
     assert descriptor["tool_policy"] == "read_only"
-    assert prompt.index("[soul.md]") < prompt.index("[agent.md]") < prompt.index("[tools.md]")
+    assert descriptor["network"]["mode"] == "explicit_tools"
+    assert descriptor["workflow"]["phases"] == ["explore", "plan", "execute", "verify", "report"]
+    assert prompt.index("[soul.md]") < prompt.index("[identity.md]") < prompt.index("[agent.md]") < prompt.index("[tools.md]")
 
 
 def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
@@ -173,3 +200,5 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     assert len(result["tool_events"]) == 1
     assert backend.tools.calls[0][0] == "search_web"
     assert result["inspector"]["agent"]["tool_policy"] == "read_only"
+    assert result["inspector"]["run_state"]["phase"] == "report"
+    assert result["inspector"]["evidence"]["status"] == "collected"

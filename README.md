@@ -5,6 +5,13 @@
 
 这是一个本地运行的单主 agent 工作台，默认主 agent 是 `vintage_programmer`。
 
+当前工作台形态更接近 Codex：
+- 左侧线程栏
+- 中间窄阅读列
+- 底部常驻输入框
+- 底部状态条
+- 可展开的运行细节抽屉
+
 ## 运行
 
 ### macOS / Linux
@@ -30,7 +37,7 @@ py -3.11 -m venv .venv
 Copy-Item .env.example .env
 .venv\Scripts\python.exe -m pip install --upgrade pip
 .venv\Scripts\python.exe -m pip install -r requirements.txt
-.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8080
 ```
 
 详细说明见 [README.windows.md](README.windows.md)。
@@ -73,8 +80,9 @@ MULTI_AGENT_TEAM_PROVIDER_OPENAI_CA_CERT_PATH=/absolute/path/to/your-root-ca.pem
 
 ## Agent 规范
 
-主 agent 由这三份 markdown 规范定义：
+主 agent 由这四份 markdown 规范定义：
 
 - [agents/vintage_programmer/soul.md](agents/vintage_programmer/soul.md)
+- [agents/vintage_programmer/identity.md](agents/vintage_programmer/identity.md)
 - [agents/vintage_programmer/agent.md](agents/vintage_programmer/agent.md)
 - [agents/vintage_programmer/tools.md](agents/vintage_programmer/tools.md)

@@ -26,6 +26,9 @@ class ToolEvent(BaseModel):
     name: str
     input: dict | None = None
     output_preview: str
+    status: str = "ok"
+    summary: str = ""
+    source_refs: list[str] = Field(default_factory=list)
     module_id: str = ""
     module_title: str = ""
     module_group: str = ""
@@ -182,6 +185,7 @@ class SessionDetailResponse(BaseModel):
     title: str = ""
     summary: str = ""
     turn_count: int = 0
+    agent_state: dict[str, object] = Field(default_factory=dict)
     turns: list[SessionTurn] = Field(default_factory=list)
 
 
@@ -216,6 +220,7 @@ class HealthResponse(BaseModel):
     max_upload_mb: int = 0
     web_allow_all_domains: bool = True
     web_allowed_domains: list[str] = Field(default_factory=list)
+    runtime_status: dict[str, object] = Field(default_factory=dict)
     agent: dict[str, object] = Field(default_factory=dict)
 
 

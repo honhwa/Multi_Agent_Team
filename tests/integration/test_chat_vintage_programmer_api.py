@@ -18,23 +18,36 @@ class _FakeVintageRuntime:
             "default_model": "gpt-test",
             "tool_policy": "all",
             "allowed_tools": ["search_web", "read_text_file"],
-            "spec_files": ["soul.md", "agent.md", "tools.md"],
+            "spec_files": ["soul.md", "identity.md", "agent.md", "tools.md"],
+            "identity": {"document": "identity", "sections": {"角色定义": ["primary agent"]}},
+            "workflow": {"phases": ["explore", "plan", "execute", "verify", "report"]},
+            "policies": {
+                "tool_policy": "all",
+                "approval_policy": "on_failure_or_high_impact",
+                "evidence_policy": "required_for_external_or_runtime_facts",
+            },
+            "network": {"mode": "explicit_tools", "web_tool_contract": ["search_web", "fetch_web", "download_web_file"]},
+            "capabilities": {"allowed_tools": ["search_web", "read_text_file"], "tool_count": 2},
         }
 
     def run(self, *, message, settings, context, progress_cb=None):
         _ = (message, settings, context)
         if progress_cb is not None:
-            progress_cb({"event": "stage", "code": "agent_run", "detail": "fake runtime running"})
+            progress_cb({"event": "stage", "code": "execute", "phase": "execute", "label": "Execute", "status": "running", "detail": "fake runtime running"})
         return {
             "text": "single-agent response",
             "effective_model": "gpt-test",
-            "tool_events": [{"name": "search_web", "input": {"query": "x"}, "output_preview": "ok"}],
+            "tool_events": [{"name": "search_web", "input": {"query": "x"}, "output_preview": "ok", "status": "ok", "summary": "searched", "source_refs": ["https://example.com"]}],
             "token_usage": {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18, "llm_calls": 1},
             "answer_bundle": {"summary": "single-agent response", "claims": [], "citations": [], "warnings": []},
-            "route_state": {"agent_id": "vintage_programmer"},
+            "route_state": {"agent_id": "vintage_programmer", "phase": "report", "evidence_status": "collected"},
             "inspector": {
                 "agent": self.descriptor(),
                 "notes": ["fake runtime note"],
+                "run_state": {"goal": "workspace inspection", "phase": "report", "workflow_phases": ["explore", "plan", "execute", "verify", "report"]},
+                "tool_timeline": [{"name": "search_web", "status": "ok", "summary": "searched", "source_refs": ["https://example.com"]}],
+                "evidence": {"status": "collected", "required": True, "warning": "", "source_refs": ["https://example.com"]},
+                "session": {"session_id": "s-1", "history_turn_count": 0, "attachment_count": 0},
                 "token_usage": {"total_tokens": 18},
             },
         }
@@ -91,6 +104,7 @@ def test_health_endpoint_exposes_single_agent_descriptor(monkeypatch, tmp_path: 
     payload = response.json()
     assert payload["app_title"] == "Vintage Programmer"
     assert payload["agent"]["agent_id"] == "vintage_programmer"
+    assert payload["runtime_status"]["workspace_label"]
     assert "control_panel_topology" not in payload
 
 
@@ -117,8 +131,17 @@ def test_chat_endpoint_uses_single_agent_runtime(monkeypatch, tmp_path: Path) ->
     assert payload["agent_id"] == "vintage_programmer"
     assert payload["text"] == "single-agent response"
     assert payload["tool_events"][0]["name"] == "search_web"
+    assert payload["tool_events"][0]["status"] == "ok"
     assert payload["inspector"]["agent"]["title"] == "Vintage Programmer"
+    assert payload["inspector"]["run_state"]["phase"] == "report"
     assert "execution_trace" not in payload
+
+    session_id = payload["session_id"]
+    session_response = client.get(f"/api/session/{session_id}")
+    assert session_response.status_code == 200
+    session_payload = session_response.json()
+    assert session_payload["agent_state"]["phase"] == "report"
+    assert session_payload["agent_state"]["evidence_status"] == "collected"
 
 
 def test_chat_stream_emits_stage_final_and_done(monkeypatch, tmp_path: Path) -> None:
@@ -146,6 +169,8 @@ def test_chat_stream_emits_stage_final_and_done(monkeypatch, tmp_path: Path) -> 
     assert "stage" in event_names
     assert "final" in event_names
     assert event_names[-1] == "done"
+    stage_payloads = [payload for name, payload in events if name == "stage"]
+    assert any(payload.get("phase") == "execute" for payload in stage_payloads)
     final_payload = next(payload for name, payload in events if name == "final")
     response_payload = dict(final_payload.get("response") or {})
     assert response_payload["agent_id"] == "vintage_programmer"

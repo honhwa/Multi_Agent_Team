@@ -88,20 +88,82 @@ def _contains_any(text: str, hints: tuple[str, ...]) -> bool:
     return any(str(item).lower() in lowered for item in hints)
 
 
+def _coerce_string_list(value: Any, *, default: tuple[str, ...] = ()) -> tuple[str, ...]:
+    if isinstance(value, list):
+        cleaned = [str(item or "").strip() for item in value if str(item or "").strip()]
+        return tuple(cleaned) if cleaned else tuple(default)
+    return tuple(default)
+
+
+def _parse_labeled_sections(text: str) -> dict[str, Any]:
+    current_key = ""
+    sections: dict[str, list[str]] = {}
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            continue
+        if line.endswith("："):
+            current_key = line[:-1].strip()
+            sections.setdefault(current_key, [])
+            continue
+        if current_key:
+            sections.setdefault(current_key, []).append(line.lstrip("- ").strip())
+    return {
+        key: items if len(items) != 1 else items[0]
+        for key, items in sections.items()
+        if items
+    }
+
+
+def _truncate_goal(text: str, limit: int = 140) -> str:
+    normalized = " ".join(str(text or "").split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: max(0, limit - 1)].rstrip() + "…"
+
+
 @dataclass(frozen=True, slots=True)
 class VintageProgrammerSpec:
     agent_id: str
     title: str
     default_model: str
     tool_policy: str
+    network_mode: str
+    approval_policy: str
+    evidence_policy: str
+    workflow_phases: tuple[str, ...]
     max_tool_rounds: int
     allowed_tools: tuple[str, ...]
     soul_text: str
+    identity_text: str
     agent_text: str
     tools_text: str
     spec_files: tuple[str, ...]
 
     def descriptor(self) -> dict[str, object]:
+        identity_sections = _parse_labeled_sections(self.identity_text)
+        capabilities = {
+            "allowed_tools": list(self.allowed_tools),
+            "tool_count": len(self.allowed_tools),
+            "can_network": any(name in {"search_web", "fetch_web", "download_web_file"} for name in self.allowed_tools),
+            "can_write": any("write" in name or "replace" in name or "append" in name for name in self.allowed_tools),
+        }
+        workflow = {
+            "phases": list(self.workflow_phases),
+            "default_phase": self.workflow_phases[0] if self.workflow_phases else "explore",
+            "document": self.agent_text,
+        }
+        policies = {
+            "tool_policy": self.tool_policy,
+            "approval_policy": self.approval_policy,
+            "evidence_policy": self.evidence_policy,
+        }
+        network = {
+            "mode": self.network_mode,
+            "web_tool_contract": ["search_web", "fetch_web", "download_web_file"],
+        }
         return {
             "agent_id": self.agent_id,
             "title": self.title,
@@ -110,6 +172,14 @@ class VintageProgrammerSpec:
             "max_tool_rounds": self.max_tool_rounds,
             "allowed_tools": list(self.allowed_tools),
             "spec_files": list(self.spec_files),
+            "identity": {
+                "document": self.identity_text,
+                "sections": identity_sections,
+            },
+            "workflow": workflow,
+            "policies": policies,
+            "network": network,
+            "capabilities": capabilities,
         }
 
 
@@ -161,6 +231,7 @@ class VintageProgrammerRuntime:
 
     def _load_spec(self) -> VintageProgrammerSpec:
         soul_text = self._load_required_file("soul.md")
+        identity_text = self._load_required_file("identity.md")
         agent_text_raw = self._load_required_file("agent.md")
         tools_text = ""
         tools_path = self._agent_dir / "tools.md"
@@ -174,6 +245,13 @@ class VintageProgrammerRuntime:
         tool_policy = str(frontmatter.get("tool_policy") or "all").strip().lower() or "all"
         if tool_policy not in {"all", "read_only", "none"}:
             tool_policy = "all"
+        network_mode = str(frontmatter.get("network_mode") or "explicit_tools").strip().lower() or "explicit_tools"
+        approval_policy = str(frontmatter.get("approval_policy") or "on_failure_or_high_impact").strip() or "on_failure_or_high_impact"
+        evidence_policy = str(frontmatter.get("evidence_policy") or "required_for_external_or_runtime_facts").strip() or "required_for_external_or_runtime_facts"
+        workflow_phases = _coerce_string_list(
+            frontmatter.get("workflow_phases"),
+            default=("explore", "plan", "execute", "verify", "report"),
+        )
         max_tool_rounds = int(frontmatter.get("max_tool_rounds") or 8)
         max_tool_rounds = max(0, min(12, max_tool_rounds))
         explicit_tools = []
@@ -183,7 +261,7 @@ class VintageProgrammerRuntime:
         if not allowed_tools:
             max_tool_rounds = 0
 
-        spec_files = ["soul.md", "agent.md"]
+        spec_files = ["soul.md", "identity.md", "agent.md"]
         if tools_text:
             spec_files.append("tools.md")
 
@@ -192,9 +270,14 @@ class VintageProgrammerRuntime:
             title=title,
             default_model=default_model,
             tool_policy=tool_policy,
+            network_mode=network_mode,
+            approval_policy=approval_policy,
+            evidence_policy=evidence_policy,
+            workflow_phases=workflow_phases,
             max_tool_rounds=max_tool_rounds,
             allowed_tools=allowed_tools,
             soul_text=soul_text,
+            identity_text=identity_text,
             agent_text=agent_text.strip(),
             tools_text=tools_text,
             spec_files=tuple(spec_files),
@@ -202,19 +285,22 @@ class VintageProgrammerRuntime:
 
     def descriptor(self) -> dict[str, object]:
         payload = self._spec.descriptor()
-        payload["tool_count"] = len(self._spec.allowed_tools)
-        payload["tools"] = [
+        payload["capabilities"] = dict(payload.get("capabilities") or {})
+        payload["capabilities"]["tools"] = [
             {
                 "name": name,
                 "description": str((self._tool_specs_by_name.get(name) or {}).get("description") or "").strip(),
             }
             for name in self._spec.allowed_tools
         ]
+        payload["tool_count"] = len(self._spec.allowed_tools)
+        payload["tools"] = list(payload["capabilities"]["tools"])
         return payload
 
     def _render_system_prompt(self, settings: ChatSettings) -> str:
         parts = [
             f"[soul.md]\n{self._spec.soul_text}",
+            f"[identity.md]\n{self._spec.identity_text}",
             f"[agent.md]\n{self._spec.agent_text}",
         ]
         if self._spec.tools_text:
@@ -261,6 +347,93 @@ class VintageProgrammerRuntime:
             out.append(item)
         return out
 
+    def _emit_stage(
+        self,
+        progress_cb: Callable[[dict[str, Any]], None] | None,
+        *,
+        phase: str,
+        label: str,
+        detail: str,
+        status: str = "running",
+    ) -> None:
+        if progress_cb is None:
+            return
+        progress_cb(
+            {
+                "event": "stage",
+                "phase": phase,
+                "label": label,
+                "status": status,
+                "detail": detail,
+                "code": phase,
+            }
+        )
+
+    def _collect_source_refs(self, result: dict[str, Any]) -> list[str]:
+        refs: list[str] = []
+        candidates = [
+            result.get("url"),
+            result.get("path"),
+            result.get("canonical_url"),
+        ]
+        for item in list(result.get("results") or [])[:6]:
+            if isinstance(item, dict):
+                candidates.extend([item.get("url"), item.get("path"), item.get("title")])
+        for raw in candidates:
+            value = str(raw or "").strip()
+            if value and value not in refs:
+                refs.append(value)
+        return refs[:6]
+
+    def _build_tool_event(self, *, name: str, arguments: dict[str, Any], result: dict[str, Any]) -> ToolEvent:
+        result_json = json.dumps(result, ensure_ascii=False)
+        source_refs = self._collect_source_refs(result)
+        status = "ok" if bool(result.get("ok")) else "error"
+        summary = str(result.get("summary") or result.get("error") or "").strip()
+        if not summary:
+            summary = self._backend._shorten(result_json, 180)
+        return ToolEvent(
+            name=name or "(unknown)",
+            input=arguments,
+            output_preview=self._backend._shorten(result_json, 1200),
+            status=status,
+            summary=summary,
+            source_refs=source_refs,
+        )
+
+    def _build_answer_bundle(
+        self,
+        *,
+        raw_text: str,
+        tool_events: list[ToolEvent],
+        evidence_status: str,
+    ) -> dict[str, Any]:
+        citations: list[dict[str, Any]] = []
+        for index, item in enumerate(tool_events, start=1):
+            for ref in item.source_refs[:4]:
+                citations.append(
+                    {
+                        "id": f"tool-{index}-{len(citations) + 1}",
+                        "source_type": "web" if ref.startswith("http://") or ref.startswith("https://") else "tool",
+                        "kind": "evidence",
+                        "tool": item.name,
+                        "label": ref,
+                        "url": ref if ref.startswith("http://") or ref.startswith("https://") else None,
+                        "path": None if ref.startswith("http://") or ref.startswith("https://") else ref,
+                        "excerpt": item.summary or item.output_preview[:240],
+                        "confidence": "medium",
+                    }
+                )
+        warnings: list[str] = []
+        if evidence_status == "needs_evidence_review":
+            warnings.append("任务涉及外部或运行时事实，但当前轮没有形成完整证据链。")
+        return {
+            "summary": raw_text[:500],
+            "claims": [],
+            "citations": citations,
+            "warnings": warnings,
+        }
+
     def run(
         self,
         *,
@@ -282,6 +455,8 @@ class VintageProgrammerRuntime:
         selected_tools = list(self._spec.allowed_tools if settings.enable_tools else ())
         tool_round_limit = self._spec.max_tool_rounds if selected_tools else 0
         expects_tools = bool(selected_tools) and _contains_any(prompt_message, _TOOL_REQUIRED_HINTS)
+        current_goal = _truncate_goal(prompt_message)
+        active_phase = self._spec.workflow_phases[0] if self._spec.workflow_phases else "explore"
 
         messages: list[Any] = [
             self._backend._SystemMessage(content=self._render_system_prompt(settings)),
@@ -294,6 +469,20 @@ class VintageProgrammerRuntime:
             f"tool_policy:{self._spec.tool_policy}",
         ]
         tool_events: list[ToolEvent] = []
+        effective_model = requested_model
+        self._emit_stage(
+            progress_cb,
+            phase="explore",
+            label="Explore",
+            detail="已装载 agent 规范与会话上下文，开始判断是否需要工具取证。",
+        )
+        self._emit_stage(
+            progress_cb,
+            phase="plan",
+            label="Plan",
+            detail=f"已确定本轮目标：{current_goal or '处理当前请求'}",
+            status="completed",
+        )
 
         if hasattr(self._backend.tools, "set_runtime_context"):
             self._backend.tools.set_runtime_context(
@@ -302,6 +491,13 @@ class VintageProgrammerRuntime:
             )
 
         try:
+            active_phase = "execute"
+            self._emit_stage(
+                progress_cb,
+                phase="execute",
+                label="Execute",
+                detail="开始请求模型并准备执行允许的工具。",
+            )
             ai_msg, runner, effective_model, invoke_notes = self._backend._invoke_chat_with_runner(
                 messages=messages,
                 model=requested_model,
@@ -325,6 +521,7 @@ class VintageProgrammerRuntime:
                                 content="当前任务需要先调用至少一个合适工具再下结论。请先完成取证或执行，再输出结果。"
                             )
                         )
+                        notes.append("tool_nudge_applied")
                         ai_msg, runner, effective_model, invoke_notes = self._backend._invoke_with_runner_recovery(
                             runner=runner,
                             messages=messages,
@@ -352,23 +549,22 @@ class VintageProgrammerRuntime:
                             "error": f"Tool not allowed: {name or '(empty)'}",
                             "allowed_tools": selected_tools,
                         }
-                    result_json = json.dumps(result, ensure_ascii=False)
-                    event = ToolEvent(
-                        name=name or "(unknown)",
-                        input=arguments,
-                        output_preview=self._backend._shorten(result_json, 1200),
-                    )
+                    event = self._build_tool_event(name=name, arguments=arguments, result=result)
                     tool_events.append(event)
                     if progress_cb is not None:
                         progress_cb(
                             {
                                 "event": "tool",
                                 "item": event.model_dump(),
+                                "status": event.status,
+                                "summary": event.summary,
+                                "source_refs": list(event.source_refs),
                                 "tool_round": round_idx + 1,
                                 "tool_index": call_idx,
                                 "agent_id": self._spec.agent_id,
                             }
                         )
+                    result_json = json.dumps(result, ensure_ascii=False)
                     messages.append(
                         self._backend._ToolMessage(
                             content=self._backend._shorten(result_json, 60000),
@@ -394,20 +590,60 @@ class VintageProgrammerRuntime:
         raw_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
         if not raw_text:
             raw_text = "(empty response)"
-        if expects_tools and not tool_events:
-            notes.append("tool_expectation_not_met")
+        active_phase = "verify"
+        self._emit_stage(
+            progress_cb,
+            phase="verify",
+            label="Verify",
+            detail="正在整理工具结果并检查证据状态。",
+        )
+        has_successful_tool = any(item.status == "ok" for item in tool_events)
+        evidence_status = "not_needed"
+        if expects_tools:
+            evidence_status = "collected" if has_successful_tool else "needs_evidence_review"
+            if not has_successful_tool:
+                notes.append("tool_expectation_not_met")
+        answer_bundle = self._build_answer_bundle(
+            raw_text=raw_text,
+            tool_events=tool_events,
+            evidence_status=evidence_status,
+        )
+        if answer_bundle["warnings"]:
+            notes.extend(answer_bundle["warnings"])
 
+        active_phase = "report"
+        self._emit_stage(
+            progress_cb,
+            phase="report",
+            label="Report",
+            detail="已完成本轮汇报与结果封装。",
+            status="completed",
+        )
         inspector = {
-            "agent": self._spec.descriptor(),
-            "notes": self._dedup_notes(notes),
+            "agent": self.descriptor(),
+            "run_state": {
+                "goal": current_goal,
+                "phase": active_phase,
+                "workflow_phases": list(self._spec.workflow_phases),
+                "requires_tools": expects_tools,
+                "tool_round_limit": tool_round_limit,
+                "network_mode": self._spec.network_mode,
+            },
+            "tool_timeline": [item.model_dump() for item in tool_events],
+            "evidence": {
+                "status": evidence_status,
+                "required": expects_tools,
+                "warning": answer_bundle["warnings"][0] if answer_bundle["warnings"] else "",
+                "source_refs": [ref for item in tool_events for ref in item.source_refs][:12],
+                "tool_count": len(tool_events),
+            },
             "session": {
                 "session_id": str(context_payload.get("session_id") or ""),
                 "history_turn_count": len(list(context_payload.get("history_turns") or [])),
                 "attachment_count": len(list(context_payload.get("attachments") or [])),
             },
             "token_usage": dict(usage_total),
-            "tool_count": len(tool_events),
-            "tool_names": [item.name for item in tool_events],
+            "notes": self._dedup_notes(notes),
         }
 
         return {
@@ -419,15 +655,13 @@ class VintageProgrammerRuntime:
             "tool_events": [item.model_dump() for item in tool_events],
             "token_usage": usage_total,
             "inspector": inspector,
-            "answer_bundle": {
-                "summary": raw_text[:500],
-                "claims": [],
-                "citations": [],
-                "warnings": [],
-            },
+            "answer_bundle": answer_bundle,
             "route_state": {
                 "agent_id": self._spec.agent_id,
                 "tool_policy": self._spec.tool_policy,
+                "phase": active_phase,
+                "network_mode": self._spec.network_mode,
+                "evidence_status": evidence_status,
                 "tool_count": len(tool_events),
             },
         }

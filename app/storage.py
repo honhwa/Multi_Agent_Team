@@ -40,6 +40,17 @@ class SessionStore:
             "turns": [],
             "active_attachment_ids": [],
             "attachment_context_cleared": False,
+            "agent_state": {
+                "agent_id": "vintage_programmer",
+                "current_goal": "",
+                "phase": "idle",
+                "last_run_id": "",
+                "last_model": "",
+                "tool_count": 0,
+                "tool_names": [],
+                "evidence_status": "not_needed",
+                "updated_at": now_iso(),
+            },
             "route_state": {},
             "attachment_route_states": {},
         }

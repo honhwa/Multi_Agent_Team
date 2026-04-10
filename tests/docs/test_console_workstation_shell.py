@@ -14,9 +14,10 @@ def test_workstation_shell_mounts_exist() -> None:
         'id="appShell"',
         'id="threadSidebar"',
         'id="chatPane"',
-        'id="inspectorPane"',
         'id="messageList"',
         'id="composerShell"',
+        'id="detailDrawer"',
+        'id="statusBar"',
         'id="settingsModal"',
     ]
     for token in required_tokens:
@@ -31,7 +32,7 @@ def test_workstation_shell_behaviors_are_wired() -> None:
         'fetch("/api/chat/stream"',
         'fetch("/api/upload"',
         'fetch("/api/sessions?limit=80")',
-        "setInspectorOpen((prev) => !prev)",
+        "setDrawerView(",
         "handleSelectFiles",
     ]
     for token in required_tokens:

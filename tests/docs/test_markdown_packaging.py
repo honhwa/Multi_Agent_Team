@@ -15,6 +15,7 @@ def test_packaging_assets_exist() -> None:
         REPO_ROOT / 'LICENSE',
         REPO_ROOT / 'README.en.md',
         REPO_ROOT / 'agents' / 'vintage_programmer' / 'soul.md',
+        REPO_ROOT / 'agents' / 'vintage_programmer' / 'identity.md',
         REPO_ROOT / 'agents' / 'vintage_programmer' / 'agent.md',
         REPO_ROOT / 'agents' / 'vintage_programmer' / 'tools.md',
     ]
