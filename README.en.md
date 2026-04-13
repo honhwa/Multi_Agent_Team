@@ -1,9 +1,11 @@
 # Vintage Programmer
 
 [中文 README](README.md)  
-[Windows Guide](README.windows.md)
+[Windows Guide](README.windows.md)  
+[Release Flow](RELEASING.md)
 
 This is a local single-agent workstation. The default main agent is `vintage_programmer`.
+The current stable release is `v1.0.0`.
 
 The current UI shape is the third-stage workstation:
 - left thread rail
@@ -52,7 +54,7 @@ OpenAI official:
 ```env
 VP_LLM_PROVIDER=openai
 VP_OPENAI_API_KEY=your_key
-VP_DEFAULT_MODEL=gpt-5.1-chat
+VP_OPENAI_DEFAULT_MODEL=gpt-5.1-chat
 ```
 
 If `VP_OPENAI_API_KEY` is absent but `VP_CODEX_AUTH_FILE` exists locally, the app will use Codex auth automatically.
@@ -64,7 +66,7 @@ VP_LLM_PROVIDER=openai_compatible
 VP_OPENAI_COMPAT_API_KEY=your_gateway_key
 VP_OPENAI_COMPAT_BASE_URL=https://your-gateway.example.com/v1
 VP_OPENAI_COMPAT_CA_CERT_PATH=/absolute/path/to/your-root-ca.pem
-VP_DEFAULT_MODEL=gpt-5.1-chat
+VP_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.1-chat
 ```
 
 OpenRouter:
@@ -73,7 +75,8 @@ OpenRouter:
 VP_LLM_PROVIDER=openrouter
 VP_OPENROUTER_API_KEY=your_openrouter_key
 VP_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-VP_DEFAULT_MODEL=google/gemma-4-31b-it:free
+VP_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free
+VP_OPENROUTER_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free
 ```
 
 If you are looking at a model page like:
@@ -84,7 +87,7 @@ https://openrouter.ai/google/gemma-4-31b-it:free/api
 
 that is not the value for `VP_OPENROUTER_BASE_URL`. Use:
 - `VP_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`
-- `VP_DEFAULT_MODEL=google/gemma-4-31b-it:free`
+- `VP_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free`
 
 More examples: [.env.example](.env.example)
 
@@ -132,3 +135,14 @@ Only skills with `enabled: true` and `bind_to` including `vintage_programmer` ar
 ## Inline Code
 
 If you paste code, XML, HTML, JSON, YAML, or other long text directly into the composer, the agent should analyze that inline content first instead of forcing a workspace path lookup.
+
+## Release
+
+The release flow is fixed:
+
+- ship work on a `codex/*` candidate branch
+- merge to `main` after regression passes
+- create an annotated tag on the release commit, for example `v1.0.0`
+- start the next change from a fresh `codex/*` branch cut from the latest `main`
+
+See [RELEASING.md](RELEASING.md) for the full checklist.

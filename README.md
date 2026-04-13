@@ -1,9 +1,11 @@
 # Vintage Programmer
 
 [English README](README.en.md)  
-[Windows 指南](README.windows.md)
+[Windows 指南](README.windows.md)  
+[发布流程](RELEASING.md)
 
 这是一个本地运行的单主 agent 工作台，默认主 agent 是 `vintage_programmer`。
+当前稳定版本是 `v1.0.0`。
 
 当前工作台形态是第三阶段版本：
 - 左侧线程栏
@@ -51,7 +53,7 @@ OpenAI 官方：
 ```env
 VP_LLM_PROVIDER=openai
 VP_OPENAI_API_KEY=你的_key
-VP_DEFAULT_MODEL=gpt-5.1-chat
+VP_OPENAI_DEFAULT_MODEL=gpt-5.1-chat
 ```
 
 如果你不填 `VP_OPENAI_API_KEY`，但本机存在 `VP_CODEX_AUTH_FILE`，程序会自动切到 Codex auth。
@@ -63,7 +65,7 @@ VP_LLM_PROVIDER=openai_compatible
 VP_OPENAI_COMPAT_API_KEY=你的网关_key
 VP_OPENAI_COMPAT_BASE_URL=https://your-gateway.example.com/v1
 VP_OPENAI_COMPAT_CA_CERT_PATH=/absolute/path/to/your-root-ca.pem
-VP_DEFAULT_MODEL=gpt-5.1-chat
+VP_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.1-chat
 ```
 
 OpenRouter：
@@ -72,7 +74,8 @@ OpenRouter：
 VP_LLM_PROVIDER=openrouter
 VP_OPENROUTER_API_KEY=你的_openrouter_key
 VP_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-VP_DEFAULT_MODEL=google/gemma-4-31b-it:free
+VP_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free
+VP_OPENROUTER_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free
 ```
 
 如果你看到的是这种 OpenRouter 模型页面链接：
@@ -83,7 +86,7 @@ https://openrouter.ai/google/gemma-4-31b-it:free/api
 
 它不是 `VP_OPENROUTER_BASE_URL`。正确填写方式是：
 - `VP_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`
-- `VP_DEFAULT_MODEL=google/gemma-4-31b-it:free`
+- `VP_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free`
 
 更多示例见 [.env.example](.env.example)。
 
@@ -135,6 +138,17 @@ https://openrouter.ai/google/gemma-4-31b-it:free/api
 - `summary`
 
 只有 `enabled: true` 且 `bind_to` 包含 `vintage_programmer` 的 skill 会注入主 agent。
+
+## 发布
+
+正式发布流程固定为：
+
+- 在 `codex/*` 候选分支完成改动
+- 回归通过后合到 `main`
+- 在 `main` 的发布提交上打 annotated tag，例如 `v1.0.0`
+- 后续新改动始终从最新 `main` 再切新的 `codex/*` 分支
+
+详细步骤见 [RELEASING.md](RELEASING.md)。
 
 ## 工具说明
 

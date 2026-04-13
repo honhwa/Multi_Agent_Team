@@ -1,5 +1,7 @@
 # Vintage Programmer Windows 指南
 
+当前稳定版本：`v1.0.0`。
+
 默认建议：不要激活 `Activate.ps1`，直接使用 `.venv\Scripts\python.exe`。
 
 ## 运行
@@ -25,7 +27,7 @@ OpenAI 官方：
 ```env
 VP_LLM_PROVIDER=openai
 VP_OPENAI_API_KEY=你的_key
-VP_DEFAULT_MODEL=gpt-5.1-chat
+VP_OPENAI_DEFAULT_MODEL=gpt-5.1-chat
 ```
 
 如果你不填 `VP_OPENAI_API_KEY`，但本机存在 `VP_CODEX_AUTH_FILE`，程序会自动切到 Codex auth。
@@ -37,7 +39,7 @@ VP_LLM_PROVIDER=openai_compatible
 VP_OPENAI_COMPAT_API_KEY=你的网关_key
 VP_OPENAI_COMPAT_BASE_URL=https://your-gateway.example.com/v1
 VP_OPENAI_COMPAT_CA_CERT_PATH=C:\certs\your-root-ca.pem
-VP_DEFAULT_MODEL=gpt-5.1-chat
+VP_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.1-chat
 ```
 
 OpenRouter：
@@ -46,7 +48,8 @@ OpenRouter：
 VP_LLM_PROVIDER=openrouter
 VP_OPENROUTER_API_KEY=你的_openrouter_key
 VP_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-VP_DEFAULT_MODEL=google/gemma-4-31b-it:free
+VP_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free
+VP_OPENROUTER_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free
 ```
 
 如果你看到的是这个模型页面：
@@ -57,7 +60,7 @@ https://openrouter.ai/google/gemma-4-31b-it:free/api
 
 不要把它直接填进 `VP_OPENROUTER_BASE_URL`。正确写法是：
 - `VP_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`
-- `VP_DEFAULT_MODEL=google/gemma-4-31b-it:free`
+- `VP_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free`
 
 ## 接口说明
 
@@ -81,3 +84,14 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
 但默认不推荐，直接调 `.venv\Scripts\python.exe` 更稳。
+
+## 发布
+
+正式发布固定走：
+
+- 在 `codex/*` 候选分支完成改动
+- 回归通过后合到 `main`
+- 在发布提交上打 annotated tag，例如 `v1.0.0`
+- 后续新改动从最新 `main` 再切新的 `codex/*` 分支
+
+完整清单见 [RELEASING.md](RELEASING.md)。
