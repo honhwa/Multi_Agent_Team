@@ -637,6 +637,26 @@ class ReadSessionHistoryArgs(BaseModel):
     max_turns: int = Field(default=80, ge=1, le=800)
 
 
+class KernelRuntimeStatusArgs(BaseModel):
+    include_roles: bool = True
+    include_runtime_files: bool = False
+
+
+class KernelShadowPipelineToolArgs(BaseModel):
+    smoke_message: str = "给我今天的新闻"
+    validate_provider: bool = True
+    promote_if_healthy: bool = False
+
+
+class KernelShadowSelfUpgradeToolArgs(BaseModel):
+    smoke_message: str = "给我今天的新闻"
+    validate_provider: bool = True
+    max_attempts: int = Field(default=1, ge=1, le=5)
+    max_tasks: int = Field(default=1, ge=1, le=10)
+    max_rounds: int = Field(default=2, ge=1, le=5)
+    promote_if_healthy: bool = True
+
+
 class OfficeAgent:
     """Canonical office execution runtime implementation."""
 
@@ -714,7 +734,14 @@ class OfficeAgent:
                 self._lc_tools = self._build_langchain_tools()
         else:
             self._lc_tools = self._build_langchain_tools()
-        self._lc_tool_map = {getattr(tool, "name", ""): tool for tool in self._lc_tools}
+        self._lc_tool_map = {
+            str(getattr(tool, "name", "") or "").strip(): tool
+            for tool in self._lc_tools
+            if str(getattr(tool, "name", "") or "").strip()
+        }
+        self._lc_tool_map_casefold = {
+            name.lower(): tool for name, tool in self._lc_tool_map.items()
+        }
         self._role_registry = self._capability_runtime.role_registry
         self._role_runtime_controller = self._capability_runtime.runtime_controller
         self._model_failover_lock = threading.Lock()
@@ -1477,6 +1504,14 @@ class OfficeAgent:
                     "对新闻/实时信息类问题，若第一次搜索结果不足，先自动改写 query 并重试最多 2 次，"
                     "再决定是否向用户补充提问。\n"
                     "如果当前用户消息只是“上网查一下/再查一下/搜一下”这类短跟进，默认延续最近一轮用户主题，不要假装丢失上下文重新问用户想查什么。\n"
+                    "当用户给出 GitHub/仓库 URL 并要求读取仓库内容时，先直接联网抓取目录或正文，必要时用 run_shell 执行 git clone 后继续分析；"
+                    "不要以“planner 约束只能输出计划/不能联网下载”作为拒绝理由。\n"
+                    "当用户要求模块进化、自我修复、自我升级时，允许在 shadow 副本执行修复与验证；"
+                    "禁止的是未经验证直接覆盖在线核心，不要笼统回复“这是禁止能力”。\n"
+                    "这类升级任务优先调用 kernel_shadow_self_upgrade 或 kernel_shadow_pipeline / kernel_runtime_status，"
+                    "不要改成泛化问答或反复追问。\n"
+                    "当用户问“现在能不能升级模块”时，先调用 kernel_runtime_status 给出现状；"
+                    "如果用户继续要求执行，就直接调用 kernel_shadow_self_upgrade，不要回答“不能自主升级模块”。\n"
                     "如果参数可合理推断（如标题、默认文件名、默认目录），请直接执行并在回复里说明假设；"
                     "不要因为参数不完整而连续多轮追问。\n"
                     "联网信息不足时，先自动换来源继续抓取；即使正文不完整，也先基于可访问到的标题/摘要给临时结论，"
@@ -2701,6 +2736,10 @@ class OfficeAgent:
                                 "用户当前请求已授权你直接继续执行。",
                                 "请立即调用必要工具完成任务（例如 read_text_file/write_text_file/append_text_file/replace_in_file），",
                                 "并直接返回最终结果。",
+                                "不要再用“planner 约束只能输出计划/不能联网下载/禁止自我更新”做拒绝理由；",
+                                "涉及模块进化时应切到 shadow 修复与验证路径。",
+                                "如果用户在问“现在能不能升级模块”，先调 kernel_runtime_status 给出现状；",
+                                "如果用户要求执行升级，就直接调 kernel_shadow_self_upgrade。",
                             ]
                         )
                     else:
@@ -2803,7 +2842,7 @@ class OfficeAgent:
             branch_failures = 0
             branch_count = 0
             for call_index, call in enumerate(tool_calls, start=1):
-                name = call.get("name") or "unknown"
+                name = self._resolve_tool_name(call.get("name") or "unknown")
                 arguments = call.get("args") or {}
                 if not isinstance(arguments, dict):
                     arguments = {}
@@ -2851,7 +2890,7 @@ class OfficeAgent:
                             },
                             node_id=tool_branch_node_id,
                         )
-                    result = self.tools.execute(name, arguments)
+                    result = self._execute_tool_call(name, arguments)
                     should_retry_tool, retry_trace = self._should_retry_worker_tool_result(
                         tool_name=str(name),
                         result=result,
@@ -2938,7 +2977,7 @@ class OfficeAgent:
                             )
                             executed_tool_branch_ids.append(synthetic_node_id)
                         branch_count += 1
-                        synthetic_result = self.tools.execute(synthetic_name, synthetic_args)
+                        synthetic_result = self._execute_tool_call(synthetic_name, synthetic_args)
                         append_tool_result_message(
                             name=synthetic_name,
                             arguments=synthetic_args,
@@ -3366,7 +3405,7 @@ class OfficeAgent:
                         )
                         if not synthetic_name or not synthetic_args:
                             continue
-                        synthetic_result = self.tools.execute(synthetic_name, synthetic_args)
+                        synthetic_result = self._execute_tool_call(synthetic_name, synthetic_args)
                         append_tool_result_message(
                             name=synthetic_name,
                             arguments=synthetic_args,
@@ -5348,6 +5387,31 @@ class OfficeAgent:
             "please provide the source file",
             "need full filename",
             "need file extension",
+            "planner constraints",
+            "can only output a plan",
+            "plan-only",
+            "cannot download from the internet",
+            "不能联网下载",
+            "不能联网抓取",
+            "不能直接读取仓库内容",
+            "planner的约束指出本轮只能输出计划",
+            "planner 约束指出本轮只能输出计划",
+            "禁止能力",
+            "这是禁止能力",
+            "不能实现或设计任何形式的自我更新",
+            "不能实现自我更新",
+            "无法自我更新",
+            "不能自主升级模块",
+            "无法自主升级模块",
+            "不能自行升级模块",
+            "不能自主更新模块",
+            "self-update is not allowed",
+            "self update is not allowed",
+            "cannot implement self-update",
+            "cannot autonomously upgrade modules",
+            "cannot upgrade modules autonomously",
+            "cannot self-upgrade modules",
+            "forbidden capability",
             "没有可用的文件读取工具",
             "没有可用文件读取工具",
             "没有文件读取工具",
@@ -7426,6 +7490,32 @@ class OfficeAgent:
                 args_schema=SearchWebArgs,
                 func=self._search_web_tool,
             ),
+            self._StructuredTool.from_function(
+                name="kernel_runtime_status",
+                description=(
+                    "Read kernel runtime status, including selected modules, health, and office role runtime readiness."
+                ),
+                args_schema=KernelRuntimeStatusArgs,
+                func=self._kernel_runtime_status_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="kernel_shadow_pipeline",
+                description=(
+                    "Run shadow validation/contracts/smoke pipeline to generate an upgrade attempt "
+                    "without touching active modules."
+                ),
+                args_schema=KernelShadowPipelineToolArgs,
+                func=self._kernel_shadow_pipeline_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="kernel_shadow_self_upgrade",
+                description=(
+                    "Run shadow self-upgrade end-to-end. If no previous upgrade attempt exists, "
+                    "it auto-runs a baseline shadow pipeline first."
+                ),
+                args_schema=KernelShadowSelfUpgradeToolArgs,
+                func=self._kernel_shadow_self_upgrade_tool,
+            ),
         ]
         if self.config.enable_session_tools:
             tools.append(
@@ -7449,13 +7539,76 @@ class OfficeAgent:
     def build_langchain_tools(self) -> list[Any]:
         return list(getattr(self, "_lc_tools", None) or self._build_langchain_tools())
 
+    def _resolve_tool_name(self, name: str) -> str:
+        key = str(name or "").strip()
+        if not key:
+            return key
+        if key in self._lc_tool_map:
+            return key
+        tool = self._lc_tool_map_casefold.get(key.lower())
+        if tool is None:
+            return key
+        resolved = str(getattr(tool, "name", "") or "").strip()
+        return resolved or key
+
+    def _invoke_langchain_tool_fallback(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        resolved_name = self._resolve_tool_name(name)
+        tool = self._lc_tool_map.get(resolved_name)
+        if tool is None:
+            return {"ok": False, "error": f"Unknown tool: {name}"}
+        try:
+            payload = tool.invoke(arguments if isinstance(arguments, dict) else {})
+        except Exception as exc:
+            return {"ok": False, "error": f"Tool execution failed ({resolved_name}): {exc}"}
+
+        if isinstance(payload, dict):
+            return payload if "ok" in payload else {"ok": True, "result": payload}
+
+        if isinstance(payload, str):
+            stripped = payload.strip()
+            if stripped.startswith("{") and stripped.endswith("}"):
+                try:
+                    decoded = json.loads(stripped)
+                except Exception:
+                    decoded = None
+                if isinstance(decoded, dict):
+                    return decoded
+            return {"ok": True, "output": payload}
+
+        if isinstance(payload, (int, float, bool)) or payload is None:
+            return {"ok": True, "output": payload}
+
+        return {"ok": True, "output": str(payload)}
+
+    def _execute_tool_call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        resolved_name = self._resolve_tool_name(name)
+        args = arguments if isinstance(arguments, dict) else {}
+        try:
+            result = self.tools.execute(resolved_name, args)
+        except Exception as exc:
+            message = str(exc or "").strip()
+            lowered = message.lower()
+            if "not registered in module" in lowered or "unknown tool" in lowered:
+                return self._invoke_langchain_tool_fallback(resolved_name, args)
+            return {"ok": False, "error": message or f"Tool execution failed: {resolved_name}"}
+
+        if isinstance(result, dict):
+            error_text = str(result.get("error") or "").strip().lower()
+            if not bool(result.get("ok", True)) and error_text.startswith("unknown tool:"):
+                fallback = self._invoke_langchain_tool_fallback(resolved_name, args)
+                if bool(fallback.get("ok", False)):
+                    return fallback
+            return result
+
+        return {"ok": True, "output": result}
+
     def _select_langchain_tools(self, tool_names: list[str] | None = None) -> list[Any]:
         if not tool_names:
             return self._lc_tools
         selected: list[Any] = []
         seen: set[str] = set()
         for name in tool_names:
-            key = str(name or "").strip()
+            key = self._resolve_tool_name(str(name or "").strip())
             if not key or key in seen:
                 continue
             tool = self._lc_tool_map.get(key)
@@ -7758,6 +7911,110 @@ class OfficeAgent:
     def _search_web_tool(self, query: str, max_results: int = 5, timeout_sec: int = 12) -> str:
         result = self.tools.search_web(query=query, max_results=max_results, timeout_sec=timeout_sec)
         return json.dumps(result, ensure_ascii=False)
+
+    def _kernel_runtime_status_tool(self, include_roles: bool = True, include_runtime_files: bool = False) -> str:
+        try:
+            snapshot = self._kernel_runtime.health_snapshot()
+            payload: dict[str, Any] = {
+                "ok": True,
+                "active_manifest": dict(snapshot.active_manifest),
+                "selected_modules": dict(snapshot.selected_modules),
+                "module_health": dict(snapshot.module_health),
+                "last_upgrade_run": self._kernel_runtime.read_last_upgrade_run(),
+                "last_repair_run": self._kernel_runtime.read_last_repair_run(),
+                "last_patch_worker_run": self._kernel_runtime.read_last_patch_worker_run(),
+                "last_package_run": self._kernel_runtime.read_last_package_run(),
+                "last_shadow_run": self._kernel_runtime.read_last_shadow_run(),
+            }
+            if include_runtime_files:
+                payload["runtime_files"] = dict(snapshot.runtime_files)
+            if include_roles:
+                payload["role_registry"] = self._role_registry.snapshot()
+                payload["stage4_readiness"] = self._role_runtime_controller.stage4_readiness()
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+
+    def _kernel_shadow_pipeline_tool(
+        self,
+        smoke_message: str = "给我今天的新闻",
+        validate_provider: bool = True,
+        promote_if_healthy: bool = False,
+    ) -> str:
+        try:
+            pipeline = self._kernel_runtime.run_shadow_pipeline(
+                overrides={},
+                smoke_message=smoke_message,
+                validate_provider=bool(validate_provider),
+                replay_record=None,
+                promote_if_healthy=bool(promote_if_healthy),
+            )
+            payload = {
+                "ok": bool(pipeline.get("ok")),
+                "run_id": str(pipeline.get("run_id") or ""),
+                "failure_classification": dict(pipeline.get("failure_classification") or {}),
+                "remediation_hints": list(pipeline.get("remediation_hints") or []),
+                "validation": dict(pipeline.get("validation") or {}),
+                "contracts": dict(pipeline.get("contracts") or {}),
+                "smoke": dict(pipeline.get("smoke") or {}),
+                "replay": dict(pipeline.get("replay") or {}),
+                "promotion": dict(pipeline.get("promotion") or {}),
+                "pipeline": pipeline,
+            }
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+
+    def _kernel_shadow_self_upgrade_tool(
+        self,
+        smoke_message: str = "给我今天的新闻",
+        validate_provider: bool = True,
+        max_attempts: int = 1,
+        max_tasks: int = 1,
+        max_rounds: int = 2,
+        promote_if_healthy: bool = True,
+    ) -> str:
+        try:
+            base_upgrade_run = self._kernel_runtime.read_last_upgrade_run()
+            bootstrap_pipeline: dict[str, Any] = {}
+            bootstrap_triggered = False
+            if not isinstance(base_upgrade_run, dict) or not base_upgrade_run:
+                bootstrap_triggered = True
+                bootstrap_pipeline = self._kernel_runtime.run_shadow_pipeline(
+                    overrides={},
+                    smoke_message=smoke_message,
+                    validate_provider=bool(validate_provider),
+                    replay_record=None,
+                    promote_if_healthy=False,
+                )
+                base_upgrade_run = bootstrap_pipeline
+
+            self_upgrade = self._kernel_runtime.run_shadow_self_upgrade(
+                base_upgrade_run=base_upgrade_run if isinstance(base_upgrade_run, dict) and base_upgrade_run else None,
+                replay_record=None,
+                smoke_message=smoke_message,
+                validate_provider=bool(validate_provider),
+                max_attempts=max(1, min(5, int(max_attempts))),
+                max_tasks=max(1, min(10, int(max_tasks))),
+                max_rounds=max(1, min(5, int(max_rounds))),
+                promote_if_healthy=bool(promote_if_healthy),
+            )
+            payload = {
+                "ok": bool(self_upgrade.get("ok")),
+                "bootstrap_triggered": bootstrap_triggered,
+                "bootstrap_upgrade_run_id": str(bootstrap_pipeline.get("run_id") or ""),
+                "base_upgrade_run_id": str((base_upgrade_run or {}).get("run_id") or ""),
+                "self_upgrade_run_id": str(self_upgrade.get("run_id") or ""),
+                "stop_reason": str(self_upgrade.get("stop_reason") or ""),
+                "final_pipeline": dict(self_upgrade.get("final_pipeline") or {}),
+                "promotion": dict(self_upgrade.get("promotion") or {}),
+                "repair": dict(self_upgrade.get("repair") or {}),
+                "patch_worker": dict(self_upgrade.get("patch_worker") or {}),
+                "self_upgrade": self_upgrade,
+            }
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
 
     def _list_sessions_tool(self, max_sessions: int = 20) -> str:
         result = self.tools.list_sessions(max_sessions=max_sessions)

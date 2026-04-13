@@ -59,7 +59,8 @@ Check whether you are using the correct entrypoint:
 
 - day-to-day app: `./run.sh` or `./run.ps1`
 - role lab: `./run-role-agent-lab.sh`
-- kernel view: `./run-kernel-robot.sh`
+- main product alias: `./run-multi-agent-robot.sh`
+- legacy alias: `./run-kernel-robot.sh`
 
 ## Escalation Order
 

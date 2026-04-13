@@ -134,6 +134,7 @@ class ChatResponse(BaseModel):
     run_id: str | None = None
     agent_id: str = "vintage_programmer"
     agent_title: str = "Vintage Programmer"
+    selected_business_module: str = ""
     effective_model: str | None = None
     queue_wait_ms: int = 0
     text: str

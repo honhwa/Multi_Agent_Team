@@ -14,8 +14,8 @@ These should be treated as the stable Python package layer.
 
 These directories are product-facing shells, not shared runtime libraries:
 
-- `packages/kernel-robot`
-- `packages/role-agent-lab`
+- `packages/kernel-robot` (legacy shell name for `Multi_Agent_Robot`)
+- `packages/role-agent-lab` (`Multi_Agent_Robot Lab`)
 
 They are consumers of the runtime, not the runtime itself.
 

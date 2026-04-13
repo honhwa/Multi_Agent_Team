@@ -100,6 +100,8 @@ if (-not $appModule) { $appModule = "app.main:app" }
 $appPort = Get-EnvFirst @("VP_APP_PORT")
 if (-not $appPort) { $appPort = "8080" }
 
+$env:OFFICETOOL_APP_PROFILE = if ($env:OFFICETOOL_APP_PROFILE) { $env:OFFICETOOL_APP_PROFILE } else { "multi_agent_robot" }
+
 $venvPython = Join-Path $rootDir ".venv\Scripts\python.exe"
 if (Test-Path $venvPython) {
   & $venvPython -m uvicorn $appModule --host 0.0.0.0 --port $appPort --reload

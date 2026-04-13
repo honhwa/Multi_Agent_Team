@@ -157,6 +157,51 @@ def looks_like_permission_gate_text(
         return False
     if len(lowered) > 5000:
         lowered = lowered[:5000]
+    hard_refusal_patterns = (
+        "planner的约束指出本轮只能输出计划",
+        "planner 约束指出本轮只能输出计划",
+        "只能输出计划",
+        "次任务目前不能直接读取仓库内容",
+        "不能直接读取仓库内容",
+        "不能联网下载",
+        "不能联网抓取",
+        "planner constraints",
+        "can only output a plan",
+        "plan-only",
+        "cannot download from the internet",
+        "this capability is forbidden",
+        "forbidden capability",
+        "这是禁止能力",
+        "禁止能力",
+        "不能实现或设计任何形式的自我更新",
+        "不能实现自我更新",
+        "不能设计自我更新",
+        "无法实现自我更新",
+        "无法自我更新",
+        "无法升级模块",
+        "无法自主升级模块",
+        "不能升级模块",
+        "不能自主升级模块",
+        "不能自行升级模块",
+        "不能自主更新模块",
+        "不能执行升级",
+        "self-update is not allowed",
+        "self update is not allowed",
+        "cannot upgrade module",
+        "cannot autonomously upgrade modules",
+        "cannot upgrade modules autonomously",
+        "cannot self-upgrade modules",
+        "can't autonomously upgrade modules",
+        "cannot implement self-update",
+        "cannot design self-update",
+        "cannot self-update",
+    )
+    if any(pattern in lowered for pattern in hard_refusal_patterns):
+        return True
+    if re.search(r"(不能|无法).{0,8}(自主|自行).{0,8}(升级|更新).{0,8}(模块)", lowered):
+        return True
+    if re.search(r"cannot.{0,24}(autonom|self).{0,24}(upgrade|update).{0,24}module", lowered):
+        return True
     attachment_deferral_patterns = (
         "已完成解析", "已经完成解析", "已经完成了解析", "已解析完成", "已经解析完成", "无需调用工具",
         "无需再调用工具", "无需再次调用工具", "不需要调用工具", "不必调用工具", "already parsed",

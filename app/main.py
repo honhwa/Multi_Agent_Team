@@ -149,6 +149,7 @@ def _resolve_build_version() -> str:
 
 BUILD_VERSION = _resolve_build_version()
 GIT_BRANCH = _git_value("rev-parse", "--abbrev-ref", "HEAD")
+LEGACY_AGENT_DIR = Path(__file__).resolve().parent / "agents"
 
 
 class AgentRunQueue:
@@ -216,6 +217,34 @@ run_queue = AgentRunQueue(config.max_concurrent_runs)
 
 def get_kernel_runtime():
     return kernel_runtime
+
+
+def _list_legacy_agent_manifests() -> list[dict[str, Any]]:
+    manifests: list[dict[str, Any]] = []
+    if not LEGACY_AGENT_DIR.is_dir():
+        return manifests
+    for manifest_path in sorted(LEGACY_AGENT_DIR.glob("*/manifest.json")):
+        agent_id = manifest_path.parent.name
+        payload: dict[str, Any] = {
+            "id": agent_id,
+            "name": agent_id,
+            "title": agent_id,
+            "path": str(manifest_path.parent),
+        }
+        try:
+            raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                payload.update(
+                    {
+                        "id": str(raw.get("id") or agent_id),
+                        "name": str(raw.get("name") or raw.get("id") or agent_id),
+                        "title": str(raw.get("title") or raw.get("name") or raw.get("id") or agent_id),
+                    }
+                )
+        except Exception:
+            pass
+        manifests.append(payload)
+    return manifests
 
 
 def get_project_store() -> ProjectStore:
@@ -384,6 +413,31 @@ def health() -> HealthResponse:
         },
         agent=agent_descriptor,
     )
+
+
+@app.get("/api/agents")
+def list_legacy_agents() -> dict[str, Any]:
+    agents = _list_legacy_agent_manifests()
+    return {
+        "ok": True,
+        "count": len(agents),
+        "agents": agents,
+    }
+
+
+@app.post("/api/agents/{agent_id}/reload")
+def reload_legacy_agent(agent_id: str) -> dict[str, Any]:
+    normalized = str(agent_id or "").strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="agent_id is required")
+    known = {str(item.get("id") or "") for item in _list_legacy_agent_manifests()}
+    if normalized not in known:
+        raise HTTPException(status_code=404, detail=f"Unknown agent: {normalized}")
+    return {
+        "ok": True,
+        "agent_id": normalized,
+        "reloaded": True,
+    }
 
 
 @app.get("/api/workbench/tools", response_model=WorkbenchToolsResponse)
@@ -1450,7 +1504,81 @@ def _process_chat_request(
     req.settings.provider = requested_provider
     auth_summary = OpenAIAuthManager(provider_config).auth_summary()
     if not bool(auth_summary.get("available")):
-        raise HTTPException(status_code=500, detail=str(auth_summary.get("reason") or "LLM credentials are required"))
+        fallback_goal = str(req.message or "").strip()[:160]
+        requested_project = _resolve_project_or_default(req.project_id)
+        seed_session = session_store.load_or_create(
+            req.session_id,
+            project=requested_project,
+            default_project=_default_project(),
+        )
+        fallback_text = (
+            "当前还没有可用的模型认证。请在 Settings 里补充当前 provider 的 API key，"
+            "或切换到一个已经配置好的 provider 后再继续。"
+        )
+        user_turn = {"role": "user", "text": req.message}
+        assistant_turn = {
+            "role": "assistant",
+            "text": fallback_text,
+            "answer_bundle": {
+                "summary": fallback_text,
+                "claims": [],
+                "citations": [],
+                "warnings": ["missing_model_auth"],
+            },
+        }
+        seed_session.setdefault("turns", [])
+        seed_session["turns"].append(user_turn)
+        seed_session["turns"].append(assistant_turn)
+        seed_session["summary"] = fallback_text
+        seed_session["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        seed_session["agent_state"] = {
+            "goal": fallback_goal,
+            "phase": "report",
+            "last_run_id": "",
+            "last_model": "",
+            "cwd": str(seed_session.get("project_root") or ""),
+            "tool_hits": [],
+            "tool_count": 0,
+            "tool_names": [],
+            "evidence_status": "not_needed",
+            "enabled_skill_ids": [],
+            "updated_at": seed_session["updated_at"],
+        }
+        session_store.save(seed_session)
+        return ChatResponse(
+            session_id=seed_session["id"],
+            run_id=None,
+            agent_id="vintage_programmer",
+            agent_title="Vintage Programmer",
+            selected_business_module="llm_router_core",
+            effective_model="",
+            queue_wait_ms=0,
+            text=fallback_text,
+            tool_events=[],
+            token_usage=TokenUsage(),
+            session_token_totals=TokenTotals(),
+            global_token_totals=TokenTotals(),
+            inspector={
+                "agent": get_vintage_programmer_runtime().descriptor(),
+                "notes": ["missing_model_auth"],
+                "run_state": {"phase": "report", "goal": fallback_goal},
+                "tool_timeline": [],
+                "evidence": {"status": "not_needed", "required": False, "warning": "", "source_refs": []},
+                "session": {
+                    "session_id": seed_session["id"],
+                    "project_id": str(seed_session.get("project_id") or ""),
+                    "project_title": str(seed_session.get("project_title") or ""),
+                    "project_root": str(seed_session.get("project_root") or ""),
+                    "cwd": str(seed_session.get("project_root") or ""),
+                    "history_turn_count": len(seed_session.get("turns") or []),
+                    "attachment_count": 0,
+                },
+                "token_usage": {"total_tokens": 0},
+                "loaded_skills": [],
+            },
+            turn_count=len(seed_session.get("turns") or []),
+            summarized=False,
+        )
     run_id = str(uuid.uuid4())
     _emit_progress(
         progress_cb,
@@ -1895,6 +2023,7 @@ def _process_chat_request(
             run_id=run_id,
             agent_id="vintage_programmer",
             agent_title=str((inspector.get("agent") or {}).get("title") or "Vintage Programmer"),
+            selected_business_module="llm_router_core",
             effective_model=selected_model,
             queue_wait_ms=queue_wait_ms,
             text=text,

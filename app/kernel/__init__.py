@@ -20,6 +20,7 @@ __all__ = [
     "KernelContextView",
     "KernelExecutionTrace",
     "KernelHost",
+    "LLMRouter",
     "LifecycleManager",
     "LLMRouter",
     "LLMRouterDecision",

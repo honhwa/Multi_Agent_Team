@@ -1,2 +1,1 @@
-"""API route namespace reserved for modular route registration."""
-
+"""Route namespace placeholder for future split modules."""
