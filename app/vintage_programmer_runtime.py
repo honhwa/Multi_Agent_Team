@@ -307,10 +307,15 @@ class VintageProgrammerRuntime:
     ) -> None:
         self._config = config
         self._agent_dir = agent_dir.resolve()
+        # Injected backends are treated as already-authenticated or auth-free test doubles
+        # unless they opt back into the standard OpenAI auth gate.
+        self._require_runtime_auth = backend is None
         self._backend = backend or create_office_runtime_backend(
             config,
             kernel_runtime=kernel_runtime,
         )
+        if backend is not None:
+            self._require_runtime_auth = bool(getattr(self._backend, "requires_auth", False))
         self._tool_specs = list(getattr(self._backend.tools, "tool_specs", []) or [])
         self._tool_specs_by_name = self._build_tool_spec_index()
         self._tool_descriptors = build_tool_descriptors(self._tool_specs)
@@ -606,9 +611,10 @@ class VintageProgrammerRuntime:
         if not prompt_message:
             raise ValueError("message cannot be empty")
 
-        auth_summary = OpenAIAuthManager(self._config).auth_summary()
-        if not bool(auth_summary.get("available")):
-            raise RuntimeError(str(auth_summary.get("reason") or "LLM credentials are required"))
+        if self._require_runtime_auth:
+            auth_summary = OpenAIAuthManager(self._config).auth_summary()
+            if not bool(auth_summary.get("available")):
+                raise RuntimeError(str(auth_summary.get("reason") or "LLM credentials are required"))
 
         context_payload = dict(context or {})
         spec = self._load_spec()
