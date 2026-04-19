@@ -123,6 +123,9 @@ _TOOL_NAME_ALIASES = {
     "image_analysis": "image_read",
     "image_analyze": "image_read",
     "image_ocr": "image_read",
+    "image_reader": "image_read",
+    "image_to_text": "image_read",
+    "image_tool": "image_read",
     "list_sessions": "sessions_list",
     "multi_query_search": "search_file_multi",
     "ocr_image": "image_read",
@@ -141,6 +144,62 @@ _DEFAULT_MAX_SAME_TOOL_REPEATS = 4
 _DEFAULT_MAX_NO_PROGRESS_CYCLES = 4
 _DEFAULT_COMPACT_AFTER_TOOL_CALLS = 8
 _DEFAULT_COMPACT_KEEP_LAST_MESSAGES = 10
+_IMAGE_READ_TOOL_HINTS = (
+    "image",
+    "screenshot",
+    "picture",
+    "photo",
+    "vision",
+)
+_IMAGE_READ_ACTION_HINTS = (
+    "read",
+    "ocr",
+    "analy",
+    "describe",
+    "caption",
+    "tool",
+)
+_IMAGE_INSPECT_ACTION_HINTS = (
+    "inspect",
+    "meta",
+    "info",
+    "size",
+    "dimension",
+)
+_MISSING_CONTEXT_RESPONSE_HINTS = (
+    "没有提供任何任务",
+    "没有提供任何上下文",
+    "没有提供任何需要我处理的具体任务",
+    "请告诉我你需要我做什么",
+    "请您告诉我",
+    "you have not provided any task",
+    "you haven't provided any task",
+    "you have not provided any context",
+    "you haven't provided any context",
+    "please tell me what you need me to do",
+)
+_GENERIC_IMAGE_READ_REQUEST_HINTS = (
+    "看看图片内容",
+    "解释图片内容",
+    "看图",
+    "读图",
+    "读取图片",
+    "读取截图",
+    "识别图片",
+    "识别截图",
+    "提取图片文字",
+    "提取截图文字",
+    "图片里写了什么",
+    "截图里写了什么",
+    "查看附件内容",
+    "read this image",
+    "describe this image",
+    "what is in this image",
+    "what's in this image",
+    "read image",
+    "analyze image",
+    "ocr this image",
+)
 
 
 def _contains_any(text: str, hints: tuple[str, ...]) -> bool:
@@ -749,7 +808,39 @@ class VintageProgrammerRuntime:
         raw = str(name or "").strip()
         if not raw:
             return raw
-        return _TOOL_NAME_ALIASES.get(raw.lower(), raw)
+        lowered = raw.lower()
+        alias = _TOOL_NAME_ALIASES.get(lowered)
+        if alias:
+            return alias
+        if any(hint in lowered for hint in _IMAGE_READ_TOOL_HINTS):
+            if any(hint in lowered for hint in _IMAGE_INSPECT_ACTION_HINTS):
+                return "image_inspect"
+            if any(hint in lowered for hint in _IMAGE_READ_ACTION_HINTS):
+                return "image_read"
+        return raw
+
+    @staticmethod
+    def _looks_like_missing_context_response(text: str) -> bool:
+        normalized = " ".join(str(text or "").split()).lower()
+        if not normalized:
+            return False
+        return any(hint.lower() in normalized for hint in _MISSING_CONTEXT_RESPONSE_HINTS)
+
+    @staticmethod
+    def _looks_like_generic_image_read_request(message: str) -> bool:
+        normalized = " ".join(str(message or "").split()).lower()
+        if not normalized:
+            return False
+        return any(hint.lower() in normalized for hint in _GENERIC_IMAGE_READ_REQUEST_HINTS)
+
+    @staticmethod
+    def _first_attachment_path(
+        attachments: list[dict[str, Any]],
+        *,
+        kind: str = "",
+    ) -> str:
+        paths = VintageProgrammerRuntime._attachment_paths(attachments, kind=kind or None)
+        return paths[0] if len(paths) == 1 else ""
 
     @staticmethod
     def _callable_accepts_kwarg(fn: Callable[..., Any], name: str) -> bool:
@@ -837,6 +928,10 @@ class VintageProgrammerRuntime:
     ) -> dict[str, Any]:
         normalized = dict(arguments or {})
         tool_name = str(name or "").strip()
+        if tool_name in {"image_read", "image_inspect"}:
+            for legacy_key in ("image_path", "file_path", "filepath", "file", "image", "attachment", "attachment_id"):
+                if "path" not in normalized and legacy_key in normalized:
+                    normalized["path"] = normalized.pop(legacy_key)
         if tool_name in {"image_read", "image_inspect"} and "path" not in normalized and "image_path" in normalized:
             normalized["path"] = normalized.pop("image_path")
 
@@ -846,6 +941,10 @@ class VintageProgrammerRuntime:
                 attachments,
                 preferred_kind="image",
             )
+        elif tool_name in {"image_read", "image_inspect"}:
+            fallback_path = self._first_attachment_path(attachments, kind="image")
+            if fallback_path:
+                normalized["path"] = fallback_path
         elif tool_name in {"read", "search_file", "search_file_multi", "read_section", "table_extract", "fact_check_file"} and "path" in normalized:
             normalized["path"] = self._resolve_attachment_argument_path(normalized.get("path"), attachments)
         elif tool_name == "archive_extract" and "zip_path" in normalized:
@@ -853,6 +952,96 @@ class VintageProgrammerRuntime:
         elif tool_name == "mail_extract_attachments" and "msg_path" in normalized:
             normalized["msg_path"] = self._resolve_attachment_argument_path(normalized.get("msg_path"), attachments)
         return normalized
+
+    def _auto_rescue_image_read(
+        self,
+        *,
+        attachments: list[dict[str, Any]],
+        tool_events: list[ToolEvent],
+        messages: list[Any],
+        runner: Any,
+        effective_model: str,
+        settings: ChatSettings,
+        progress_cb: Callable[[dict[str, Any]], None] | None,
+        spec: VintageProgrammerSpec,
+        round_idx: int,
+    ) -> tuple[Any, Any, str, bool, list[str]]:
+        image_path = self._first_attachment_path(attachments, kind="image")
+        if not image_path:
+            return runner, effective_model, "", False, []
+
+        arguments = {"path": image_path}
+        result = self._backend.tools.execute("image_read", arguments)
+        event = self._build_tool_event(name="image_read", arguments=arguments, result=result)
+        tool_events.append(event)
+        if progress_cb is not None:
+            progress_cb(
+                {
+                    "event": "tool",
+                    "item": event.model_dump(),
+                    "status": event.status,
+                    "summary": event.summary,
+                    "source_refs": list(event.source_refs),
+                    "tool_round": round_idx,
+                    "tool_index": 1,
+                    "group": event.group,
+                    "agent_id": spec.agent_id,
+                }
+            )
+        result_json = json.dumps(result, ensure_ascii=False)
+        messages.append(
+            self._backend._SystemMessage(
+                content=(
+                    "Runtime fallback executed image_read(path=...) on the attached image because the model "
+                    "did not use the required image tool correctly. Use the tool result below and answer the user.\n\n"
+                    f"image_read_result_json:\n{self._backend._shorten(result_json, 60000)}"
+                )
+            )
+        )
+        ai_msg, runner, effective_model, invoke_notes = self._backend._invoke_with_runner_recovery(
+            runner=runner,
+            messages=messages,
+            model=effective_model,
+            max_output_tokens=int(settings.max_output_tokens),
+            enable_tools=True,
+            tool_names=list(spec.allowed_tools),
+        )
+        return ai_msg, runner, effective_model, bool(result.get("ok")), invoke_notes
+
+    @staticmethod
+    def _build_image_read_fallback_answer(result: dict[str, Any]) -> str:
+        payload = dict(result or {})
+        visible_text = str(payload.get("visible_text") or "").strip()
+        analysis = str(payload.get("analysis") or "").strip()
+        warning = str(payload.get("warning") or "").strip()
+        width = payload.get("width")
+        height = payload.get("height")
+        mime = str(payload.get("mime") or "").strip()
+        has_meaningful_content = bool(visible_text or analysis or warning)
+        if not has_meaningful_content:
+            return ""
+
+        lines: list[str] = ["我已经读取了这张图片。"]
+        if visible_text:
+            lines.append("识别到的可见文字如下：")
+            lines.append("")
+            lines.append("```text")
+            lines.append(visible_text)
+            lines.append("```")
+        if analysis and analysis.lower() != "extracted visible text from the image using local ocr.":
+            lines.append(f"图像说明：{analysis}")
+        elif not visible_text and analysis:
+            lines.append(f"图像说明：{analysis}")
+        meta_bits = [str(item) for item in (width, height) if item not in (None, "")]
+        if mime or meta_bits:
+            detail = " · ".join(
+                [item for item in [mime.upper() if mime else "", "x".join(meta_bits) if len(meta_bits) == 2 else ""] if item]
+            )
+            if detail:
+                lines.append(f"基础信息：{detail}")
+        if warning:
+            lines.append(f"注意：{warning}")
+        return "\n".join(item for item in lines if item is not None).strip()
 
     @staticmethod
     def _cancel_requested(context: dict[str, Any]) -> bool:
@@ -1011,6 +1200,7 @@ class VintageProgrammerRuntime:
         pending_user_input: dict[str, Any] = {}
         turn_status = "running"
         forced_text = ""
+        last_image_read_result: dict[str, Any] | None = None
 
         self._set_tools_runtime_context(
             execution_mode=settings.execution_mode,
@@ -1042,6 +1232,7 @@ class VintageProgrammerRuntime:
             usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
 
             act_now_budget = 1 if collaboration_mode in {"default", "execute"} and max_tool_calls_per_turn > 0 else 0
+            auto_image_rescue_budget = 1 if has_image_attachments and "image_read" in runnable_tools else 0
             halt_for_user_input = False
             turn_started_at = time.monotonic()
             round_idx = 0
@@ -1113,6 +1304,50 @@ class VintageProgrammerRuntime:
                         notes.extend(invoke_notes)
                         usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
                         continue
+                    should_auto_rescue_image = (
+                        auto_image_rescue_budget > 0
+                        and collaboration_mode in {"default", "execute"}
+                        and has_image_attachments
+                        and not any(item.name == "image_read" and item.status == "ok" for item in tool_events)
+                        and (
+                            looks_like_image_capability_denial_helper(ai_text)
+                            or self._looks_like_missing_context_response(ai_text)
+                        )
+                    )
+                    if should_auto_rescue_image:
+                        auto_image_rescue_budget -= 1
+                        messages.append(ai_msg)
+                        notes.append("auto_image_read_rescue")
+                        ai_msg, runner, effective_model, rescue_ok, rescue_notes = self._auto_rescue_image_read(
+                            attachments=attachment_metas,
+                            tool_events=tool_events,
+                            messages=messages,
+                            runner=runner,
+                            effective_model=effective_model,
+                            settings=settings,
+                            progress_cb=progress_cb,
+                            spec=spec,
+                            round_idx=round_idx + 1,
+                        )
+                        self._set_tools_runtime_context(
+                            execution_mode=settings.execution_mode,
+                            session_id=str(context_payload.get("session_id") or ""),
+                            project_id=project_id,
+                            project_root=project_root,
+                            cwd=effective_cwd,
+                            model=effective_model,
+                        )
+                        notes.extend(rescue_notes)
+                        usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
+                        tool_call_count += 1
+                        if last_tool_name == "image_read":
+                            same_tool_repeat_count += 1
+                        else:
+                            last_tool_name = "image_read"
+                            same_tool_repeat_count = 1
+                        if rescue_ok:
+                            no_progress_cycles = 0
+                        continue
                     break
 
                 messages.append(ai_msg)
@@ -1153,6 +1388,8 @@ class VintageProgrammerRuntime:
                             "error": f"Tool not allowed: {name or '(empty)'}",
                             "allowed_tools": runnable_tools,
                         }
+                    if name == "image_read" and bool(result.get("ok")):
+                        last_image_read_result = dict(result)
                     tool_call_count += 1
                     if name == last_tool_name:
                         same_tool_repeat_count += 1
@@ -1221,9 +1458,20 @@ class VintageProgrammerRuntime:
                         )
                     )
                     if same_tool_repeat_count > max_same_tool_repeats:
-                        turn_status = "blocked"
-                        forced_text = "本轮多次重复同一工具且没有继续推进，先在这里停止。"
-                        notes.append("turn_budget_same_tool_repeats_exceeded")
+                        if name == "image_read" and last_image_read_result:
+                            fallback_answer = self._build_image_read_fallback_answer(last_image_read_result)
+                            if fallback_answer:
+                                turn_status = "completed"
+                                forced_text = fallback_answer
+                                notes.append("image_read_repeat_fallback_answer")
+                            else:
+                                turn_status = "blocked"
+                                forced_text = "本轮多次重复同一工具且没有继续推进，先在这里停止。"
+                                notes.append("turn_budget_same_tool_repeats_exceeded")
+                        else:
+                            turn_status = "blocked"
+                            forced_text = "本轮多次重复同一工具且没有继续推进，先在这里停止。"
+                            notes.append("turn_budget_same_tool_repeats_exceeded")
                         stop_after_tools = True
                         break
 
@@ -1292,6 +1540,17 @@ class VintageProgrammerRuntime:
         raw_text = forced_text or (self._backend._content_to_text(getattr(ai_msg, "content", "")).strip() if ai_msg is not None else "")
         if not raw_text:
             raw_text = "需要你先提供补充输入后我再继续。" if pending_user_input else "(empty response)"
+        if (
+            has_image_attachments
+            and last_image_read_result
+            and self._looks_like_generic_image_read_request(prompt_message)
+        ):
+            fallback_answer = self._build_image_read_fallback_answer(last_image_read_result)
+            if fallback_answer:
+                raw_text = fallback_answer
+                if turn_status not in {"cancelled", "blocked"}:
+                    turn_status = "completed"
+                notes.append("image_read_result_forced_summary")
         has_successful_tool = any(item.status == "ok" for item in tool_events)
         evidence_status = "not_needed"
         if expects_tools or (collaboration_mode == "plan" and tool_events):

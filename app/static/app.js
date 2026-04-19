@@ -110,6 +110,48 @@ function dragEventHasFiles(event) {
   return types.includes("Files");
 }
 
+function clipboardEventFiles(event) {
+  const transfer = event && event.clipboardData;
+  if (!transfer) return [];
+  const directFiles = Array.from(transfer.files || []).filter(Boolean);
+  if (directFiles.length) return directFiles;
+  return Array.from(transfer.items || [])
+    .filter((item) => item && item.kind === "file")
+    .map((item) => (typeof item.getAsFile === "function" ? item.getAsFile() : null))
+    .filter(Boolean);
+}
+
+function extensionFromMime(mime) {
+  const normalized = String(mime || "").trim().toLowerCase();
+  if (normalized === "image/png") return "png";
+  if (normalized === "image/jpeg") return "jpg";
+  if (normalized === "image/webp") return "webp";
+  if (normalized === "image/gif") return "gif";
+  if (normalized === "image/heic") return "heic";
+  if (normalized === "image/heif") return "heif";
+  if (normalized === "application/pdf") return "pdf";
+  return "bin";
+}
+
+function ensureNamedUploadFile(file, index = 0) {
+  if (!file) return file;
+  const normalizedName = String(file.name || "").trim();
+  if (normalizedName) return file;
+  const mime = String(file.type || "application/octet-stream").trim() || "application/octet-stream";
+  const ext = extensionFromMime(mime);
+  const stamp = new Date().toISOString().replaceAll(":", "").replaceAll(".", "").replace("T", "_").replace("Z", "");
+  const generatedName = `pasted-${stamp}-${index + 1}.${ext}`;
+  try {
+    return new File([file], generatedName, {
+      type: mime,
+      lastModified: Date.now(),
+    });
+  } catch {
+    file.name = generatedName;
+    return file;
+  }
+}
+
 function formatTime(raw) {
   const text = String(raw || "").trim();
   if (!text) return "";
@@ -820,22 +862,26 @@ function App() {
 
   async function uploadFiles(files) {
     const uploaded = [];
-    for (const file of files) {
+    for (const [index, rawFile] of Array.from(files || []).entries()) {
+      const file = ensureNamedUploadFile(rawFile, index);
       const form = new FormData();
-      form.append("file", file);
+      const fileName = String((file && file.name) || "").trim() || `upload-${Date.now()}-${index + 1}.bin`;
+      form.append("file", file, fileName);
       uploaded.push(await fetchJson("/api/upload", { method: "POST", body: form }));
     }
     return uploaded;
   }
 
-  async function processSelectedFiles(files) {
+  async function processSelectedFiles(files, options = {}) {
     const nextFiles = Array.from(files || []);
     if (!nextFiles.length) return;
     try {
       const uploaded = await uploadFiles(nextFiles);
       clearUiError();
       setPendingUploads((prev) => [...prev, ...uploaded]);
-      pushLogWithLimit(setLogs, "system", `已添加 ${uploaded.length} 个附件`);
+      const sourceLabel = String(options.source || "").trim();
+      const actionLabel = sourceLabel === "paste" ? "已粘贴" : "已添加";
+      pushLogWithLimit(setLogs, "system", `${actionLabel} ${uploaded.length} 个附件`);
     } catch (err) {
       const nextError = applyUiError(err, "附件上传失败，请稍后重试。");
       pushLogWithLimit(setLogs, "error", `附件上传失败：${nextError.summary}`);
@@ -883,6 +929,13 @@ function App() {
     const files = Array.from((event.dataTransfer && event.dataTransfer.files) || []);
     if (!files.length) return;
     await processSelectedFiles(files);
+  }
+
+  async function handleComposerPaste(event) {
+    const files = clipboardEventFiles(event);
+    if (!files.length) return;
+    event.preventDefault();
+    await processSelectedFiles(files, { source: "paste" });
   }
 
   function removeUpload(fileId) {
@@ -1468,6 +1521,7 @@ function App() {
               value=${draft}
               onInput=${(event) => setDraft(event.currentTarget.value)}
               onKeyDown=${handleComposerKeyDown}
+              onPaste=${handleComposerPaste}
               placeholder="给 Vintage Programmer 一个清晰任务。也可以直接贴代码、配置或长文本。Enter 发送，Shift+Enter 换行。"
               disabled=${sending}
             ></textarea>

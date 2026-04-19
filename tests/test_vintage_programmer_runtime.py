@@ -179,6 +179,23 @@ class _CancellingTools(_FakeTools):
         return result
 
 
+class _FakeImageReadTools(_FakeTools):
+    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name == "image_read":
+            self.calls.append((name, dict(arguments)))
+            path = str(arguments.get("path") or "")
+            return {
+                "ok": True,
+                "path": path,
+                "mime": "image/png",
+                "width": 494,
+                "height": 102,
+                "visible_text": "Vintage\nVP\nnew_validation_agent",
+                "analysis": "Extracted visible text from the image using local OCR.",
+            }
+        return super().execute(name, arguments)
+
+
 class _FakeBackendWithTools(_FakeBackend):
     def __init__(self, scripted_messages: list[_FakeMessage], tools: _FakeTools) -> None:
         super().__init__(scripted_messages)
@@ -585,6 +602,190 @@ def test_runtime_aliases_image_analysis_tool_name_and_attachment_ref(tmp_path: P
     assert "tool_alias:image_analysis->image_read" in result["inspector"]["notes"]
 
 
+def test_runtime_aliases_image_tool_name_and_uses_single_attached_image(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    image_path = tmp_path / "screen.png"
+    image_path.write_bytes(b"fake-image")
+    backend = _FakeBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[{"id": "tc-image", "name": "image_tool", "args": {}}],
+            ),
+            _FakeMessage(content="图片里是一个登录页截图"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="看看图片内容",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-image-tool-alias",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [
+                {
+                    "id": "img-1",
+                    "name": "screen.png",
+                    "mime": "image/png",
+                    "kind": "image",
+                    "path": str(image_path),
+                }
+            ],
+        },
+    )
+
+    assert result["text"] == "图片里是一个登录页截图"
+    assert backend.tools.calls == [("image_read", {"path": str(image_path)})]
+    assert result["tool_events"][0]["name"] == "image_read"
+    assert result["tool_events"][0]["input"] == {"path": str(image_path)}
+    assert "tool_alias:image_tool->image_read" in result["inspector"]["notes"]
+
+
+def test_runtime_auto_rescues_missing_context_reply_for_image_attachments(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    image_path = tmp_path / "screen.png"
+    image_path.write_bytes(b"fake-image")
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="我需要更多上下文后才能操作这张图片。"),
+            _FakeMessage(content="我理解你希望我进行操作，但是你没有提供任何任务或上下文。"),
+            _FakeMessage(content="图片里显示的是 Vintage Programmer 的首页。"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="看看图片内容",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-image-auto-rescue",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [
+                {
+                    "id": "img-1",
+                    "name": "screen.png",
+                    "mime": "image/png",
+                    "kind": "image",
+                    "path": str(image_path),
+                }
+            ],
+        },
+    )
+
+    assert result["text"] == "图片里显示的是 Vintage Programmer 的首页。"
+    assert backend.tools.calls == [("image_read", {"path": str(image_path)})]
+    assert result["tool_events"][0]["name"] == "image_read"
+    assert "strict_agentic_act_now_steer" in result["inspector"]["notes"]
+    assert "auto_image_read_rescue" in result["inspector"]["notes"]
+
+
+def test_runtime_finishes_with_image_read_fallback_after_repeat_loop(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    image_path = tmp_path / "screen.png"
+    image_path.write_bytes(b"fake-image")
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "image_read", "args": {"path": str(image_path)}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "image_read", "args": {"path": str(image_path)}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc3", "name": "image_read", "args": {"path": str(image_path)}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc4", "name": "image_read", "args": {"path": str(image_path)}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc5", "name": "image_read", "args": {"path": str(image_path)}}]),
+        ],
+        _FakeImageReadTools(),
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="看看图片内容",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-image-repeat-fallback",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [
+                {
+                    "id": "img-1",
+                    "name": "screen.png",
+                    "mime": "image/png",
+                    "kind": "image",
+                    "path": str(image_path),
+                }
+            ],
+        },
+    )
+
+    assert result["turn_status"] == "completed"
+    assert "Vintage" in result["text"]
+    assert "new_validation_agent" in result["text"]
+    assert len(result["tool_events"]) == 5
+    assert "image_read_repeat_fallback_answer" in result["inspector"]["notes"]
+
+
+def test_runtime_forces_tool_based_summary_for_generic_image_read_requests(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    image_path = tmp_path / "screen.png"
+    image_path.write_bytes(b"fake-image")
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "image_read", "args": {"path": str(image_path)}}]),
+            _FakeMessage(content="产品名称是 MetaPixel，Logo 也是 MetaPixel。"),
+        ],
+        _FakeImageReadTools(),
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="看看图片内容",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-image-forced-summary",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [
+                {
+                    "id": "img-1",
+                    "name": "screen.png",
+                    "mime": "image/png",
+                    "kind": "image",
+                    "path": str(image_path),
+                }
+            ],
+        },
+    )
+
+    assert "MetaPixel" not in result["text"]
+    assert "Vintage" in result["text"]
+    assert "new_validation_agent" in result["text"]
+    assert "image_read_result_forced_summary" in result["inspector"]["notes"]
+
+
 def test_runtime_handles_runtime_context_setters_without_model_kwarg(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
@@ -622,7 +823,7 @@ def test_runtime_handles_runtime_context_setters_without_model_kwarg(tmp_path: P
     }
 
 
-def test_runtime_blocks_image_attachment_turn_when_model_refuses_to_use_tools(tmp_path: Path) -> None:
+def test_runtime_auto_rescues_image_attachment_turn_when_model_refuses_to_use_tools(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     image_path = tmp_path / "screen.png"
@@ -631,6 +832,7 @@ def test_runtime_blocks_image_attachment_turn_when_model_refuses_to_use_tools(tm
         [
             _FakeMessage(content="由于当前环境未配置图像文字识别（OCR）功能，我无法直接提取图片中的可见文字。"),
             _FakeMessage(content="我还是无法直接对图像执行 OCR。"),
+            _FakeMessage(content="我已经根据工具结果读取了这张截图。"),
         ]
     )
     runtime = VintageProgrammerRuntime(
@@ -659,12 +861,12 @@ def test_runtime_blocks_image_attachment_turn_when_model_refuses_to_use_tools(tm
         },
     )
 
-    assert result["tool_events"] == []
+    assert [item["name"] for item in result["tool_events"]] == ["image_read"]
     assert result["inspector"]["run_state"]["requires_tools"] is True
-    assert result["inspector"]["run_state"]["turn_status"] == "blocked"
-    assert result["inspector"]["evidence"]["status"] == "needs_evidence_review"
-    assert "image_attachment_tooling_not_used" in result["inspector"]["notes"]
-    assert "tool_expectation_not_met" in result["inspector"]["notes"]
+    assert result["inspector"]["run_state"]["turn_status"] == "completed"
+    assert result["inspector"]["evidence"]["status"] == "collected"
+    assert "strict_agentic_act_now_steer" in result["inspector"]["notes"]
+    assert "auto_image_read_rescue" in result["inspector"]["notes"]
 
 
 def test_runtime_loads_enabled_skills_and_skips_workspace_nudge_for_inline_code(tmp_path: Path) -> None:
