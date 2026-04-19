@@ -110,6 +110,8 @@ default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
 _provider_runtime_lock = threading.Lock()
 _provider_runtime_cache: dict[str, VintageProgrammerRuntime] = {}
+_active_chat_runs_lock = threading.Lock()
+_active_chat_runs: dict[str, dict[str, Any]] = {}
 
 
 def _git_value(*args: str) -> str:
@@ -261,6 +263,47 @@ def get_agent_os_runtime() -> AgentOSRuntime:
 
 def get_vintage_programmer_runtime() -> VintageProgrammerRuntime:
     return vintage_programmer_runtime
+
+
+def _register_active_chat_run(run_id: str) -> threading.Event:
+    cancel_event = threading.Event()
+    with _active_chat_runs_lock:
+        _active_chat_runs[run_id] = {
+            "run_id": run_id,
+            "cancel_event": cancel_event,
+            "status": "running",
+            "session_id": "",
+            "project_id": "",
+            "created_at": time.time(),
+        }
+    return cancel_event
+
+
+def _update_active_chat_run(run_id: str, **fields: Any) -> None:
+    with _active_chat_runs_lock:
+        record = _active_chat_runs.get(run_id)
+        if not isinstance(record, dict):
+            return
+        for key, value in fields.items():
+            record[key] = value
+
+
+def _cancel_active_chat_run(run_id: str) -> dict[str, Any] | None:
+    with _active_chat_runs_lock:
+        record = _active_chat_runs.get(str(run_id or "").strip())
+        if not isinstance(record, dict):
+            return None
+        cancel_event = record.get("cancel_event")
+        if cancel_event and hasattr(cancel_event, "set"):
+            cancel_event.set()
+        record["status"] = "cancelling"
+        record["cancel_requested_at"] = time.time()
+        return dict(record)
+
+
+def _unregister_active_chat_run(run_id: str) -> None:
+    with _active_chat_runs_lock:
+        _active_chat_runs.pop(str(run_id or "").strip(), None)
 
 
 def _provider_options_payload() -> list[dict[str, object]]:
@@ -1502,6 +1545,8 @@ def _process_chat_request(
     requested_provider = _resolve_requested_provider(req)
     provider_config, provider_runtime = _provider_runtime(requested_provider)
     req.settings.provider = requested_provider
+    if req.mode_override:
+        req.settings.collaboration_mode = req.mode_override
     auth_summary = OpenAIAuthManager(provider_config).auth_summary()
     if not bool(auth_summary.get("available")):
         fallback_goal = str(req.message or "").strip()[:160]
@@ -1533,6 +1578,10 @@ def _process_chat_request(
         seed_session["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         seed_session["agent_state"] = {
             "goal": fallback_goal,
+            "collaboration_mode": str(req.settings.collaboration_mode or "default"),
+            "turn_status": "blocked",
+            "plan": [],
+            "pending_user_input": {},
             "phase": "report",
             "last_run_id": "",
             "last_model": "",
@@ -1555,13 +1604,24 @@ def _process_chat_request(
             queue_wait_ms=0,
             text=fallback_text,
             tool_events=[],
+            collaboration_mode=str(req.settings.collaboration_mode or "default"),
+            turn_status="blocked",
+            plan=[],
+            pending_user_input={},
             token_usage=TokenUsage(),
             session_token_totals=TokenTotals(),
             global_token_totals=TokenTotals(),
             inspector={
                 "agent": get_vintage_programmer_runtime().descriptor(),
                 "notes": ["missing_model_auth"],
-                "run_state": {"phase": "report", "goal": fallback_goal},
+                "run_state": {
+                    "phase": "report",
+                    "goal": fallback_goal,
+                    "collaboration_mode": str(req.settings.collaboration_mode or "default"),
+                    "turn_status": "blocked",
+                    "plan": [],
+                    "pending_user_input": {},
+                },
                 "tool_timeline": [],
                 "evidence": {"status": "not_needed", "required": False, "warning": "", "source_refs": []},
                 "session": {
@@ -1580,6 +1640,7 @@ def _process_chat_request(
             summarized=False,
         )
     run_id = str(uuid.uuid4())
+    cancel_event = _register_active_chat_run(run_id)
     _emit_progress(
         progress_cb,
         "stage",
@@ -1590,52 +1651,58 @@ def _process_chat_request(
         detail=f"后端已接收请求，开始处理。run_id={run_id}, auth_mode={auth_summary.get('mode')}",
         run_id=run_id,
     )
-
-    requested_project = _resolve_project_or_default(req.project_id)
-    seed_session = session_store.load_or_create(
-        req.session_id,
-        project=requested_project,
-        default_project=_default_project(),
-    )
-    session_id = str(seed_session.get("id") or "")
-    if not session_id:
-        raise HTTPException(status_code=500, detail="Session create failed")
-
-    queue_wait_ms = 0
-    with run_queue.run_slot(session_id) as ticket:
-        queue_wait_ms = int(ticket.wait_ms)
-        if queue_wait_ms >= config.run_queue_wait_notice_ms:
-            _emit_progress(
-                progress_cb,
-                "trace",
-                message=f"当前会话存在并发请求，已排队等待 {queue_wait_ms} ms。",
-                run_id=run_id,
-            )
-
-        session = session_store.load_or_create(
-            session_id,
+    try:
+        requested_project = _resolve_project_or_default(req.project_id)
+        seed_session = session_store.load_or_create(
+            req.session_id,
             project=requested_project,
             default_project=_default_project(),
         )
-        session_project = get_project_store().get(str(session.get("project_id") or "")) or requested_project
-        get_project_store().touch(str(session_project.get("project_id") or ""))
-        session["project_id"] = str(session_project.get("project_id") or "")
-        session["project_title"] = str(session_project.get("title") or "")
-        session["project_root"] = str(session_project.get("root_path") or "")
-        session["git_branch"] = str(session_project.get("git_branch") or "")
-        if not str(session.get("cwd") or "").strip():
-            session["cwd"] = str(session_project.get("root_path") or "")
-        _emit_progress(
-            progress_cb,
-            "stage",
-            code="session_ready",
-            phase="bootstrap",
-            label="Session",
-            status="completed",
-            detail=f"会话已就绪: {session.get('id')}",
-            run_id=run_id,
-            queue_wait_ms=queue_wait_ms,
-        )
+        session_id = str(seed_session.get("id") or "")
+        if not session_id:
+            raise HTTPException(status_code=500, detail="Session create failed")
+        _update_active_chat_run(run_id, session_id=session_id, project_id=str(requested_project.get("project_id") or ""))
+
+        queue_wait_ms = 0
+        with run_queue.run_slot(session_id) as ticket:
+            queue_wait_ms = int(ticket.wait_ms)
+            if queue_wait_ms >= config.run_queue_wait_notice_ms:
+                _emit_progress(
+                    progress_cb,
+                    "trace",
+                    message=f"当前会话存在并发请求，已排队等待 {queue_wait_ms} ms。",
+                    run_id=run_id,
+                )
+
+            session = session_store.load_or_create(
+                session_id,
+                project=requested_project,
+                default_project=_default_project(),
+            )
+            session_project = get_project_store().get(str(session.get("project_id") or "")) or requested_project
+            get_project_store().touch(str(session_project.get("project_id") or ""))
+            session["project_id"] = str(session_project.get("project_id") or "")
+            session["project_title"] = str(session_project.get("title") or "")
+            session["project_root"] = str(session_project.get("root_path") or "")
+            session["git_branch"] = str(session_project.get("git_branch") or "")
+            if not str(session.get("cwd") or "").strip():
+                session["cwd"] = str(session_project.get("root_path") or "")
+            _update_active_chat_run(
+                run_id,
+                session_id=session_id,
+                project_id=str(session_project.get("project_id") or ""),
+            )
+            _emit_progress(
+                progress_cb,
+                "stage",
+                code="session_ready",
+                phase="bootstrap",
+                label="Session",
+                status="completed",
+                detail=f"会话已就绪: {session.get('id')}",
+                run_id=run_id,
+                queue_wait_ms=queue_wait_ms,
+            )
         history_turns_before = copy.deepcopy(session.get("turns", []))
         summary_before = str(session.get("summary", "") or "")
         agent_os = get_agent_os_runtime()
@@ -1759,6 +1826,10 @@ def _process_chat_request(
             settings=req.settings,
             context={
                 "session_id": session_id,
+                "run_id": run_id,
+                "cancel_event": cancel_event,
+                "mode_override": req.mode_override or req.settings.collaboration_mode,
+                "user_input_response": dict(req.user_input_response or {}),
                 "project": {
                     "project_id": str(session_project.get("project_id") or ""),
                     "project_title": str(session_project.get("title") or ""),
@@ -1789,6 +1860,14 @@ def _process_chat_request(
         answer_bundle = runtime_result.get("answer_bundle") or {}
         token_usage = dict(runtime_result.get("token_usage") or {})
         effective_model = str(runtime_result.get("effective_model") or "")
+        collaboration_mode = str(runtime_result.get("collaboration_mode") or req.settings.collaboration_mode or "default")
+        turn_status = str(runtime_result.get("turn_status") or "completed")
+        plan = list(runtime_result.get("plan") or [])
+        pending_user_input = (
+            dict(runtime_result.get("pending_user_input") or {})
+            if isinstance(runtime_result.get("pending_user_input"), dict)
+            else {}
+        )
         route_state = (
             runtime_result.get("route_state")
             if isinstance(runtime_result.get("route_state"), dict)
@@ -1855,6 +1934,10 @@ def _process_chat_request(
             "agent_id": "vintage_programmer",
             "goal": str(inspector_run_state.get("goal") or req.message[:140]),
             "current_goal": str(inspector_run_state.get("goal") or req.message[:140]),
+            "collaboration_mode": str(inspector_run_state.get("collaboration_mode") or collaboration_mode),
+            "turn_status": str(inspector_run_state.get("turn_status") or turn_status),
+            "plan": list(inspector_run_state.get("plan") or plan),
+            "pending_user_input": dict(inspector_run_state.get("pending_user_input") or pending_user_input),
             "phase": str(inspector_run_state.get("phase") or "report"),
             "last_run_id": run_id,
             "last_provider": requested_provider,
@@ -2034,6 +2117,10 @@ def _process_chat_request(
             auto_linked_attachment_names=auto_linked_attachment_names,
             missing_attachment_ids=missing_attachment_ids,
             attachment_context_key=resolved_attachment_context_key,
+            collaboration_mode=collaboration_mode,
+            turn_status=turn_status,
+            plan=plan,
+            pending_user_input=pending_user_input,
             token_usage=TokenUsage(**token_usage),
             session_token_totals=TokenTotals(**session_totals_raw),
             global_token_totals=TokenTotals(**global_totals_raw),
@@ -2052,11 +2139,33 @@ def _process_chat_request(
             run_id=run_id,
         )
         return response
+    finally:
+        _unregister_active_chat_run(run_id)
 
 
 def _sse_pack(event: str, payload: dict[str, Any]) -> str:
     raw = json.dumps(payload, ensure_ascii=False, default=str)
     return f"event: {event}\ndata: {raw}\n\n"
+
+
+@app.post("/api/chat/runs/{run_id}/cancel")
+def cancel_chat_run(run_id: str) -> dict[str, Any]:
+    record = _cancel_active_chat_run(run_id)
+    if not isinstance(record, dict):
+        return {
+            "ok": False,
+            "run_id": str(run_id or ""),
+            "cancelled": False,
+            "status": "not_found",
+        }
+    return {
+        "ok": True,
+        "run_id": str(record.get("run_id") or run_id or ""),
+        "cancelled": True,
+        "status": "cancelling",
+        "session_id": str(record.get("session_id") or ""),
+        "project_id": str(record.get("project_id") or ""),
+    }
 
 
 @app.post("/api/chat/stream")

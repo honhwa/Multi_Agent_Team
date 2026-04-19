@@ -1,8 +1,10 @@
 const ReactRuntime = window.React;
 const ReactDomRuntime = window.ReactDOM;
 const htmRuntime = window.htm;
+const markedRuntime = window.marked;
+const DOMPurifyRuntime = window.DOMPurify;
 
-if (!ReactRuntime || !ReactDomRuntime || !htmRuntime) {
+if (!ReactRuntime || !ReactDomRuntime || !htmRuntime || !markedRuntime || !DOMPurifyRuntime) {
   const root = document.getElementById("root");
   if (root) {
     root.innerHTML = `
@@ -17,6 +19,13 @@ if (!ReactRuntime || !ReactDomRuntime || !htmRuntime) {
 const { useEffect, useMemo, useRef, useState } = ReactRuntime;
 const { createRoot } = ReactDomRuntime;
 const html = htmRuntime.bind(ReactRuntime.createElement);
+
+if (typeof markedRuntime.setOptions === "function") {
+  markedRuntime.setOptions({
+    gfm: true,
+    breaks: true,
+  });
+}
 
 const SESSION_STORAGE_KEY = "vintage_programmer.session_id";
 const PROJECT_STORAGE_KEY = "vintage_programmer.project_id";
@@ -35,6 +44,7 @@ const DEFAULT_SETTINGS = {
   max_output_tokens: 128000,
   max_context_turns: 2000,
   enable_tools: true,
+  collaboration_mode: "default",
   response_style: "normal",
 };
 
@@ -92,6 +102,14 @@ function pushLogWithLimit(setter, type, text) {
   setter((prev) => [createLog(type, text), ...prev].slice(0, 32));
 }
 
+function dragEventHasFiles(event) {
+  const transfer = event && event.dataTransfer;
+  if (!transfer) return false;
+  if (transfer.files && transfer.files.length) return true;
+  const types = Array.from(transfer.types || []);
+  return types.includes("Files");
+}
+
 function formatTime(raw) {
   const text = String(raw || "").trim();
   if (!text) return "";
@@ -146,6 +164,33 @@ function compactPath(path) {
   if (!text) return "";
   if (text.length <= 64) return text;
   return `${text.slice(0, 24)} … ${text.slice(-32)}`;
+}
+
+function escapeHtml(text) {
+  return String(text || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function renderMessageHtml(text) {
+  const raw = String(text || "");
+  if (!raw) return "";
+  if (!markedRuntime || typeof markedRuntime.parse !== "function" || !DOMPurifyRuntime || typeof DOMPurifyRuntime.sanitize !== "function") {
+    return escapeHtml(raw).replaceAll("\n", "<br />");
+  }
+  try {
+    const rendered = markedRuntime.parse(raw);
+    return DOMPurifyRuntime.sanitize(rendered, {
+      USE_PROFILES: { html: true },
+      FORBID_TAGS: ["script", "style", "iframe", "object", "embed", "form", "input", "button", "textarea", "select"],
+      FORBID_ATTR: ["style", "onerror", "onload", "onclick"],
+    });
+  } catch {
+    return escapeHtml(raw).replaceAll("\n", "<br />");
+  }
 }
 
 function stringifyErrorDetail(detail) {
@@ -335,6 +380,8 @@ function App() {
   const [uiError, setUiError] = useState(null);
   const [toolTimeline, setToolTimeline] = useState([]);
   const [stageTimeline, setStageTimeline] = useState([]);
+  const [activeRunId, setActiveRunId] = useState("");
+  const [stoppingRun, setStoppingRun] = useState(false);
   const [workbenchTools, setWorkbenchTools] = useState([]);
   const [skills, setSkills] = useState([]);
   const [selectedSkillId, setSelectedSkillId] = useState("");
@@ -349,9 +396,11 @@ function App() {
   const [projectTitleDraft, setProjectTitleDraft] = useState("");
   const [projectFormError, setProjectFormError] = useState("");
   const [savingProject, setSavingProject] = useState(false);
+  const [composerDragActive, setComposerDragActive] = useState(false);
   const fileInputRef = useRef(null);
   const chatListRef = useRef(null);
   const bootReadyRef = useRef(false);
+  const composerDragDepthRef = useRef(0);
   const providerOptions = useMemo(
     () => (Array.isArray((health && health.provider_options)) ? health.provider_options : []).filter((item) => item && item.provider),
     [health],
@@ -779,24 +828,84 @@ function App() {
     return uploaded;
   }
 
-  async function handleSelectFiles(event) {
-    const files = Array.from(event.currentTarget.files || []);
-    if (!files.length) return;
+  async function processSelectedFiles(files) {
+    const nextFiles = Array.from(files || []);
+    if (!nextFiles.length) return;
     try {
-      const uploaded = await uploadFiles(files);
+      const uploaded = await uploadFiles(nextFiles);
       clearUiError();
       setPendingUploads((prev) => [...prev, ...uploaded]);
       pushLogWithLimit(setLogs, "system", `已添加 ${uploaded.length} 个附件`);
     } catch (err) {
       const nextError = applyUiError(err, "附件上传失败，请稍后重试。");
       pushLogWithLimit(setLogs, "error", `附件上传失败：${nextError.summary}`);
+    }
+  }
+
+  async function handleSelectFiles(event) {
+    const files = Array.from(event.currentTarget.files || []);
+    if (!files.length) return;
+    try {
+      await processSelectedFiles(files);
     } finally {
       event.currentTarget.value = "";
     }
   }
 
+  function handleComposerDragEnter(event) {
+    if (!dragEventHasFiles(event)) return;
+    event.preventDefault();
+    composerDragDepthRef.current += 1;
+    setComposerDragActive(true);
+  }
+
+  function handleComposerDragOver(event) {
+    if (!dragEventHasFiles(event)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    if (!composerDragActive) setComposerDragActive(true);
+  }
+
+  function handleComposerDragLeave(event) {
+    if (!dragEventHasFiles(event)) return;
+    event.preventDefault();
+    composerDragDepthRef.current = Math.max(0, composerDragDepthRef.current - 1);
+    if (composerDragDepthRef.current === 0) {
+      setComposerDragActive(false);
+    }
+  }
+
+  async function handleComposerDrop(event) {
+    if (!dragEventHasFiles(event)) return;
+    event.preventDefault();
+    composerDragDepthRef.current = 0;
+    setComposerDragActive(false);
+    const files = Array.from((event.dataTransfer && event.dataTransfer.files) || []);
+    if (!files.length) return;
+    await processSelectedFiles(files);
+  }
+
   function removeUpload(fileId) {
     setPendingUploads((prev) => prev.filter((item) => item.id !== fileId));
+  }
+
+  async function handleStopRun() {
+    const runId = String(activeRunId || "").trim();
+    if (!runId || !sending || stoppingRun) return;
+    setStoppingRun(true);
+    try {
+      const payload = await fetchJson(`/api/chat/runs/${encodeURIComponent(runId)}/cancel`, {
+        method: "POST",
+      });
+      const detail = Boolean(payload.cancelled)
+        ? "已请求停止当前运行。"
+        : "当前没有可停止的运行。";
+      pushLogWithLimit(setLogs, "system", detail);
+    } catch (err) {
+      const nextError = applyUiError(err, "停止运行失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `停止运行失败：${nextError.summary}`);
+      setStoppingRun(false);
+    }
   }
 
   async function handleSend(overrideText) {
@@ -804,6 +913,8 @@ function App() {
     if (!messageText || sending) return;
 
     setSending(true);
+    setStoppingRun(false);
+    setActiveRunId("");
     clearUiError();
     setToolTimeline([]);
     setStageTimeline([]);
@@ -825,6 +936,7 @@ function App() {
           session_id: sid,
           project_id: projectId,
           message: messageText,
+          mode_override: chatSettings.collaboration_mode,
           attachment_ids: pendingUploads.map((item) => item.id),
           settings: {
             ...chatSettings,
@@ -878,19 +990,12 @@ function App() {
           const parsed = parseSseChunk(chunk);
           if (parsed) {
             const { event, payload } = parsed;
+            if (payload && payload.run_id) {
+              setActiveRunId(String(payload.run_id || ""));
+            }
             if (event === "stage") {
               const detail = String(payload.detail || payload.label || payload.code || "处理中...");
               replacePendingText(detail);
-              setStageTimeline((prev) => [
-                {
-                  id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-                  phase: String(payload.phase || payload.code || ""),
-                  label: String(payload.label || payload.phase || payload.code || "stage"),
-                  status: String(payload.status || "running"),
-                  detail,
-                },
-                ...prev,
-              ].slice(0, 20));
               pushLogWithLimit(setLogs, "stage", detail);
             } else if (event === "trace") {
               const detail = String(payload.message || payload.raw || "");
@@ -901,6 +1006,24 @@ function App() {
               const summary = String(payload.summary || item.summary || item.output_preview || "工具调用");
               setToolTimeline((prev) => [item, ...prev].slice(0, 24));
               pushLogWithLimit(setLogs, "tool", `${name}: ${summary}`);
+            } else if (event === "plan_update") {
+              setSessionAgentState((prev) => ({
+                ...prev,
+                collaboration_mode: String(payload.collaboration_mode || prev.collaboration_mode || chatSettings.collaboration_mode || "default"),
+                turn_status: String(payload.turn_status || prev.turn_status || "running"),
+                plan: Array.isArray(payload.plan) ? payload.plan : [],
+              }));
+              pushLogWithLimit(setLogs, "system", String(payload.explanation || "checklist updated"));
+            } else if (event === "request_user_input") {
+              const nextPending = payload.pending_user_input || {};
+              setSessionAgentState((prev) => ({
+                ...prev,
+                collaboration_mode: String(payload.collaboration_mode || prev.collaboration_mode || chatSettings.collaboration_mode || "default"),
+                turn_status: String(payload.turn_status || "needs_user_input"),
+                pending_user_input: nextPending,
+              }));
+              replacePendingText(String(nextPending.summary || "需要你的输入后我再继续。"));
+              pushLogWithLimit(setLogs, "system", String(nextPending.summary || "user input required"));
             } else if (event === "final") {
               finalPayload = payload.response || null;
             } else if (event === "error") {
@@ -923,6 +1046,7 @@ function App() {
       setLastResponse(finalPayload);
       setPendingUploads([]);
       clearUiError();
+      setActiveRunId(String(finalPayload.run_id || ""));
       setSessionAgentState({
         ...(finalPayload.inspector || {}).run_state,
         ...(finalPayload.inspector || {}).evidence,
@@ -931,6 +1055,10 @@ function App() {
           agent_id: finalPayload.agent_id || "vintage_programmer",
           goal: String((((finalPayload.inspector || {}).run_state || {}).goal) || messageText),
           current_goal: String((((finalPayload.inspector || {}).run_state || {}).goal) || messageText),
+          collaboration_mode: String(finalPayload.collaboration_mode || (((finalPayload.inspector || {}).run_state || {}).collaboration_mode) || chatSettings.collaboration_mode || "default"),
+          turn_status: String(finalPayload.turn_status || (((finalPayload.inspector || {}).run_state || {}).turn_status) || "completed"),
+          plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : ((((finalPayload.inspector || {}).run_state || {}).plan) || []),
+          pending_user_input: finalPayload.pending_user_input || (((finalPayload.inspector || {}).run_state || {}).pending_user_input) || {},
           phase: String((((finalPayload.inspector || {}).run_state || {}).phase) || "report"),
           last_run_id: String(finalPayload.run_id || ""),
           last_model: String(finalPayload.effective_model || ""),
@@ -954,6 +1082,8 @@ function App() {
       setMessages((prev) => prev.filter((item) => !(pendingMessage && item.id === pendingMessage.id)));
     } finally {
       setSending(false);
+      setStoppingRun(false);
+      setActiveRunId("");
     }
   }
 
@@ -1077,6 +1207,15 @@ function App() {
   const lastInspector = (lastResponse && lastResponse.inspector) || {};
   const runState = lastInspector.run_state || {};
   const evidence = lastInspector.evidence || {};
+  const activeCollaborationMode = String(runState.collaboration_mode || sessionAgentState.collaboration_mode || chatSettings.collaboration_mode || "default");
+  const activeTurnStatus = String(runState.turn_status || sessionAgentState.turn_status || "idle");
+  const activePlan = Array.isArray(runState.plan) && runState.plan.length
+    ? runState.plan
+    : (Array.isArray(sessionAgentState.plan) ? sessionAgentState.plan : []);
+  const activePendingInput =
+    (runState.pending_user_input && typeof runState.pending_user_input === "object")
+      ? runState.pending_user_input
+      : ((sessionAgentState.pending_user_input && typeof sessionAgentState.pending_user_input === "object") ? sessionAgentState.pending_user_input : {});
   const activeToolTimeline = Array.isArray(lastInspector.tool_timeline) && lastInspector.tool_timeline.length
     ? lastInspector.tool_timeline
     : toolTimeline;
@@ -1220,7 +1359,12 @@ function App() {
                       <span className="message-role">${roleLabel(item.role)}</span>
                       ${item.createdAt ? html`<span className="message-time">${formatTime(item.createdAt)}</span>` : null}
                     </div>
-                    <div className="message-card">${item.text}</div>
+                    <div className="message-card">
+                      <div
+                        className="message-card-body message-markdown"
+                        dangerouslySetInnerHTML=${{ __html: renderMessageHtml(item.text) }}
+                      ></div>
+                    </div>
                   </article>
                 `,
               )
@@ -1239,7 +1383,14 @@ function App() {
               `}
         </section>
 
-        <section className="composer-shell" id="composerShell">
+        <section
+          className=${`composer-shell ${composerDragActive ? "drag-active" : ""}`}
+          id="composerShell"
+          onDragEnter=${handleComposerDragEnter}
+          onDragOver=${handleComposerDragOver}
+          onDragLeave=${handleComposerDragLeave}
+          onDrop=${handleComposerDrop}
+        >
           ${pendingUploads.length
             ? html`
                 <div className="attachment-strip">
@@ -1300,7 +1451,16 @@ function App() {
               <button className="icon-btn" type="button" onClick=${() => fileInputRef.current && fileInputRef.current.click()} disabled=${sending}>+</button>
               <input ref=${fileInputRef} type="file" multiple hidden onChange=${handleSelectFiles} />
             </div>
-            <button className="ghost-btn" type="button" onClick=${() => setDrawerView(drawerView ? "" : "run")}>Workbench</button>
+            <div className="composer-toolbar-right">
+              ${sending && activeRunId
+                ? html`
+                    <button className="ghost-btn" type="button" onClick=${handleStopRun} disabled=${stoppingRun}>
+                      ${stoppingRun ? "停止中" : "停止"}
+                    </button>
+                  `
+                : null}
+              <button className="ghost-btn" type="button" onClick=${() => setDrawerView(drawerView ? "" : "run")}>Workbench</button>
+            </div>
           </div>
 
           <div className="composer-frame">
@@ -1391,27 +1551,49 @@ function App() {
                 <section className="panel-card">
                   <div className="panel-title">Run State</div>
                   <div className="meta-line">goal: ${runState.goal || sessionAgentState.goal || sessionAgentState.current_goal || "-"}</div>
-                  <div className="meta-line">phase: ${runState.phase || sessionAgentState.phase || "idle"}</div>
-                  <div className="meta-line">inline_document: ${String(Boolean(runState.inline_document))}</div>
+                  <div className="meta-line">mode: ${activeCollaborationMode}</div>
+                  <div className="meta-line">turn_status: ${activeTurnStatus}</div>
                   <div className="meta-line">evidence: ${evidence.status || sessionAgentState.evidence_status || "not_needed"}</div>
+                  <div className="meta-line">inline_document: ${String(Boolean(runState.inline_document))}</div>
                 </section>
 
                 <section className="panel-card">
-                  <div className="panel-title">Stage Timeline</div>
+                  <div className="panel-title">Checklist</div>
                   <div className="timeline-list">
-                    ${stageTimeline.length
-                      ? stageTimeline.map(
+                    ${activePlan.length
+                      ? activePlan.map(
                           (item) => html`
-                            <div key=${item.id} className="timeline-row">
+                            <div key=${`${item.step || "step"}-${item.status || ""}`} className="timeline-row">
                               <div className="timeline-head">
-                                <span>${item.label}</span>
-                                <span>${item.status}</span>
+                                <span>${item.step || "step"}</span>
+                                <span>${item.status || "pending"}</span>
                               </div>
-                              <div className="timeline-detail">${item.detail}</div>
                             </div>
                           `,
                         )
-                      : html`<div className="empty-inline">本轮还没有阶段记录。</div>`}
+                      : html`<div className="empty-inline">本轮还没有 checklist。</div>`}
+                  </div>
+                </section>
+
+                <section className="panel-card">
+                  <div className="panel-title">Pending Input</div>
+                  <div className="timeline-list">
+                    ${Array.isArray(activePendingInput.questions) && activePendingInput.questions.length
+                      ? activePendingInput.questions.map(
+                          (item) => html`
+                            <div key=${item.id || item.header || item.question} className="timeline-row">
+                              <div className="timeline-head">
+                                <span>${item.header || item.id || "question"}</span>
+                                <span>${(item.options || []).length} options</span>
+                              </div>
+                              <div className="timeline-detail">${item.question || ""}</div>
+                              <div className="timeline-detail">
+                                ${(Array.isArray(item.options) ? item.options : []).map((option) => option.label).join(" / ")}
+                              </div>
+                            </div>
+                          `,
+                        )
+                      : html`<div className="empty-inline">当前没有等待中的结构化输入。</div>`}
                   </div>
                 </section>
 
@@ -1622,6 +1804,18 @@ function App() {
                       value=${chatSettings.model}
                       onInput=${(event) => updateModelSelection(event.currentTarget.value)}
                     />
+                  </label>
+                  <label className="form-field">
+                    <span>Collaboration Mode</span>
+                    <select
+                      className="drawer-input"
+                      value=${chatSettings.collaboration_mode}
+                      onChange=${(event) => setChatSettings((prev) => ({ ...prev, collaboration_mode: event.currentTarget.value }))}
+                    >
+                      <option value="default">default</option>
+                      <option value="plan">plan</option>
+                      <option value="execute">execute</option>
+                    </select>
                   </label>
                   <label className="form-field">
                     <span>响应风格</span>

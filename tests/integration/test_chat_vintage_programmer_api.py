@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import threading
 
 from fastapi.testclient import TestClient
 
@@ -18,27 +19,105 @@ class _FakeVintageRuntime:
             "title": "Vintage Programmer",
             "default_model": "gpt-test",
             "tool_policy": "all",
-            "allowed_tools": ["search_web", "read_text_file"],
+            "allowed_tools": [
+                "exec_command",
+                "apply_patch",
+                "read",
+                "search_file",
+                "search_file_multi",
+                "read_section",
+                "table_extract",
+                "fact_check_file",
+                "search_codebase",
+                "web_search",
+                "web_fetch",
+                "web_download",
+                "sessions_list",
+                "image_inspect",
+                "image_read",
+                "archive_extract",
+                "mail_extract_attachments",
+                "update_plan",
+                "request_user_input",
+            ],
             "spec_files": ["soul.md", "identity.md", "agent.md", "tools.md"],
             "identity": {"document": "identity", "sections": {"角色定义": ["primary agent"]}},
-            "workflow": {"phases": ["explore", "plan", "execute", "verify", "report"]},
+            "workflow": {
+                "modes": ["default", "plan", "execute"],
+                "phases": ["default", "plan", "execute"],
+                "default_mode": "default",
+            },
             "policies": {
                 "tool_policy": "all",
                 "approval_policy": "on_failure_or_high_impact",
                 "evidence_policy": "required_for_external_or_runtime_facts",
             },
-            "network": {"mode": "explicit_tools", "web_tool_contract": ["search_web", "fetch_web", "download_web_file"]},
+            "network": {"mode": "explicit_tools", "web_tool_contract": ["web_search", "web_fetch", "web_download"]},
             "capabilities": {
-                "allowed_tools": ["search_web", "read_text_file"],
-                "tool_count": 2,
+                "allowed_tools": [
+                    "exec_command",
+                    "apply_patch",
+                    "read",
+                    "search_file",
+                    "search_file_multi",
+                    "read_section",
+                    "table_extract",
+                    "fact_check_file",
+                    "search_codebase",
+                    "web_search",
+                    "web_fetch",
+                    "web_download",
+                    "sessions_list",
+                    "image_inspect",
+                    "image_read",
+                    "archive_extract",
+                    "mail_extract_attachments",
+                    "update_plan",
+                    "request_user_input",
+                ],
+                "tool_count": 17,
                 "tools": [
-                    {"name": "search_web", "group": "web", "source": "legacy_retained", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search web"},
-                    {"name": "read_text_file", "group": "files", "source": "legacy_retained", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read file"},
+                    {"name": "exec_command", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "run shell commands"},
+                    {"name": "apply_patch", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "apply workspace patch"},
+                    {"name": "read", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read file or directory"},
+                    {"name": "search_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file"},
+                    {"name": "search_file_multi", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file with multiple queries"},
+                    {"name": "read_section", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read one matched section"},
+                    {"name": "table_extract", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "extract document tables"},
+                    {"name": "fact_check_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "fact check one file"},
+                    {"name": "search_codebase", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search codebase"},
+                    {"name": "web_search", "group": "web_context", "source": "local_hosted", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search the web"},
+                    {"name": "web_fetch", "group": "web_context", "source": "local_hosted", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "fetch one web page"},
+                    {"name": "web_download", "group": "web_context", "source": "local_specialized", "enabled": True, "read_only": False, "requires_evidence": True, "summary": "download one remote file"},
+                    {"name": "sessions_list", "group": "session_context", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "list sessions"},
+                    {"name": "image_inspect", "group": "media_context", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "inspect image"},
+                    {"name": "image_read", "group": "media_context", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read image content"},
+                    {"name": "archive_extract", "group": "content_unpack", "source": "local_specialized", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "extract archive"},
+                    {"name": "mail_extract_attachments", "group": "content_unpack", "source": "local_specialized", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "extract mail attachments"},
+                    {"name": "update_plan", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": True, "requires_evidence": False, "summary": "sync checklist"},
+                    {"name": "request_user_input", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": True, "requires_evidence": False, "summary": "request structured input"},
                 ],
             },
             "tools": [
-                {"name": "search_web", "group": "web", "source": "legacy_retained", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search web"},
-                {"name": "read_text_file", "group": "files", "source": "legacy_retained", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read file"},
+                {"name": "exec_command", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "run shell commands"},
+                {"name": "apply_patch", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "apply workspace patch"},
+                {"name": "read", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read file or directory"},
+                {"name": "search_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file"},
+                {"name": "search_file_multi", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file with multiple queries"},
+                {"name": "read_section", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read one matched section"},
+                {"name": "table_extract", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "extract document tables"},
+                {"name": "fact_check_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "fact check one file"},
+                {"name": "search_codebase", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search codebase"},
+                {"name": "web_search", "group": "web_context", "source": "local_hosted", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search the web"},
+                {"name": "web_fetch", "group": "web_context", "source": "local_hosted", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "fetch one web page"},
+                {"name": "web_download", "group": "web_context", "source": "local_specialized", "enabled": True, "read_only": False, "requires_evidence": True, "summary": "download one remote file"},
+                {"name": "sessions_list", "group": "session_context", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "list sessions"},
+                {"name": "image_inspect", "group": "media_context", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "inspect image"},
+                {"name": "image_read", "group": "media_context", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read image content"},
+                {"name": "archive_extract", "group": "content_unpack", "source": "local_specialized", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "extract archive"},
+                {"name": "mail_extract_attachments", "group": "content_unpack", "source": "local_specialized", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "extract mail attachments"},
+                {"name": "update_plan", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": True, "requires_evidence": False, "summary": "sync checklist"},
+                {"name": "request_user_input", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": True, "requires_evidence": False, "summary": "request structured input"},
             ],
             "loaded_skills": [{"id": "example_refactor_helper", "title": "Example Refactor Helper", "summary": "Starter", "path": "/tmp/example"}],
         }
@@ -48,18 +127,32 @@ class _FakeVintageRuntime:
         project = dict(context.get("project") or {})
         if progress_cb is not None:
             progress_cb({"event": "stage", "code": "execute", "phase": "execute", "label": "Execute", "status": "running", "detail": "fake runtime running"})
+            progress_cb({"event": "plan_update", "plan": [{"step": "Inspect workspace", "status": "completed"}], "collaboration_mode": "default", "turn_status": "running"})
         return {
             "text": "single-agent response",
             "effective_model": "gpt-test",
-            "tool_events": [{"name": "search_web", "input": {"query": "x"}, "output_preview": "ok", "status": "ok", "group": "web", "source": "legacy_retained", "summary": "searched", "source_refs": ["https://example.com"]}],
+            "tool_events": [{"name": "web_search", "input": {"query": "x"}, "output_preview": "ok", "status": "ok", "group": "web_context", "source": "local_hosted", "summary": "searched", "source_refs": ["https://example.com"]}],
             "token_usage": {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18, "llm_calls": 1},
             "answer_bundle": {"summary": "single-agent response", "claims": [], "citations": [], "warnings": []},
-            "route_state": {"agent_id": "vintage_programmer", "phase": "report", "evidence_status": "collected", "loaded_skill_ids": ["example_refactor_helper"]},
+            "route_state": {"agent_id": "vintage_programmer", "phase": "completed", "evidence_status": "collected", "loaded_skill_ids": ["example_refactor_helper"]},
+            "collaboration_mode": "default",
+            "turn_status": "completed",
+            "plan": [{"step": "Inspect workspace", "status": "completed"}],
+            "pending_user_input": {},
             "inspector": {
                 "agent": self.descriptor(),
                 "notes": ["fake runtime note"],
-                "run_state": {"goal": "workspace inspection", "phase": "report", "workflow_phases": ["explore", "plan", "execute", "verify", "report"], "inline_document": False},
-                "tool_timeline": [{"name": "search_web", "group": "web", "status": "ok", "summary": "searched", "source_refs": ["https://example.com"]}],
+                "run_state": {
+                    "goal": "workspace inspection",
+                    "phase": "completed",
+                    "workflow_phases": ["default", "plan", "execute"],
+                    "collaboration_mode": "default",
+                    "turn_status": "completed",
+                    "plan": [{"step": "Inspect workspace", "status": "completed"}],
+                    "pending_user_input": {},
+                    "inline_document": False,
+                },
+                "tool_timeline": [{"name": "web_search", "group": "web_context", "status": "ok", "summary": "searched", "source_refs": ["https://example.com"]}],
                 "evidence": {"status": "collected", "required": True, "warning": "", "source_refs": ["https://example.com"]},
                 "session": {
                     "session_id": "s-1",
@@ -201,10 +294,16 @@ def test_chat_endpoint_uses_single_agent_runtime(monkeypatch, tmp_path: Path) ->
     payload = response.json()
     assert payload["agent_id"] == "vintage_programmer"
     assert payload["text"] == "single-agent response"
-    assert payload["tool_events"][0]["name"] == "search_web"
+    assert payload["tool_events"][0]["name"] == "web_search"
+    assert payload["tool_events"][0]["source"] == "local_hosted"
+    assert payload["tool_events"][0]["group"] == "web_context"
     assert payload["tool_events"][0]["status"] == "ok"
+    assert payload["collaboration_mode"] == "default"
+    assert payload["turn_status"] == "completed"
+    assert payload["plan"] == [{"step": "Inspect workspace", "status": "completed"}]
     assert payload["inspector"]["agent"]["title"] == "Vintage Programmer"
-    assert payload["inspector"]["run_state"]["phase"] == "report"
+    assert payload["inspector"]["run_state"]["collaboration_mode"] == "default"
+    assert payload["inspector"]["run_state"]["turn_status"] == "completed"
     assert "execution_trace" not in payload
 
     session_id = payload["session_id"]
@@ -213,7 +312,9 @@ def test_chat_endpoint_uses_single_agent_runtime(monkeypatch, tmp_path: Path) ->
     session_payload = session_response.json()
     assert session_payload["project_id"]
     assert session_payload["project_root"] == str(tmp_path)
-    assert session_payload["agent_state"]["phase"] == "report"
+    assert session_payload["agent_state"]["phase"] == "completed"
+    assert session_payload["agent_state"]["collaboration_mode"] == "default"
+    assert session_payload["agent_state"]["turn_status"] == "completed"
     assert session_payload["agent_state"]["evidence_status"] == "collected"
     assert session_payload["agent_state"]["enabled_skill_ids"] == ["example_refactor_helper"]
 
@@ -241,6 +342,7 @@ def test_chat_stream_emits_stage_final_and_done(monkeypatch, tmp_path: Path) -> 
     events = _parse_sse_events(response.text)
     event_names = [name for name, _ in events]
     assert "stage" in event_names
+    assert "plan_update" in event_names
     assert "final" in event_names
     assert event_names[-1] == "done"
     stage_payloads = [payload for name, payload in events if name == "stage"]
@@ -249,6 +351,36 @@ def test_chat_stream_emits_stage_final_and_done(monkeypatch, tmp_path: Path) -> 
     response_payload = dict(final_payload.get("response") or {})
     assert response_payload["agent_id"] == "vintage_programmer"
     assert response_payload["text"] == "single-agent response"
+    assert response_payload["collaboration_mode"] == "default"
+    assert response_payload["turn_status"] == "completed"
+
+
+def test_cancel_chat_run_endpoint_sets_active_run_flag(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    run_id = "run-cancel-test"
+    cancel_event = threading.Event()
+
+    with main_app._active_chat_runs_lock:
+        main_app._active_chat_runs[run_id] = {
+            "run_id": run_id,
+            "cancel_event": cancel_event,
+            "status": "running",
+            "session_id": "s-1",
+            "project_id": "project_demo",
+        }
+
+    try:
+        response = client.post(f"/api/chat/runs/{run_id}/cancel")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["ok"] is True
+        assert payload["cancelled"] is True
+        assert payload["status"] == "cancelling"
+        assert cancel_event.is_set() is True
+    finally:
+        with main_app._active_chat_runs_lock:
+            main_app._active_chat_runs.pop(run_id, None)
 
 
 def test_chat_endpoint_normalizes_provider_errors(monkeypatch, tmp_path: Path) -> None:
@@ -344,7 +476,17 @@ def test_workbench_endpoints_list_and_edit_local_skills(monkeypatch, tmp_path: P
 
     tools_response = client.get("/api/workbench/tools")
     assert tools_response.status_code == 200
-    assert tools_response.json()["tools"][0]["name"]
+    tool_rows = tools_response.json()["tools"]
+    assert tool_rows[0]["name"]
+    assert all(item["source"] != "legacy_retained" for item in tool_rows)
+    assert {"codex_core", "fs_content", "web_context", "session_context", "media_context", "content_unpack"}.issubset(
+        {item["group"] for item in tool_rows}
+    )
+    assert "view_image" not in {item["name"] for item in tool_rows}
+    assert "read_text_file" not in {item["name"] for item in tool_rows}
+    assert {"web_download", "image_read", "search_file_multi", "read_section", "table_extract", "fact_check_file"}.issubset(
+        {item["name"] for item in tool_rows}
+    )
 
     skills_response = client.get("/api/workbench/skills")
     assert skills_response.status_code == 200
