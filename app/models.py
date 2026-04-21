@@ -35,6 +35,7 @@ class ToolEvent(BaseModel):
     group: str = ""
     source: str = ""
     summary: str = ""
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
     source_refs: list[str] = Field(default_factory=list)
     project_root: str = ""
     cwd: str = ""
@@ -341,6 +342,7 @@ class HealthResponse(BaseModel):
     default_project_id: str = ""
     projects: list[ProjectDescriptor] = Field(default_factory=list)
     runtime_status: dict[str, object] = Field(default_factory=dict)
+    ocr_status: dict[str, object] = Field(default_factory=dict)
     agent: dict[str, object] = Field(default_factory=dict)
 
 

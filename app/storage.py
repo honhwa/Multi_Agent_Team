@@ -37,6 +37,7 @@ class SessionStore:
             "phase": "idle",
             "last_run_id": "",
             "last_model": "",
+            "task_checkpoint": {},
             "tool_hits": [],
             "tool_count": 0,
             "tool_names": [],

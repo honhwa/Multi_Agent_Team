@@ -192,6 +192,15 @@ class _FakeImageReadTools(_FakeTools):
                 "height": 102,
                 "visible_text": "Vintage\nVP\nnew_validation_agent",
                 "analysis": "Extracted visible text from the image using local OCR.",
+                "summary": "image_read · ocr_only · rapidocr",
+                "diagnostics": {
+                    "engines_tried": ["rapidocr"],
+                    "ocr_available": True,
+                    "ocr_engine": "rapidocr",
+                    "fallback_reason": "no_runtime_image_reader",
+                    "read_strategy": "ocr_only",
+                    "visible_text_preview": "Vintage / VP / new_validation_agent",
+                },
             }
         return super().execute(name, arguments)
 
@@ -784,6 +793,92 @@ def test_runtime_forces_tool_based_summary_for_generic_image_read_requests(tmp_p
     assert "Vintage" in result["text"]
     assert "new_validation_agent" in result["text"]
     assert "image_read_result_forced_summary" in result["inspector"]["notes"]
+    assert result["tool_events"][0]["diagnostics"]["ocr_engine"] == "rapidocr"
+    assert "Vintage" in result["tool_events"][0]["diagnostics"]["visible_text_preview"]
+
+
+def test_runtime_restores_task_checkpoint_for_followup_turn(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([_FakeMessage(content="继续沿用当前任务上下文处理")])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="让其修改",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-followup-task",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "route_state": {
+                "task_checkpoint": {
+                    "task_id": "task-1",
+                    "goal": "Inspect the current code and patch it",
+                    "project_root": str(tmp_path),
+                    "cwd": str(tmp_path),
+                    "active_files": [str(tmp_path / "app.py")],
+                    "active_attachments": [],
+                    "last_completed_step": "read: app.py",
+                    "next_action": "modify app.py",
+                }
+            },
+        },
+    )
+
+    assert result["inspector"]["run_state"]["goal"] == "Inspect the current code and patch it"
+    assert result["inspector"]["run_state"]["task_checkpoint"]["task_id"] == "task-1"
+    assert result["route_state"]["task_checkpoint"]["active_files"] == [str(tmp_path / "app.py")]
+    assert "task_checkpoint_restored" in result["inspector"]["notes"]
+
+
+def test_runtime_updates_task_checkpoint_from_successful_tool(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    image_path = tmp_path / "screen.png"
+    image_path.write_bytes(b"fake-image")
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "image_read", "args": {"path": str(image_path)}}]),
+            _FakeMessage(content="图片里是 Vintage Programmer 的首页"),
+        ],
+        _FakeImageReadTools(),
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="看看图片内容",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-task-checkpoint",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [
+                {
+                    "id": "img-1",
+                    "name": "screen.png",
+                    "mime": "image/png",
+                    "kind": "image",
+                    "path": str(image_path),
+                }
+            ],
+        },
+    )
+
+    checkpoint = result["route_state"]["task_checkpoint"]
+    assert checkpoint["cwd"] == str(tmp_path)
+    assert checkpoint["active_files"] == [str(image_path)]
+    assert checkpoint["active_attachments"][0]["id"] == "img-1"
+    assert checkpoint["last_completed_step"].startswith("image_read:")
 
 
 def test_runtime_handles_runtime_context_setters_without_model_kwarg(tmp_path: Path) -> None:

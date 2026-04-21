@@ -395,7 +395,9 @@ def index() -> FileResponse:
 @app.get("/api/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     runtime = get_agent_os_runtime()
-    docker_ok, docker_msg = runtime.legacy_tools().docker_status()
+    legacy_tools = runtime.legacy_tools()
+    docker_ok, docker_msg = legacy_tools.docker_status()
+    ocr_status = legacy_tools.ocr_status() if hasattr(legacy_tools, "ocr_status") else {}
     provider_options = _provider_options_payload()
     active_provider = next(
         (
@@ -454,6 +456,7 @@ def health() -> HealthResponse:
             "git_branch": GIT_BRANCH,
             "build_version": BUILD_VERSION,
         },
+        ocr_status=ocr_status,
         agent=agent_descriptor,
     )
 
@@ -1586,6 +1589,7 @@ def _process_chat_request(
             "last_run_id": "",
             "last_model": "",
             "cwd": str(seed_session.get("project_root") or ""),
+            "task_checkpoint": {},
             "tool_hits": [],
             "tool_count": 0,
             "tool_names": [],
@@ -1692,6 +1696,18 @@ def _process_chat_request(
                 session_id=session_id,
                 project_id=str(session_project.get("project_id") or ""),
             )
+            new_task_requested = session_context_impl.should_start_new_task(
+                session,
+                message=req.message,
+                requested_attachment_ids=req.attachment_ids,
+            )
+            if new_task_requested:
+                _emit_progress(
+                    progress_cb,
+                    "trace",
+                    message="检测到新的独立任务，本轮将重置旧任务检查点与历史附件继承。",
+                    run_id=run_id,
+                )
             _emit_progress(
                 progress_cb,
                 "stage",
@@ -1743,6 +1759,12 @@ def _process_chat_request(
         auto_linked_attachment_ids = list(attachment_context["auto_linked_attachment_ids"] or [])
         effective_attachment_ids = list(attachment_context["effective_attachment_ids"] or [])
         attachment_context_key = str(attachment_context["attachment_context_key"] or "")
+        if new_task_requested and not requested_attachment_ids:
+            clear_attachment_context = True
+            attachment_context_mode = "cleared"
+            auto_linked_attachment_ids = []
+            effective_attachment_ids = []
+            attachment_context_key = ""
 
         attachments = upload_store.get_many(effective_attachment_ids)
         _emit_progress(
@@ -1810,6 +1832,11 @@ def _process_chat_request(
                 session,
                 attachment_ids=resolved_attachment_ids,
             )
+        if new_task_requested:
+            route_state_input = {}
+            route_state_scope = "task_reset"
+        history_turns_for_runtime = [] if new_task_requested else session.get("turns", [])
+        summary_for_runtime = "" if new_task_requested else session.get("summary", "")
 
         _emit_progress(
             progress_cb,
@@ -1838,8 +1865,8 @@ def _process_chat_request(
                     "cwd": str(session.get("cwd") or session_project.get("root_path") or ""),
                     "is_worktree": bool(session_project.get("is_worktree")),
                 },
-                "summary": session.get("summary", ""),
-                "history_turns": session.get("turns", []),
+                "summary": summary_for_runtime,
+                "history_turns": history_turns_for_runtime,
                 "route_state": route_state_input,
                 "attachments": [
                     {
@@ -1945,6 +1972,7 @@ def _process_chat_request(
             "project_id": str(session.get("project_id") or ""),
             "project_root": str(session.get("project_root") or ""),
             "cwd": str((((inspector.get("session") or {}) if isinstance(inspector.get("session"), dict) else {}).get("cwd")) or session.get("cwd") or ""),
+            "task_checkpoint": dict(inspector_run_state.get("task_checkpoint") or ((route_state or {}).get("task_checkpoint") if isinstance(route_state, dict) else {})),
             "tool_hits": tool_hits,
             "tool_count": len(tool_hits),
             "tool_names": [str(item.get("name") or "") for item in tool_hits if str(item.get("name") or "").strip()],

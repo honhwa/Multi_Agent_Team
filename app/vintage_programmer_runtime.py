@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import time
 from typing import Any, Callable
+import uuid
 
 from app.config import AppConfig
 from app.models import ChatSettings, ToolEvent
@@ -549,6 +550,7 @@ class VintageProgrammerRuntime:
         parts.append("当用户直接在消息里粘贴代码、XML、HTML、JSON、YAML 或长文本时，应先就地分析当前消息内容，不要默认追问 workspace 路径。")
         parts.append("当用户贴出报错、代码片段、配置文本或日志时，默认把这些内容当作本轮要分析的对象；只有用户明确要求查看仓库文件、目录、网页或执行命令时，才优先调用工具。")
         parts.append("如果 runtime_context_json 里已经给出 attachments 的 name/path，就把它们视为当前轮已提供上下文，不要先否认附件或要求用户重新描述路径。")
+        parts.append("如果 runtime_context_json.current_task 里已经给出 goal/cwd/active_files/active_attachments，就把它们当作当前任务的硬上下文继续推进；不要重复声称不知道目录、文件或附件。")
         parts.append("如果附件是图片，需要优先使用 image_read(path=...) 读取可见文字和画面内容；不要只报元数据，也不要声称未配置 OCR 或无法看图。")
         parts.append("如果附件是文档或 .msg，需要优先用 read/search_file/read_section/table_extract 等工具读取内容，不要只根据文件名猜测。")
         return "\n\n".join(item for item in parts if str(item).strip())
@@ -573,11 +575,14 @@ class VintageProgrammerRuntime:
             for item in list(context.get("attachments") or [])
             if isinstance(item, dict)
         ]
+        route_state = dict(context.get("route_state") or {})
+        current_task = self._normalize_task_checkpoint(route_state.get("task_checkpoint"))
         payload = {
             "session_id": str(context.get("session_id") or ""),
             "project": dict(context.get("project") or {}),
             "summary": str(context.get("summary") or "")[:4000],
-            "route_state": dict(context.get("route_state") or {}),
+            "route_state": route_state,
+            "current_task": current_task,
             "user_input_response": dict(context.get("user_input_response") or {}),
             "attachments": attachments,
             "history_turns": recent_history,
@@ -654,6 +659,7 @@ class VintageProgrammerRuntime:
         summary = str(result.get("summary") or result.get("error") or "").strip()
         if not summary:
             summary = self._backend._shorten(result_json, 180)
+        diagnostics = dict(result.get("diagnostics") or {}) if isinstance(result.get("diagnostics"), dict) else {}
         descriptor = dict(self._tool_descriptors_by_name.get(name) or {})
         group = str(descriptor.get("group") or "")
         source = str(descriptor.get("source") or "")
@@ -665,11 +671,171 @@ class VintageProgrammerRuntime:
             group=group,
             source=source,
             summary=summary,
+            diagnostics=diagnostics,
             source_refs=source_refs,
             project_root=str(result.get("project_root") or ""),
             cwd=str(result.get("cwd") or ""),
             module_group=group,
         )
+
+    @staticmethod
+    def _attachment_refs(attachments: list[dict[str, Any]]) -> list[dict[str, str]]:
+        refs: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in attachments:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or "").strip()
+            key = path or str(item.get("id") or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            refs.append(
+                {
+                    "id": str(item.get("id") or "").strip(),
+                    "name": str(item.get("name") or item.get("original_name") or "").strip(),
+                    "kind": str(item.get("kind") or "").strip(),
+                    "path": path,
+                }
+            )
+        return refs[:8]
+
+    @staticmethod
+    def _normalize_task_checkpoint(raw: Any) -> dict[str, Any]:
+        if not isinstance(raw, dict):
+            return {}
+        active_files: list[str] = []
+        for item in list(raw.get("active_files") or [])[:8]:
+            value = str(item or "").strip()
+            if value and value not in active_files:
+                active_files.append(value)
+        active_attachments: list[dict[str, str]] = []
+        seen_attachment_keys: set[str] = set()
+        for item in list(raw.get("active_attachments") or [])[:8]:
+            if not isinstance(item, dict):
+                continue
+            ref = {
+                "id": str(item.get("id") or "").strip(),
+                "name": str(item.get("name") or "").strip(),
+                "kind": str(item.get("kind") or "").strip(),
+                "path": str(item.get("path") or "").strip(),
+            }
+            key = ref["path"] or ref["id"] or ref["name"]
+            if not key or key in seen_attachment_keys:
+                continue
+            seen_attachment_keys.add(key)
+            active_attachments.append(ref)
+        return {
+            "task_id": str(raw.get("task_id") or "").strip(),
+            "goal": str(raw.get("goal") or "").strip(),
+            "project_root": str(raw.get("project_root") or "").strip(),
+            "cwd": str(raw.get("cwd") or "").strip(),
+            "active_files": active_files,
+            "active_attachments": active_attachments,
+            "last_completed_step": str(raw.get("last_completed_step") or "").strip(),
+            "next_action": str(raw.get("next_action") or "").strip(),
+        }
+
+    def _initial_task_checkpoint(
+        self,
+        *,
+        route_state: dict[str, Any],
+        project_root: str,
+        cwd: str,
+        goal: str,
+        attachments: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        restored = self._normalize_task_checkpoint((route_state or {}).get("task_checkpoint"))
+        if restored:
+            restored["task_id"] = restored.get("task_id") or str(uuid.uuid4())
+            restored["project_root"] = restored.get("project_root") or project_root
+            restored["cwd"] = restored.get("cwd") or cwd or project_root
+            restored["goal"] = restored.get("goal") or goal
+            if attachments:
+                restored["active_attachments"] = self._attachment_refs(attachments)
+            return restored
+        return {
+            "task_id": str(uuid.uuid4()),
+            "goal": goal,
+            "project_root": project_root,
+            "cwd": cwd or project_root,
+            "active_files": [],
+            "active_attachments": self._attachment_refs(attachments),
+            "last_completed_step": "",
+            "next_action": "",
+        }
+
+    @staticmethod
+    def _maybe_add_active_file(paths: list[str], raw_path: Any) -> None:
+        value = str(raw_path or "").strip()
+        if not value or value.startswith("http://") or value.startswith("https://"):
+            return
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            return
+        try:
+            if candidate.exists() and candidate.is_dir():
+                return
+        except Exception:
+            pass
+        if value not in paths:
+            paths.append(value)
+
+    def _task_checkpoint_from_tool(
+        self,
+        *,
+        checkpoint: dict[str, Any],
+        tool_name: str,
+        arguments: dict[str, Any],
+        result: dict[str, Any],
+        attachments: list[dict[str, Any]],
+        fallback_project_root: str,
+        fallback_cwd: str,
+    ) -> dict[str, Any]:
+        updated = self._normalize_task_checkpoint(checkpoint)
+        if not updated:
+            updated = self._initial_task_checkpoint(
+                route_state={},
+                project_root=fallback_project_root,
+                cwd=fallback_cwd,
+                goal="",
+                attachments=attachments,
+            )
+        updated["project_root"] = str(result.get("project_root") or updated.get("project_root") or fallback_project_root or "").strip()
+        next_cwd = str(result.get("cwd") or "").strip()
+        if next_cwd:
+            updated["cwd"] = next_cwd
+        elif not str(updated.get("cwd") or "").strip():
+            updated["cwd"] = fallback_cwd or fallback_project_root
+
+        active_files = list(updated.get("active_files") or [])
+        primary_path = result.get("path") or arguments.get("path")
+        if tool_name in {"read", "search_file", "search_file_multi", "read_section", "table_extract", "fact_check_file", "image_read", "image_inspect"}:
+            self._maybe_add_active_file(active_files, primary_path)
+        for item in list(result.get("files") or [])[:8]:
+            self._maybe_add_active_file(active_files, item)
+        for collection_key in ("results", "matches", "hits", "items"):
+            for item in list(result.get(collection_key) or [])[:8]:
+                if isinstance(item, dict):
+                    self._maybe_add_active_file(active_files, item.get("path"))
+        updated["active_files"] = active_files[:8]
+        if not next_cwd:
+            primary_path_text = str(primary_path or "").strip()
+            if primary_path_text and Path(primary_path_text).is_absolute():
+                candidate = Path(primary_path_text)
+                try:
+                    is_file = candidate.exists() and candidate.is_file()
+                except Exception:
+                    is_file = False
+                if is_file:
+                    candidate_parent = candidate.parent
+                    if str(candidate_parent).strip():
+                        updated["cwd"] = str(candidate_parent)
+        updated["active_attachments"] = self._attachment_refs(attachments)
+        summary = str(result.get("summary") or result.get("error") or "").strip()
+        if summary:
+            updated["last_completed_step"] = f"{tool_name}: {summary}"[:240]
+        return updated
 
     def _build_answer_bundle(
         self,
@@ -1169,11 +1335,22 @@ class VintageProgrammerRuntime:
             and not inline_document
             and (_looks_like_explicit_tool_request(prompt_message) or attachment_requires_tools)
         )
-        current_goal = _truncate_goal(prompt_message)
         project_context = dict(context_payload.get("project") or {})
         project_root = str(project_context.get("project_root") or "").strip()
         project_id = str(project_context.get("project_id") or "").strip()
         effective_cwd = str(project_context.get("cwd") or project_root or "").strip()
+        route_state_input = dict(context_payload.get("route_state") or {})
+        task_checkpoint = self._initial_task_checkpoint(
+            route_state=route_state_input,
+            project_root=project_root,
+            cwd=effective_cwd,
+            goal=_truncate_goal(prompt_message),
+            attachments=attachment_metas,
+        )
+        current_goal = str(task_checkpoint.get("goal") or _truncate_goal(prompt_message))
+        task_checkpoint["goal"] = current_goal
+        if task_checkpoint.get("cwd"):
+            effective_cwd = str(task_checkpoint.get("cwd") or effective_cwd)
 
         messages: list[Any] = [
             self._backend._SystemMessage(content=self._render_system_prompt(settings, spec=spec, loaded_skills=loaded_skills)),
@@ -1194,6 +1371,8 @@ class VintageProgrammerRuntime:
             notes.append("attachment_tooling_expected")
         if has_image_attachments:
             notes.append("image_attachment_context")
+        if route_state_input.get("task_checkpoint"):
+            notes.append("task_checkpoint_restored")
         tool_events: list[ToolEvent] = []
         effective_model = requested_model
         plan_state: list[dict[str, Any]] = []
@@ -1390,6 +1569,24 @@ class VintageProgrammerRuntime:
                         }
                     if name == "image_read" and bool(result.get("ok")):
                         last_image_read_result = dict(result)
+                    task_checkpoint = self._task_checkpoint_from_tool(
+                        checkpoint=task_checkpoint,
+                        tool_name=name,
+                        arguments=arguments,
+                        result=result,
+                        attachments=attachment_metas,
+                        fallback_project_root=project_root,
+                        fallback_cwd=effective_cwd,
+                    )
+                    effective_cwd = str(task_checkpoint.get("cwd") or effective_cwd or project_root)
+                    self._set_tools_runtime_context(
+                        execution_mode=settings.execution_mode,
+                        session_id=str(context_payload.get("session_id") or ""),
+                        project_id=project_id,
+                        project_root=project_root,
+                        cwd=effective_cwd,
+                        model=effective_model,
+                    )
                     tool_call_count += 1
                     if name == last_tool_name:
                         same_tool_repeat_count += 1
@@ -1572,6 +1769,20 @@ class VintageProgrammerRuntime:
             notes.append("strict_agentic_blocked_after_steer")
         else:
             turn_status = "completed"
+        task_checkpoint["project_root"] = project_root
+        task_checkpoint["cwd"] = effective_cwd or project_root
+        task_checkpoint["active_attachments"] = self._attachment_refs(attachment_metas)
+        if pending_user_input:
+            task_checkpoint["next_action"] = str(pending_user_input.get("summary") or "user input required")
+        elif turn_status == "blocked":
+            task_checkpoint["next_action"] = raw_text[:240]
+        elif turn_status == "cancelled":
+            task_checkpoint["next_action"] = "cancelled"
+        else:
+            task_checkpoint["next_action"] = ""
+        if not str(task_checkpoint.get("last_completed_step") or "").strip() and tool_events:
+            last_tool = tool_events[-1]
+            task_checkpoint["last_completed_step"] = f"{last_tool.name}: {last_tool.summary or last_tool.output_preview[:120]}"[:240]
         answer_bundle = self._build_answer_bundle(
             raw_text=raw_text,
             tool_events=tool_events,
@@ -1595,6 +1806,7 @@ class VintageProgrammerRuntime:
                 "tool_round_limit": tool_round_limit,
                 "network_mode": spec.network_mode,
                 "inline_document": inline_document,
+                "task_checkpoint": dict(task_checkpoint),
                 "project_root": project_root,
                 "cwd": effective_cwd,
             },
@@ -1613,6 +1825,7 @@ class VintageProgrammerRuntime:
                 "project_root": project_root,
                 "git_branch": str(project_context.get("git_branch") or ""),
                 "cwd": effective_cwd,
+                "task_checkpoint": dict(task_checkpoint),
                 "history_turn_count": len(list(context_payload.get("history_turns") or [])),
                 "attachment_count": len(list(context_payload.get("attachments") or [])),
             },
@@ -1657,5 +1870,6 @@ class VintageProgrammerRuntime:
                 "project_id": project_id,
                 "project_root": project_root,
                 "cwd": effective_cwd,
+                "task_checkpoint": dict(task_checkpoint),
             },
         }

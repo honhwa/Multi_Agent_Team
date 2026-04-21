@@ -969,6 +969,29 @@ button {
   color: var(--ink-soft);
 }
 
+.timeline-details {
+  margin-top: 8px;
+}
+
+.timeline-details summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.timeline-details pre {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(246, 248, 251, 0.92);
+  border: 1px solid rgba(188, 198, 212, 0.6);
+  font: 12px/1.55 "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+  color: var(--ink);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .editor-textarea {
   width: 100%;
   min-height: 280px;

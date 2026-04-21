@@ -200,6 +200,8 @@ def test_image_read_uses_local_ocr_when_no_runtime_handler(tmp_path: Path, monke
     assert result["ocr_available"] is True
     assert result["engines_tried"] == ["rapidocr"]
     assert result["model_capability_status"] == "not_invoked"
+    assert result["summary"] == "image_read · ocr_only · rapidocr"
+    assert result["diagnostics"]["visible_text_preview"] == "HELLO OCR"
 
 
 def test_image_read_falls_back_to_tesseract_when_rapidocr_is_unavailable(tmp_path: Path, monkeypatch) -> None:
@@ -304,6 +306,22 @@ def test_image_read_reports_ocr_unavailable_without_runtime_handler(tmp_path: Pa
     assert result["ok"] is False
     assert result["fallback_reason"] == "ocr_unavailable"
     assert result["ocr_available"] is False
+    assert result["summary"] == "image_read · ocr_unavailable"
+    assert "rapidocr unavailable" in str(result["error"])
+    assert result["diagnostics"]["fallback_reason"] == "ocr_unavailable"
+
+
+def test_ocr_status_prefers_rapidocr_and_reports_fallbacks(tmp_path: Path, monkeypatch) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    monkeypatch.setattr(LocalToolExecutor, "_probe_rapidocr_status", staticmethod(lambda: (True, "")))
+    monkeypatch.setattr(LocalToolExecutor, "_probe_tesseract_status", staticmethod(lambda: (False, "tesseract is not installed")))
+
+    status = executor.ocr_status()
+
+    assert status["rapidocr_available"] is True
+    assert status["tesseract_available"] is False
+    assert status["default_engine"] == "rapidocr"
+    assert status["warning"] == ""
 
 
 def test_read_msg_returns_email_meta_and_attachment_list(tmp_path: Path, monkeypatch) -> None:

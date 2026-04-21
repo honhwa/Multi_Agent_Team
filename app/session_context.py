@@ -88,6 +88,73 @@ _ATTACHMENT_CONTEXT_ACTION_HINTS = (
     "extract",
     "find",
 )
+_EXPLICIT_NEW_TASK_HINTS = (
+    "新任务",
+    "新问题",
+    "另外",
+    "另一个",
+    "换个",
+    "重新开始",
+    "从头开始",
+    "忽略上一个任务",
+    "忽略刚才",
+    "别看刚才",
+    "new task",
+    "another task",
+    "different task",
+    "ignore previous task",
+    "start over",
+)
+_TASK_FOLLOWUP_HINTS = (
+    "继续",
+    "接着",
+    "刚才",
+    "前面",
+    "上一步",
+    "然后",
+    "接下来",
+    "这个文件",
+    "这个附件",
+    "这个图片",
+    "这个截图",
+    "这段代码",
+    "该文件",
+    "该图片",
+    "当前文件夹",
+    "当前目录",
+    "当前项目",
+    "当前仓库",
+    "在当前文件夹",
+    "在当前目录",
+    "修改它",
+    "修它",
+    "改它",
+    "让其修改",
+    "continue",
+    "same task",
+    "current folder",
+    "current directory",
+    "this file",
+    "that file",
+    "it",
+    "them",
+)
+_TASK_SHORT_ACTION_HINTS = (
+    "修改",
+    "修复",
+    "实现",
+    "继续",
+    "解释",
+    "分析",
+    "看下",
+    "看看",
+    "读一下",
+    "读取",
+    "运行",
+    "测试",
+    "改一下",
+    "修一下",
+)
 
 
 def normalize_attachment_ids(raw_ids: list[str] | None) -> list[str]:
@@ -130,6 +197,72 @@ def message_requests_attachment_context(message: str) -> bool:
     if len(raw) <= 24 and re.search(r"\b(continue|go on|next)\b", text):
         return True
     return False
+
+
+def _session_task_checkpoint(session: dict[str, Any]) -> dict[str, Any]:
+    agent_state = session.get("agent_state")
+    if isinstance(agent_state, dict):
+        checkpoint = agent_state.get("task_checkpoint")
+        if isinstance(checkpoint, dict) and checkpoint:
+            return dict(checkpoint)
+    route_state = session.get("route_state")
+    if isinstance(route_state, dict):
+        checkpoint = route_state.get("task_checkpoint")
+        if isinstance(checkpoint, dict) and checkpoint:
+            return dict(checkpoint)
+    return {}
+
+
+def message_explicitly_starts_new_task(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    return any(hint in text for hint in _EXPLICIT_NEW_TASK_HINTS)
+
+
+def message_likely_continues_task(message: str, *, session: dict[str, Any] | None = None) -> bool:
+    raw = str(message or "").strip()
+    if not raw:
+        return False
+    text = raw.lower()
+    if message_explicitly_starts_new_task(raw):
+        return False
+    if any(hint in text for hint in _TASK_FOLLOWUP_HINTS):
+        return True
+
+    checkpoint = _session_task_checkpoint(session or {})
+    has_active_context = bool(checkpoint.get("active_files") or checkpoint.get("active_attachments") or checkpoint.get("cwd"))
+    if has_active_context and len(raw) <= 24 and any(hint in text for hint in ("修", "改", "继续", "实现")):
+        return True
+    if has_active_context and len(raw) <= 40 and any(hint in text for hint in _TASK_SHORT_ACTION_HINTS):
+        if any(token in text for token in ("它", "其", "这", "该", "当前", "这里", "文件", "目录", "文件夹", "附件", "图片", "截图", "代码")):
+            return True
+    if has_active_context and len(raw) <= 80 and any(hint in text for hint in _TASK_SHORT_ACTION_HINTS):
+        if re.search(r"[A-Za-z0-9_.-]+\.[A-Za-z0-9]+", raw):
+            return True
+    return False
+
+
+def should_start_new_task(
+    session: dict[str, Any],
+    *,
+    message: str,
+    requested_attachment_ids: list[str] | None = None,
+) -> bool:
+    checkpoint = _session_task_checkpoint(session)
+    if not checkpoint:
+        return False
+    requested = normalize_attachment_ids(requested_attachment_ids)
+    text = str(message or "").strip().lower()
+    if message_explicitly_starts_new_task(message):
+        return True
+    if message_clears_attachment_context(message):
+        return True
+    if requested:
+        return not any(hint in text for hint in _TASK_FOLLOWUP_HINTS)
+    if message_likely_continues_task(message, session=session):
+        return False
+    return True
 
 
 def infer_session_active_attachment_ids(session: dict[str, Any]) -> list[str]:

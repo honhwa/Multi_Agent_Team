@@ -10,6 +10,7 @@ import shlex
 import shutil
 import ssl
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -21,7 +22,7 @@ from html import unescape
 from pathlib import Path
 from typing import Any, Callable
 
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageOps
 
 from app.browser_runtime import BrowserToolManager
 from app.config import AppConfig, get_access_roots
@@ -1304,6 +1305,10 @@ class LocalToolExecutor:
         return cleaned
 
     @staticmethod
+    def _short_preview(value: Any, *, limit: int = 240) -> str:
+        return _truncate_output(str(value or ""), max_chars=max(1, int(limit))).strip()
+
+    @staticmethod
     def _extract_rapidocr_text(payload: Any) -> str:
         items = payload[0] if isinstance(payload, tuple) and payload else payload
         if not isinstance(items, list):
@@ -1328,16 +1333,109 @@ class LocalToolExecutor:
                 parts.append(text)
         return "\n".join(parts)
 
-    def _run_rapidocr_ocr(self, path: str, max_output_chars: int) -> dict[str, Any]:
+    @staticmethod
+    def _probe_rapidocr_status() -> tuple[bool, str]:
+        rapidocr_spec = importlib.util.find_spec("rapidocr_onnxruntime")
+        if rapidocr_spec is None:
+            return False, "rapidocr unavailable: No module named 'rapidocr_onnxruntime'"
+        onnx_spec = importlib.util.find_spec("onnxruntime")
+        if onnx_spec is None:
+            return False, "rapidocr unavailable: No module named 'onnxruntime'"
+        return True, ""
+
+    @staticmethod
+    def _probe_tesseract_status() -> tuple[bool, str]:
+        binary = shutil.which("tesseract")
+        if binary:
+            return True, binary
+        return False, "tesseract is not installed"
+
+    def ocr_status(self) -> dict[str, Any]:
+        rapidocr_available, rapidocr_detail = self._probe_rapidocr_status()
+        tesseract_available, tesseract_detail = self._probe_tesseract_status()
+        warning = ""
+        if rapidocr_available:
+            warning = ""
+        elif not tesseract_available:
+            warning = f"{rapidocr_detail}; {tesseract_detail}"
+        elif not rapidocr_available:
+            warning = rapidocr_detail
+        return {
+            "rapidocr_available": rapidocr_available,
+            "rapidocr_detail": rapidocr_detail,
+            "tesseract_available": tesseract_available,
+            "tesseract_detail": tesseract_detail,
+            "default_engine": "rapidocr" if rapidocr_available else ("tesseract" if tesseract_available else ""),
+            "warning": warning,
+        }
+
+    @staticmethod
+    def _image_has_alpha(image: Image.Image) -> bool:
+        if image.mode in {"RGBA", "LA"}:
+            return True
+        return bool(image.info.get("transparency"))
+
+    def _prepare_image_for_ocr(self, path: str) -> tuple[str, Callable[[], None], list[str]]:
+        notes: list[str] = []
         try:
-            rapidocr_module = importlib.import_module("rapidocr_onnxruntime")
+            with Image.open(path) as raw_image:
+                image = ImageOps.exif_transpose(raw_image)
+                if self._image_has_alpha(image):
+                    base = Image.new("RGBA", image.size, (255, 255, 255, 255))
+                    base.alpha_composite(image.convert("RGBA"))
+                    image = base.convert("RGB")
+                    notes.append("flattened_alpha")
+                elif image.mode not in {"RGB", "L"}:
+                    image = image.convert("RGB")
+                    notes.append(f"converted_mode:{raw_image.mode}->{image.mode}")
+
+                long_edge = max(image.size)
+                if long_edge:
+                    target_long_edge = long_edge
+                    if long_edge < 1600:
+                        target_long_edge = min(2400, max(1600, long_edge * 3))
+                    elif long_edge > 2400:
+                        target_long_edge = 2400
+                    if target_long_edge != long_edge:
+                        scale = float(target_long_edge) / float(long_edge)
+                        target_size = (
+                            max(1, int(round(image.width * scale))),
+                            max(1, int(round(image.height * scale))),
+                        )
+                        image = image.resize(target_size, Image.Resampling.LANCZOS)
+                        notes.append(f"resized_for_ocr:{target_size[0]}x{target_size[1]}")
+
+                if image.mode != "L":
+                    image = ImageOps.grayscale(image)
+                    notes.append("grayscale")
+                image = ImageOps.autocontrast(image)
+                image = ImageEnhance.Contrast(image).enhance(1.35)
+                notes.append("contrast_enhanced")
+
+                with tempfile.NamedTemporaryFile(prefix="vp_ocr_", suffix=".png", delete=False) as handle:
+                    temp_path = Path(handle.name)
+                image.save(temp_path, format="PNG", optimize=True)
+
+            def _cleanup() -> None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+            return str(temp_path), _cleanup, notes
         except Exception as exc:
+            return path, (lambda: None), [f"ocr_preprocess_failed:{exc}"]
+
+    def _run_rapidocr_ocr(self, path: str, max_output_chars: int) -> dict[str, Any]:
+        rapidocr_available, rapidocr_detail = self._probe_rapidocr_status()
+        if not rapidocr_available:
             return {
                 "ok": False,
                 "engine": "rapidocr",
                 "available": False,
-                "error": f"rapidocr unavailable: {exc}",
+                "error": rapidocr_detail or "rapidocr unavailable",
             }
+        rapidocr_module = importlib.import_module("rapidocr_onnxruntime")
 
         try:
             engine = rapidocr_module.RapidOCR()
@@ -1369,14 +1467,15 @@ class LocalToolExecutor:
         }
 
     def _run_tesseract_ocr(self, path: str, max_output_chars: int) -> dict[str, Any]:
-        binary = shutil.which("tesseract")
-        if not binary:
+        available, binary_or_error = self._probe_tesseract_status()
+        if not available:
             return {
                 "ok": False,
                 "engine": "tesseract",
                 "available": False,
-                "error": "tesseract is not installed",
+                "error": binary_or_error or "tesseract is not installed",
             }
+        binary = binary_or_error
         try:
             proc = subprocess.run(
                 [binary, str(path), "stdout", "--psm", "6"],
@@ -1415,30 +1514,37 @@ class LocalToolExecutor:
     def _perform_local_image_ocr(self, path: str, max_output_chars: int) -> dict[str, Any]:
         engines_tried: list[str] = []
         warnings: list[str] = []
+        preprocess_notes: list[str] = []
         available = False
         last_error = ""
-        for runner in (self._run_rapidocr_ocr, self._run_tesseract_ocr):
-            result = runner(path, max_output_chars)
-            engine = str(result.get("engine") or "").strip()
-            if engine:
-                engines_tried.append(engine)
-            available = available or bool(result.get("available"))
-            warning = str(result.get("warning") or "").strip()
-            if warning:
-                warnings.append(warning)
-            if bool(result.get("ok")):
-                return {
-                    "ok": True,
-                    "visible_text": str(result.get("visible_text") or ""),
-                    "ocr_available": available,
-                    "engines_tried": engines_tried,
-                    "warning": "; ".join(item for item in warnings if item) or "",
-                    "ocr_engine": engine,
-                }
-            error = str(result.get("error") or "").strip()
-            if error:
-                warnings.append(error)
-                last_error = error
+        prepared_path, cleanup_prepared_path, prep_notes = self._prepare_image_for_ocr(path)
+        preprocess_notes.extend(note for note in prep_notes if note)
+        try:
+            for runner in (self._run_rapidocr_ocr, self._run_tesseract_ocr):
+                result = runner(prepared_path, max_output_chars)
+                engine = str(result.get("engine") or "").strip()
+                if engine:
+                    engines_tried.append(engine)
+                available = available or bool(result.get("available"))
+                warning = str(result.get("warning") or "").strip()
+                if warning:
+                    warnings.append(warning)
+                if bool(result.get("ok")):
+                    return {
+                        "ok": True,
+                        "visible_text": str(result.get("visible_text") or ""),
+                        "ocr_available": available,
+                        "engines_tried": engines_tried,
+                        "warning": "; ".join(item for item in warnings if item) or "",
+                        "ocr_engine": engine,
+                        "preprocess_notes": preprocess_notes,
+                    }
+                error = str(result.get("error") or "").strip()
+                if error:
+                    warnings.append(error)
+                    last_error = error
+        finally:
+            cleanup_prepared_path()
         return {
             "ok": False,
             "visible_text": "",
@@ -1446,6 +1552,7 @@ class LocalToolExecutor:
             "engines_tried": engines_tried,
             "warning": "; ".join(item for item in warnings if item) or "",
             "error": last_error or ("ocr_unavailable" if not available else "ocr returned no readable text"),
+            "preprocess_notes": preprocess_notes,
         }
 
     def _current_access_roots(self) -> list[Path]:
@@ -2667,6 +2774,8 @@ class LocalToolExecutor:
         payload["engines_tried"] = list(ocr_payload.get("engines_tried") or [])
         payload["ocr_available"] = bool(ocr_payload.get("ocr_available"))
         payload["warning"] = warning_text or None
+        payload["ocr_engine"] = str(ocr_payload.get("ocr_engine") or "").strip()
+        payload["preprocess_notes"] = list(ocr_payload.get("preprocess_notes") or [])
         payload["effective_model"] = str(multimodal_payload.get("effective_model") or "").strip() or None
 
         if ocr_text and multimodal_ok:
@@ -2680,6 +2789,19 @@ class LocalToolExecutor:
                     "fallback_reason": "",
                 }
             )
+            payload["summary"] = f"image_read · hybrid · {payload.get('ocr_engine') or 'ocr'}"
+            payload["diagnostics"] = {
+                "engines_tried": list(payload.get("engines_tried") or []),
+                "ocr_available": bool(payload.get("ocr_available")),
+                "ocr_engine": str(payload.get("ocr_engine") or ""),
+                "preprocess_notes": list(payload.get("preprocess_notes") or []),
+                "fallback_reason": "",
+                "read_strategy": "hybrid",
+                "model_capability_status": str(payload.get("model_capability_status") or ""),
+                "visible_text_preview": self._short_preview(payload.get("visible_text"), limit=240),
+                "analysis_preview": self._short_preview(payload.get("analysis"), limit=240),
+                "warning": payload.get("warning"),
+            }
             return payload
 
         if ocr_text:
@@ -2698,6 +2820,20 @@ class LocalToolExecutor:
                     "fallback_reason": fallback_reason,
                 }
             )
+            engine_label = str(payload.get("ocr_engine") or "ocr").strip()
+            payload["summary"] = f"image_read · ocr_only · {engine_label}"
+            payload["diagnostics"] = {
+                "engines_tried": list(payload.get("engines_tried") or []),
+                "ocr_available": bool(payload.get("ocr_available")),
+                "ocr_engine": engine_label,
+                "preprocess_notes": list(payload.get("preprocess_notes") or []),
+                "fallback_reason": fallback_reason,
+                "read_strategy": "ocr_only",
+                "model_capability_status": str(payload.get("model_capability_status") or ""),
+                "visible_text_preview": self._short_preview(payload.get("visible_text"), limit=240),
+                "analysis_preview": self._short_preview(payload.get("analysis"), limit=240),
+                "warning": payload.get("warning"),
+            }
             return payload
 
         if multimodal_ok:
@@ -2711,11 +2847,25 @@ class LocalToolExecutor:
                     "fallback_reason": str(ocr_payload.get("error") or "").strip(),
                 }
             )
+            payload["summary"] = "image_read · multimodal_only"
+            payload["diagnostics"] = {
+                "engines_tried": list(payload.get("engines_tried") or []),
+                "ocr_available": bool(payload.get("ocr_available")),
+                "ocr_engine": str(payload.get("ocr_engine") or ""),
+                "preprocess_notes": list(payload.get("preprocess_notes") or []),
+                "fallback_reason": str(payload.get("fallback_reason") or ""),
+                "read_strategy": "multimodal_only",
+                "model_capability_status": str(payload.get("model_capability_status") or ""),
+                "visible_text_preview": self._short_preview(payload.get("visible_text"), limit=240),
+                "analysis_preview": self._short_preview(payload.get("analysis"), limit=240),
+                "warning": payload.get("warning"),
+            }
             return payload
 
         if not bool(ocr_payload.get("ocr_available")):
-            error_text = "local OCR is unavailable"
-            if not callable(self._image_read_handler):
+            ocr_reason = str(ocr_payload.get("warning") or ocr_payload.get("error") or "").strip()
+            error_text = ocr_reason or "local OCR is unavailable"
+            if not callable(self._image_read_handler) and not error_text:
                 error_text = "local OCR is unavailable and no runtime image reader is configured"
             elif str(multimodal_payload.get("error") or "").strip():
                 error_text = str(multimodal_payload.get("error") or "").strip()
@@ -2730,6 +2880,20 @@ class LocalToolExecutor:
                     "fallback_reason": "ocr_unavailable",
                 }
             )
+            payload["summary"] = "image_read · ocr_unavailable"
+            payload["diagnostics"] = {
+                "engines_tried": list(payload.get("engines_tried") or []),
+                "ocr_available": bool(payload.get("ocr_available")),
+                "ocr_engine": str(payload.get("ocr_engine") or ""),
+                "preprocess_notes": list(payload.get("preprocess_notes") or []),
+                "fallback_reason": "ocr_unavailable",
+                "read_strategy": "",
+                "model_capability_status": str(payload.get("model_capability_status") or ""),
+                "visible_text_preview": "",
+                "analysis_preview": "",
+                "warning": payload.get("warning"),
+                "error": payload.get("error"),
+            }
             return payload
 
         payload.update(
@@ -2743,6 +2907,20 @@ class LocalToolExecutor:
                 "fallback_reason": str(ocr_payload.get("error") or "").strip() or "no_readable_text_detected",
             }
         )
+        payload["summary"] = "image_read · no_readable_text_detected"
+        payload["diagnostics"] = {
+            "engines_tried": list(payload.get("engines_tried") or []),
+            "ocr_available": bool(payload.get("ocr_available")),
+            "ocr_engine": str(payload.get("ocr_engine") or ""),
+            "preprocess_notes": list(payload.get("preprocess_notes") or []),
+            "fallback_reason": str(payload.get("fallback_reason") or ""),
+            "read_strategy": "",
+            "model_capability_status": str(payload.get("model_capability_status") or ""),
+            "visible_text_preview": "",
+            "analysis_preview": "",
+            "warning": payload.get("warning"),
+            "error": payload.get("error"),
+        }
         return payload
 
     def archive_extract(

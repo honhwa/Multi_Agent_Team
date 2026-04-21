@@ -383,6 +383,24 @@ function groupTools(tools) {
   return grouped;
 }
 
+function stringifyCompactJson(value) {
+  if (!value || typeof value !== "object") return "";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function toolTimelineSummary(item) {
+  if (!item || typeof item !== "object") return "无摘要";
+  const base = String(item.summary || item.output_preview || "无摘要").trim();
+  const diagnostics = item.diagnostics && typeof item.diagnostics === "object" ? item.diagnostics : {};
+  const visibleText = String(diagnostics.visible_text_preview || "").trim().replaceAll("\n", " / ");
+  if (visibleText) return `${base} · ${visibleText}`;
+  return base || "无摘要";
+}
+
 function starterPromptChips(setDraft, handleSend) {
   return STARTER_PROMPTS.map((text) =>
     html`
@@ -1056,7 +1074,7 @@ function App() {
             } else if (event === "tool") {
               const item = payload.item || {};
               const name = String(item.name || "tool");
-              const summary = String(payload.summary || item.summary || item.output_preview || "工具调用");
+              const summary = toolTimelineSummary({ ...item, summary: payload.summary || item.summary || item.output_preview || "工具调用" });
               setToolTimeline((prev) => [item, ...prev].slice(0, 24));
               pushLogWithLimit(setLogs, "tool", `${name}: ${summary}`);
             } else if (event === "plan_update") {
@@ -1118,6 +1136,7 @@ function App() {
           tool_hits: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : [],
           tool_count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0,
           evidence_status: String((((finalPayload.inspector || {}).evidence || {}).status) || "not_needed"),
+          task_checkpoint: (((finalPayload.inspector || {}).run_state || {}).task_checkpoint) || {},
           enabled_skill_ids: Array.isArray((finalPayload.inspector || {}).loaded_skills)
             ? finalPayload.inspector.loaded_skills.map((item) => item.id)
             : [],
@@ -1260,6 +1279,11 @@ function App() {
   const lastInspector = (lastResponse && lastResponse.inspector) || {};
   const runState = lastInspector.run_state || {};
   const evidence = lastInspector.evidence || {};
+  const activeTaskCheckpoint =
+    (runState.task_checkpoint && typeof runState.task_checkpoint === "object")
+      ? runState.task_checkpoint
+      : ((sessionAgentState.task_checkpoint && typeof sessionAgentState.task_checkpoint === "object") ? sessionAgentState.task_checkpoint : {});
+  const ocrStatus = (health && health.ocr_status && typeof health.ocr_status === "object") ? health.ocr_status : {};
   const activeCollaborationMode = String(runState.collaboration_mode || sessionAgentState.collaboration_mode || chatSettings.collaboration_mode || "default");
   const activeTurnStatus = String(runState.turn_status || sessionAgentState.turn_status || "idle");
   const activePlan = Array.isArray(runState.plan) && runState.plan.length
@@ -1609,6 +1633,32 @@ function App() {
                   <div className="meta-line">turn_status: ${activeTurnStatus}</div>
                   <div className="meta-line">evidence: ${evidence.status || sessionAgentState.evidence_status || "not_needed"}</div>
                   <div className="meta-line">inline_document: ${String(Boolean(runState.inline_document))}</div>
+                  <div className="meta-line">ocr: ${ocrStatus.default_engine || "unavailable"}</div>
+                  ${ocrStatus.warning ? html`<div className="timeline-detail">${ocrStatus.warning}</div>` : null}
+                </section>
+
+                <section className="panel-card">
+                  <div className="panel-title">Current Task</div>
+                  <div className="meta-line">task_id: ${activeTaskCheckpoint.task_id || "-"}</div>
+                  <div className="meta-line">cwd: ${activeTaskCheckpoint.cwd || sessionAgentState.cwd || "-"}</div>
+                  <div className="meta-line">next_action: ${activeTaskCheckpoint.next_action || "-"}</div>
+                  ${Array.isArray(activeTaskCheckpoint.active_files) && activeTaskCheckpoint.active_files.length
+                    ? html`
+                        <div className="timeline-detail">
+                          files: ${activeTaskCheckpoint.active_files.slice(0, 6).map((item) => compactPath(item)).join(" · ")}
+                        </div>
+                      `
+                    : null}
+                  ${Array.isArray(activeTaskCheckpoint.active_attachments) && activeTaskCheckpoint.active_attachments.length
+                    ? html`
+                        <div className="timeline-detail">
+                          attachments: ${activeTaskCheckpoint.active_attachments
+                            .slice(0, 6)
+                            .map((item) => item.name || compactPath(item.path || item.id || "attachment"))
+                            .join(" · ")}
+                        </div>
+                      `
+                    : null}
                 </section>
 
                 <section className="panel-card">
@@ -1662,7 +1712,15 @@ function App() {
                                 <span>${item.name || "tool"}</span>
                                 <span>${item.group || item.module_group || "tool"}</span>
                               </div>
-                              <div className="timeline-detail">${item.summary || item.output_preview || "无摘要"}</div>
+                              <div className="timeline-detail">${toolTimelineSummary(item)}</div>
+                              ${item.diagnostics && typeof item.diagnostics === "object" && Object.keys(item.diagnostics).length
+                                ? html`
+                                    <details className="timeline-details">
+                                      <summary>诊断</summary>
+                                      <pre>${stringifyCompactJson(item.diagnostics)}</pre>
+                                    </details>
+                                  `
+                                : null}
                             </div>
                           `,
                         )

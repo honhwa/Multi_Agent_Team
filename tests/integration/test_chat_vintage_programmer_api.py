@@ -134,7 +134,22 @@ class _FakeVintageRuntime:
             "tool_events": [{"name": "web_search", "input": {"query": "x"}, "output_preview": "ok", "status": "ok", "group": "web_context", "source": "local_hosted", "summary": "searched", "source_refs": ["https://example.com"]}],
             "token_usage": {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18, "llm_calls": 1},
             "answer_bundle": {"summary": "single-agent response", "claims": [], "citations": [], "warnings": []},
-            "route_state": {"agent_id": "vintage_programmer", "phase": "completed", "evidence_status": "collected", "loaded_skill_ids": ["example_refactor_helper"]},
+            "route_state": {
+                "agent_id": "vintage_programmer",
+                "phase": "completed",
+                "evidence_status": "collected",
+                "loaded_skill_ids": ["example_refactor_helper"],
+                "task_checkpoint": {
+                    "task_id": "task-fake-1",
+                    "goal": "workspace inspection",
+                    "project_root": str(project.get("project_root") or ""),
+                    "cwd": str(project.get("cwd") or project.get("project_root") or ""),
+                    "active_files": [],
+                    "active_attachments": [],
+                    "last_completed_step": "web_search: searched",
+                    "next_action": "",
+                },
+            },
             "collaboration_mode": "default",
             "turn_status": "completed",
             "plan": [{"step": "Inspect workspace", "status": "completed"}],
@@ -151,6 +166,16 @@ class _FakeVintageRuntime:
                     "plan": [{"step": "Inspect workspace", "status": "completed"}],
                     "pending_user_input": {},
                     "inline_document": False,
+                    "task_checkpoint": {
+                        "task_id": "task-fake-1",
+                        "goal": "workspace inspection",
+                        "project_root": str(project.get("project_root") or ""),
+                        "cwd": str(project.get("cwd") or project.get("project_root") or ""),
+                        "active_files": [],
+                        "active_attachments": [],
+                        "last_completed_step": "web_search: searched",
+                        "next_action": "",
+                    },
                 },
                 "tool_timeline": [{"name": "web_search", "group": "web_context", "status": "ok", "summary": "searched", "source_refs": ["https://example.com"]}],
                 "evidence": {"status": "collected", "required": True, "warning": "", "source_refs": ["https://example.com"]},
@@ -177,6 +202,16 @@ class _FailingVintageRuntime(_FakeVintageRuntime):
             "'metadata': {'raw': 'google/gemma-4-31b-it:free is temporarily rate-limited upstream. "
             "Please retry shortly.', 'provider_name': 'Google AI Studio'}}}"
         )
+
+
+class _ContextCapturingRuntime(_FakeVintageRuntime):
+    def __init__(self) -> None:
+        self.seen_contexts: list[dict[str, object]] = []
+
+    def run(self, *, message, settings, context, progress_cb=None):
+        _ = (message, settings, progress_cb)
+        self.seen_contexts.append(dict(context))
+        return super().run(message=message, settings=settings, context=context, progress_cb=progress_cb)
 
 
 def _patch_runtime_state(monkeypatch, tmp_path: Path) -> None:
@@ -263,6 +298,8 @@ def test_health_endpoint_exposes_single_agent_descriptor(monkeypatch, tmp_path: 
     assert payload["app_title"] == "Vintage Programmer"
     assert payload["agent"]["agent_id"] == "vintage_programmer"
     assert payload["runtime_status"]["workspace_label"]
+    assert "rapidocr_available" in payload["ocr_status"]
+    assert "default_engine" in payload["ocr_status"]
     assert payload["default_project_id"]
     assert payload["projects"][0]["project_id"]
     assert payload["allow_custom_model"] is True
@@ -317,6 +354,7 @@ def test_chat_endpoint_uses_single_agent_runtime(monkeypatch, tmp_path: Path) ->
     assert session_payload["agent_state"]["turn_status"] == "completed"
     assert session_payload["agent_state"]["evidence_status"] == "collected"
     assert session_payload["agent_state"]["enabled_skill_ids"] == ["example_refactor_helper"]
+    assert session_payload["agent_state"]["task_checkpoint"]["task_id"] == "task-fake-1"
 
 
 def test_chat_stream_emits_stage_final_and_done(monkeypatch, tmp_path: Path) -> None:
@@ -437,6 +475,55 @@ def test_chat_stream_emits_structured_error_payload(monkeypatch, tmp_path: Path)
     assert error_payload["summary"] == "模型提供方限流，请稍后重试。"
     assert error_payload["provider"] == "Google AI Studio"
     assert error_payload["retryable"] is True
+
+
+def test_chat_resets_history_and_route_state_for_new_task(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    capture_runtime = _ContextCapturingRuntime()
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", capture_runtime)
+    client = TestClient(main_app.app)
+
+    session = main_app.session_store.create(main_app.project_store.ensure_default_project())
+    session["summary"] = "old summary"
+    session["turns"] = [
+        {"role": "user", "text": "先看一下这个仓库", "attachments": [], "answer_bundle": {}, "created_at": "2026-04-20T00:00:00Z"},
+        {"role": "assistant", "text": "我已经看过仓库", "attachments": [], "answer_bundle": {}, "created_at": "2026-04-20T00:00:01Z"},
+    ]
+    session["route_state"] = {
+        "task_checkpoint": {
+            "task_id": "task-old",
+            "goal": "Inspect old task",
+            "project_root": str(tmp_path),
+            "cwd": str(tmp_path),
+            "active_files": [str(tmp_path / "old.py")],
+            "active_attachments": [],
+            "last_completed_step": "read: old.py",
+            "next_action": "modify old.py",
+        }
+    }
+    session["agent_state"]["task_checkpoint"] = dict(session["route_state"]["task_checkpoint"])
+    main_app.session_store.save(session)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "session_id": session["id"],
+            "message": "帮我看个代码",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    seen = capture_runtime.seen_contexts[0]
+    assert seen["summary"] == ""
+    assert seen["history_turns"] == []
+    assert seen["route_state"] == {}
 
 
 def test_project_endpoints_and_project_scoped_sessions(monkeypatch, tmp_path: Path) -> None:
