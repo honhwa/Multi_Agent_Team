@@ -49,3 +49,76 @@ def test_should_start_new_task_when_new_attachment_arrives_without_followup_lang
     session = _session_with_checkpoint()
 
     assert session_context.should_start_new_task(session, message="解释图片内容", requested_attachment_ids=["img-2"]) is True
+
+
+def test_recalled_attachment_prefers_matching_image_kind_over_latest_attachment() -> None:
+    session = {
+        "agent_state": {
+            "current_task_focus": {
+                "task_id": "task-mail",
+                "goal": "解释邮件内容",
+                "project_root": "/tmp/demo",
+                "cwd": "/tmp/demo",
+                "active_files": [],
+                "active_attachments": [{"id": "mail-1", "name": "notice.msg", "kind": "document", "path": "/tmp/demo/notice.msg"}],
+                "last_completed_step": "read: notice.msg",
+                "next_action": "",
+            }
+        },
+        "active_attachment_ids": ["mail-1"],
+        "artifact_memory": [
+            {
+                "artifact_id": "mail-1",
+                "kind": "document",
+                "name": "notice.msg",
+                "path": "/tmp/demo/notice.msg",
+                "mime": "application/vnd.ms-outlook",
+                "turn_id": "turn-mail",
+                "source_tool": "read",
+                "summary_digest": "邮件摘要",
+                "created_at": "2026-04-21T00:00:02Z",
+            },
+            {
+                "artifact_id": "img-1",
+                "kind": "image",
+                "name": "screen.png",
+                "path": "/tmp/demo/screen.png",
+                "mime": "image/png",
+                "turn_id": "turn-image",
+                "source_tool": "image_read",
+                "summary_digest": "图片摘要",
+                "created_at": "2026-04-21T00:00:01Z",
+            },
+        ],
+        "thread_memory": {
+            "recent_tasks": [
+                {
+                    "task_id": "task-mail",
+                    "turn_id": "turn-mail",
+                    "user_request": "解释邮件内容",
+                    "goal": "解释邮件内容",
+                    "cwd": "/tmp/demo",
+                    "artifact_refs": ["mail-1"],
+                    "active_files": [],
+                    "result_digest": "邮件摘要",
+                    "updated_at": "2026-04-21T00:00:02Z",
+                },
+                {
+                    "task_id": "task-image",
+                    "turn_id": "turn-image",
+                    "user_request": "解释图片内容",
+                    "goal": "解释图片内容",
+                    "cwd": "/tmp/demo",
+                    "artifact_refs": ["img-1"],
+                    "active_files": [],
+                    "result_digest": "图片摘要",
+                    "updated_at": "2026-04-21T00:00:01Z",
+                },
+            ],
+        },
+    }
+
+    resolved = session_context.resolve_attachment_context(session, message="我之前让你解释的图片内容，你还记得吗？", requested_attachment_ids=[])
+
+    assert resolved["effective_attachment_ids"] == ["img-1"]
+    assert resolved["recalled_task"]["task_id"] == "task-image"

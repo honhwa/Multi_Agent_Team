@@ -392,6 +392,23 @@ function stringifyCompactJson(value) {
   }
 }
 
+function mergeRunSnapshot(prev, snapshot) {
+  const next = snapshot && typeof snapshot === "object" ? snapshot : {};
+  return {
+    ...prev,
+    ...next,
+    current_task_focus:
+      next.current_task_focus && typeof next.current_task_focus === "object"
+        ? next.current_task_focus
+        : (prev.current_task_focus || {}),
+    plan: Array.isArray(next.plan) ? next.plan : (Array.isArray(prev.plan) ? prev.plan : []),
+    pending_user_input:
+      next.pending_user_input && typeof next.pending_user_input === "object"
+        ? next.pending_user_input
+        : (prev.pending_user_input || {}),
+  };
+}
+
 function toolTimelineSummary(item) {
   if (!item || typeof item !== "object") return "无摘要";
   const base = String(item.summary || item.output_preview || "无摘要").trim();
@@ -432,6 +449,7 @@ function App() {
   const [loadingSession, setLoadingSession] = useState(false);
   const [drawerView, setDrawerView] = useState("");
   const [logs, setLogs] = useState([]);
+  const [liveRunLogs, setLiveRunLogs] = useState([]);
   const [lastResponse, setLastResponse] = useState(null);
   const [pendingUploads, setPendingUploads] = useState([]);
   const [chatSettings, setChatSettings] = useState(DEFAULT_SETTINGS);
@@ -439,6 +457,9 @@ function App() {
   const [selectedPresetModel, setSelectedPresetModel] = useState("");
   const [uiError, setUiError] = useState(null);
   const [toolTimeline, setToolTimeline] = useState([]);
+  const [liveTurnState, setLiveTurnState] = useState({});
+  const [liveEvidence, setLiveEvidence] = useState({});
+  const [liveToolTimeline, setLiveToolTimeline] = useState([]);
   const [stageTimeline, setStageTimeline] = useState([]);
   const [activeRunId, setActiveRunId] = useState("");
   const [stoppingRun, setStoppingRun] = useState(false);
@@ -831,6 +852,10 @@ function App() {
     setLastResponse(null);
     setSessionAgentState({});
     setToolTimeline([]);
+    setLiveToolTimeline([]);
+    setLiveTurnState({});
+    setLiveEvidence({});
+    setLiveRunLogs([]);
     setStageTimeline([]);
     clearUiError();
     await refreshSessions(resolvedProjectId || targetProjectId);
@@ -855,6 +880,10 @@ function App() {
       }
       setLastResponse(null);
       setToolTimeline([]);
+      setLiveToolTimeline([]);
+      setLiveTurnState({});
+      setLiveEvidence({});
+      setLiveRunLogs([]);
       setStageTimeline([]);
       clearUiError();
       pushLogWithLimit(setLogs, "system", `已载入线程 ${sid.slice(0, 8)}`);
@@ -988,6 +1017,10 @@ function App() {
     setActiveRunId("");
     clearUiError();
     setToolTimeline([]);
+    setLiveToolTimeline([]);
+    setLiveTurnState({});
+    setLiveEvidence({});
+    setLiveRunLogs([]);
     setStageTimeline([]);
 
     let sid = sessionId;
@@ -998,6 +1031,15 @@ function App() {
       const userMessage = createMessage("user", messageText);
       pendingMessage = createMessage("assistant", "正在准备上下文...", { pending: true });
       setMessages((prev) => [...prev, userMessage, pendingMessage]);
+      setLiveTurnState({
+        goal: messageText,
+        collaboration_mode: chatSettings.collaboration_mode || "default",
+        turn_status: "running",
+        current_task_focus: {},
+        plan: [],
+        pending_user_input: {},
+      });
+      setLiveEvidence({ status: "not_needed" });
       if (overrideText == null) setDraft("");
 
       const res = await fetch("/api/chat/stream", {
@@ -1050,6 +1092,19 @@ function App() {
           prev.map((item) => (item.id === pendingMessage.id ? { ...item, text } : item)),
         );
       };
+      const pushLiveLog = (type, text) => {
+        setLiveRunLogs((prev) => [createLog(type, text), ...prev].slice(0, 32));
+      };
+      const applySnapshot = (snapshot) => {
+        if (!snapshot || typeof snapshot !== "object") return;
+        setLiveTurnState((prev) => mergeRunSnapshot(prev, snapshot));
+        if (Object.prototype.hasOwnProperty.call(snapshot, "evidence_status")) {
+          setLiveEvidence((prev) => ({
+            ...prev,
+            status: String(snapshot.evidence_status || prev.status || "not_needed"),
+          }));
+        }
+      };
 
       while (true) {
         const { done, value } = await reader.read();
@@ -1064,19 +1119,28 @@ function App() {
             if (payload && payload.run_id) {
               setActiveRunId(String(payload.run_id || ""));
             }
+            if (payload && payload.run_snapshot) {
+              applySnapshot(payload.run_snapshot);
+            }
             if (event === "stage") {
               const detail = String(payload.detail || payload.label || payload.code || "处理中...");
               replacePendingText(detail);
               pushLogWithLimit(setLogs, "stage", detail);
+              pushLiveLog("stage", detail);
             } else if (event === "trace") {
               const detail = String(payload.message || payload.raw || "");
-              if (detail) pushLogWithLimit(setLogs, "trace", detail);
+              if (detail) {
+                pushLogWithLimit(setLogs, "trace", detail);
+                pushLiveLog("trace", detail);
+              }
             } else if (event === "tool") {
               const item = payload.item || {};
               const name = String(item.name || "tool");
               const summary = toolTimelineSummary({ ...item, summary: payload.summary || item.summary || item.output_preview || "工具调用" });
               setToolTimeline((prev) => [item, ...prev].slice(0, 24));
+              setLiveToolTimeline((prev) => [item, ...prev].slice(0, 24));
               pushLogWithLimit(setLogs, "tool", `${name}: ${summary}`);
+              pushLiveLog("tool", `${name}: ${summary}`);
             } else if (event === "plan_update") {
               setSessionAgentState((prev) => ({
                 ...prev,
@@ -1084,7 +1148,13 @@ function App() {
                 turn_status: String(payload.turn_status || prev.turn_status || "running"),
                 plan: Array.isArray(payload.plan) ? payload.plan : [],
               }));
+              setLiveTurnState((prev) => mergeRunSnapshot(prev, {
+                collaboration_mode: String(payload.collaboration_mode || prev.collaboration_mode || chatSettings.collaboration_mode || "default"),
+                turn_status: String(payload.turn_status || prev.turn_status || "running"),
+                plan: Array.isArray(payload.plan) ? payload.plan : [],
+              }));
               pushLogWithLimit(setLogs, "system", String(payload.explanation || "checklist updated"));
+              pushLiveLog("system", String(payload.explanation || "checklist updated"));
             } else if (event === "request_user_input") {
               const nextPending = payload.pending_user_input || {};
               setSessionAgentState((prev) => ({
@@ -1093,8 +1163,14 @@ function App() {
                 turn_status: String(payload.turn_status || "needs_user_input"),
                 pending_user_input: nextPending,
               }));
+              setLiveTurnState((prev) => mergeRunSnapshot(prev, {
+                collaboration_mode: String(payload.collaboration_mode || prev.collaboration_mode || chatSettings.collaboration_mode || "default"),
+                turn_status: String(payload.turn_status || "needs_user_input"),
+                pending_user_input: nextPending,
+              }));
               replacePendingText(String(nextPending.summary || "需要你的输入后我再继续。"));
               pushLogWithLimit(setLogs, "system", String(nextPending.summary || "user input required"));
+              pushLiveLog("system", String(nextPending.summary || "user input required"));
             } else if (event === "final") {
               finalPayload = payload.response || null;
             } else if (event === "error") {
@@ -1118,6 +1194,19 @@ function App() {
       setPendingUploads([]);
       clearUiError();
       setActiveRunId(String(finalPayload.run_id || ""));
+      setLiveTurnState((prev) => mergeRunSnapshot(prev, {
+        ...(((finalPayload.inspector || {}).run_state) || {}),
+        collaboration_mode: String(finalPayload.collaboration_mode || (((finalPayload.inspector || {}).run_state || {}).collaboration_mode) || chatSettings.collaboration_mode || "default"),
+        turn_status: String(finalPayload.turn_status || (((finalPayload.inspector || {}).run_state || {}).turn_status) || "completed"),
+        current_task_focus: finalPayload.current_task_focus || (((finalPayload.inspector || {}).run_state || {}).current_task_focus) || (((finalPayload.inspector || {}).run_state || {}).task_checkpoint) || {},
+        plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : ((((finalPayload.inspector || {}).run_state || {}).plan) || []),
+        pending_user_input: finalPayload.pending_user_input || (((finalPayload.inspector || {}).run_state || {}).pending_user_input) || {},
+      }));
+      setLiveEvidence((prev) => ({
+        ...prev,
+        ...(((finalPayload.inspector || {}).evidence) || {}),
+      }));
+      setLiveToolTimeline(Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : []);
       setSessionAgentState({
         ...(finalPayload.inspector || {}).run_state,
         ...(finalPayload.inspector || {}).evidence,
@@ -1133,9 +1222,15 @@ function App() {
           phase: String((((finalPayload.inspector || {}).run_state || {}).phase) || "report"),
           last_run_id: String(finalPayload.run_id || ""),
           last_model: String(finalPayload.effective_model || ""),
+          current_task_focus: finalPayload.current_task_focus || (((finalPayload.inspector || {}).run_state || {}).current_task_focus) || (((finalPayload.inspector || {}).run_state || {}).task_checkpoint) || {},
+          thread_memory: (((finalPayload.inspector || {}).run_state || {}).thread_memory) || (((finalPayload.inspector || {}).session || {}).thread_memory) || {},
           tool_hits: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : [],
           tool_count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0,
           evidence_status: String((((finalPayload.inspector || {}).evidence || {}).status) || "not_needed"),
+          recent_tasks: Array.isArray(finalPayload.recent_tasks)
+            ? finalPayload.recent_tasks
+            : (((finalPayload.inspector || {}).session || {}).recent_tasks || []),
+          artifact_memory_preview: (((finalPayload.inspector || {}).session || {}).artifact_memory_preview) || [],
           task_checkpoint: (((finalPayload.inspector || {}).run_state || {}).task_checkpoint) || {},
           enabled_skill_ids: Array.isArray((finalPayload.inspector || {}).loaded_skills)
             ? finalPayload.inspector.loaded_skills.map((item) => item.id)
@@ -1144,6 +1239,10 @@ function App() {
       });
       pushLogWithLimit(
         setLogs,
+        "response",
+        `收到回复，工具 ${Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0} 次`,
+      );
+      pushLiveLog(
         "response",
         `收到回复，工具 ${Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0} 次`,
       );
@@ -1277,12 +1376,19 @@ function App() {
       ? health.agent.loaded_skills
       : [];
   const lastInspector = (lastResponse && lastResponse.inspector) || {};
-  const runState = lastInspector.run_state || {};
-  const evidence = lastInspector.evidence || {};
+  const completedRunState = lastInspector.run_state || {};
+  const completedEvidence = lastInspector.evidence || {};
+  const hasLiveRunState = Boolean(sending || (activeRunId && Object.keys(liveTurnState || {}).length));
+  const runState = hasLiveRunState ? liveTurnState : completedRunState;
+  const evidence = hasLiveRunState ? liveEvidence : completedEvidence;
   const activeTaskCheckpoint =
-    (runState.task_checkpoint && typeof runState.task_checkpoint === "object")
-      ? runState.task_checkpoint
-      : ((sessionAgentState.task_checkpoint && typeof sessionAgentState.task_checkpoint === "object") ? sessionAgentState.task_checkpoint : {});
+    (runState.current_task_focus && typeof runState.current_task_focus === "object")
+      ? runState.current_task_focus
+      : ((runState.task_checkpoint && typeof runState.task_checkpoint === "object")
+        ? runState.task_checkpoint
+        : ((sessionAgentState.current_task_focus && typeof sessionAgentState.current_task_focus === "object")
+          ? sessionAgentState.current_task_focus
+          : ((sessionAgentState.task_checkpoint && typeof sessionAgentState.task_checkpoint === "object") ? sessionAgentState.task_checkpoint : {})));
   const ocrStatus = (health && health.ocr_status && typeof health.ocr_status === "object") ? health.ocr_status : {};
   const activeCollaborationMode = String(runState.collaboration_mode || sessionAgentState.collaboration_mode || chatSettings.collaboration_mode || "default");
   const activeTurnStatus = String(runState.turn_status || sessionAgentState.turn_status || "idle");
@@ -1293,9 +1399,12 @@ function App() {
     (runState.pending_user_input && typeof runState.pending_user_input === "object")
       ? runState.pending_user_input
       : ((sessionAgentState.pending_user_input && typeof sessionAgentState.pending_user_input === "object") ? sessionAgentState.pending_user_input : {});
-  const activeToolTimeline = Array.isArray(lastInspector.tool_timeline) && lastInspector.tool_timeline.length
-    ? lastInspector.tool_timeline
-    : toolTimeline;
+  const activeToolTimeline = hasLiveRunState
+    ? liveToolTimeline
+    : (Array.isArray(lastInspector.tool_timeline) && lastInspector.tool_timeline.length
+      ? lastInspector.tool_timeline
+      : toolTimeline);
+  const activeRunLogs = hasLiveRunState ? liveRunLogs : logs;
   const activeProviderAuthReady =
     activeProviderProfile && Object.prototype.hasOwnProperty.call(activeProviderProfile, "auth_ready")
       ? Boolean(activeProviderProfile.auth_ready)
@@ -1638,8 +1747,9 @@ function App() {
                 </section>
 
                 <section className="panel-card">
-                  <div className="panel-title">Current Task</div>
+                  <div className="panel-title">Current Focus</div>
                   <div className="meta-line">task_id: ${activeTaskCheckpoint.task_id || "-"}</div>
+                  <div className="meta-line">goal: ${activeTaskCheckpoint.goal || runState.goal || sessionAgentState.goal || "-"}</div>
                   <div className="meta-line">cwd: ${activeTaskCheckpoint.cwd || sessionAgentState.cwd || "-"}</div>
                   <div className="meta-line">next_action: ${activeTaskCheckpoint.next_action || "-"}</div>
                   ${Array.isArray(activeTaskCheckpoint.active_files) && activeTaskCheckpoint.active_files.length
@@ -1661,45 +1771,49 @@ function App() {
                     : null}
                 </section>
 
-                <section className="panel-card">
-                  <div className="panel-title">Checklist</div>
-                  <div className="timeline-list">
-                    ${activePlan.length
-                      ? activePlan.map(
-                          (item) => html`
-                            <div key=${`${item.step || "step"}-${item.status || ""}`} className="timeline-row">
-                              <div className="timeline-head">
-                                <span>${item.step || "step"}</span>
-                                <span>${item.status || "pending"}</span>
+                ${activePlan.length
+                  ? html`
+                      <section className="panel-card">
+                        <div className="panel-title">Checklist</div>
+                        <div className="timeline-list">
+                          ${activePlan.map(
+                            (item) => html`
+                              <div key=${`${item.step || "step"}-${item.status || ""}`} className="timeline-row">
+                                <div className="timeline-head">
+                                  <span>${item.step || "step"}</span>
+                                  <span>${item.status || "pending"}</span>
+                                </div>
                               </div>
-                            </div>
-                          `,
-                        )
-                      : html`<div className="empty-inline">本轮还没有 checklist。</div>`}
-                  </div>
-                </section>
+                            `,
+                          )}
+                        </div>
+                      </section>
+                    `
+                  : null}
 
-                <section className="panel-card">
-                  <div className="panel-title">Pending Input</div>
-                  <div className="timeline-list">
-                    ${Array.isArray(activePendingInput.questions) && activePendingInput.questions.length
-                      ? activePendingInput.questions.map(
-                          (item) => html`
-                            <div key=${item.id || item.header || item.question} className="timeline-row">
-                              <div className="timeline-head">
-                                <span>${item.header || item.id || "question"}</span>
-                                <span>${(item.options || []).length} options</span>
+                ${Array.isArray(activePendingInput.questions) && activePendingInput.questions.length
+                  ? html`
+                      <section className="panel-card">
+                        <div className="panel-title">Pending Input</div>
+                        <div className="timeline-list">
+                          ${activePendingInput.questions.map(
+                            (item) => html`
+                              <div key=${item.id || item.header || item.question} className="timeline-row">
+                                <div className="timeline-head">
+                                  <span>${item.header || item.id || "question"}</span>
+                                  <span>${(item.options || []).length} options</span>
+                                </div>
+                                <div className="timeline-detail">${item.question || ""}</div>
+                                <div className="timeline-detail">
+                                  ${(Array.isArray(item.options) ? item.options : []).map((option) => option.label).join(" / ")}
+                                </div>
                               </div>
-                              <div className="timeline-detail">${item.question || ""}</div>
-                              <div className="timeline-detail">
-                                ${(Array.isArray(item.options) ? item.options : []).map((option) => option.label).join(" / ")}
-                              </div>
-                            </div>
-                          `,
-                        )
-                      : html`<div className="empty-inline">当前没有等待中的结构化输入。</div>`}
-                  </div>
-                </section>
+                            `,
+                          )}
+                        </div>
+                      </section>
+                    `
+                  : null}
 
                 <section className="panel-card">
                   <div className="panel-title">Recent Tools</div>
@@ -1731,8 +1845,8 @@ function App() {
                 <section className="panel-card">
                   <div className="panel-title">Logs</div>
                   <div className="timeline-list">
-                    ${logs.length
-                      ? logs.map((item) => html`<div key=${item.id} className=${`log-row tone-${item.type}`}>${item.text}</div>`)
+                    ${activeRunLogs.length
+                      ? activeRunLogs.map((item) => html`<div key=${item.id} className=${`log-row tone-${item.type}`}>${item.text}</div>`)
                       : html`<div className="empty-inline">暂无额外日志。</div>`}
                   </div>
                 </section>

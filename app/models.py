@@ -135,6 +135,7 @@ class TokenTotals(BaseModel):
 
 class ChatResponse(BaseModel):
     session_id: str
+    thread_id: str | None = None
     run_id: str | None = None
     agent_id: str = "vintage_programmer"
     agent_title: str = "Vintage Programmer"
@@ -153,6 +154,8 @@ class ChatResponse(BaseModel):
     turn_status: str = "completed"
     plan: list[dict[str, Any]] = Field(default_factory=list)
     pending_user_input: dict[str, Any] = Field(default_factory=dict)
+    current_task_focus: dict[str, Any] = Field(default_factory=dict)
+    recent_tasks: list[dict[str, Any]] = Field(default_factory=list)
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
     session_token_totals: TokenTotals = Field(default_factory=TokenTotals)
     global_token_totals: TokenTotals = Field(default_factory=TokenTotals)

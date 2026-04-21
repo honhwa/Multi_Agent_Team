@@ -477,7 +477,7 @@ def test_chat_stream_emits_structured_error_payload(monkeypatch, tmp_path: Path)
     assert error_payload["retryable"] is True
 
 
-def test_chat_resets_history_and_route_state_for_new_task(monkeypatch, tmp_path: Path) -> None:
+def test_chat_preserves_thread_memory_for_new_turn(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     capture_runtime = _ContextCapturingRuntime()
     monkeypatch.setattr(main_app, "vintage_programmer_runtime", capture_runtime)
@@ -521,9 +521,11 @@ def test_chat_resets_history_and_route_state_for_new_task(monkeypatch, tmp_path:
 
     assert response.status_code == 200
     seen = capture_runtime.seen_contexts[0]
-    assert seen["summary"] == ""
-    assert seen["history_turns"] == []
-    assert seen["route_state"] == {}
+    assert seen["summary"] == "old summary"
+    assert len(seen["history_turns"]) == 2
+    assert seen["thread_memory"]["summary"] == "old summary"
+    assert seen["current_task_focus"]["task_id"] == "task-old"
+    assert seen["route_state"]["task_checkpoint"]["task_id"] == "task-old"
 
 
 def test_project_endpoints_and_project_scoped_sessions(monkeypatch, tmp_path: Path) -> None:

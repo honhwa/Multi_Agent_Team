@@ -1422,6 +1422,32 @@ def _emit_progress(progress_cb: Callable[[dict[str, Any]], None] | None, event: 
         pass
 
 
+def _build_run_snapshot(
+    *,
+    goal: str,
+    current_task_focus: dict[str, Any] | None,
+    collaboration_mode: str,
+    turn_status: str,
+    cwd: str,
+    plan: list[dict[str, Any]] | None = None,
+    pending_user_input: dict[str, Any] | None = None,
+    tool_count: int = 0,
+    evidence_status: str = "not_needed",
+) -> dict[str, Any]:
+    normalized_focus = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus or {})
+    return {
+        "goal": str(goal or "").strip(),
+        "collaboration_mode": str(collaboration_mode or "default"),
+        "turn_status": str(turn_status or "running"),
+        "cwd": str(cwd or normalized_focus.get("cwd") or "").strip(),
+        "current_task_focus": normalized_focus,
+        "plan": [dict(item) for item in list(plan or []) if isinstance(item, dict)][:12],
+        "pending_user_input": dict(pending_user_input or {}),
+        "tool_count": int(tool_count or 0),
+        "evidence_status": str(evidence_status or "not_needed"),
+    }
+
+
 def _stringify_error_detail(detail: Any) -> str:
     if detail is None:
         return ""
@@ -1696,16 +1722,16 @@ def _process_chat_request(
                 session_id=session_id,
                 project_id=str(session_project.get("project_id") or ""),
             )
-            new_task_requested = session_context_impl.should_start_new_task(
+            focus_shift_requested = session_context_impl.infer_focus_shift(
                 session,
                 message=req.message,
                 requested_attachment_ids=req.attachment_ids,
             )
-            if new_task_requested:
+            if focus_shift_requested:
                 _emit_progress(
                     progress_cb,
                     "trace",
-                    message="检测到新的独立任务，本轮将重置旧任务检查点与历史附件继承。",
+                    message="检测到当前任务焦点切换，本轮会刷新 current_task_focus，但继续保留 thread 记忆。",
                     run_id=run_id,
                 )
             _emit_progress(
@@ -1718,6 +1744,13 @@ def _process_chat_request(
                 detail=f"会话已就绪: {session.get('id')}",
                 run_id=run_id,
                 queue_wait_ms=queue_wait_ms,
+                run_snapshot=_build_run_snapshot(
+                    goal=req.message,
+                    current_task_focus=session_context_impl.get_current_task_focus(session),
+                    collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
+                    turn_status="running",
+                    cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
+                ),
             )
         history_turns_before = copy.deepcopy(session.get("turns", []))
         summary_before = str(session.get("summary", "") or "")
@@ -1725,6 +1758,7 @@ def _process_chat_request(
         summarized = agent_os.maybe_compact_session(session, req.settings.max_context_turns)
         if summarized:
             _emit_progress(progress_cb, "trace", message="历史上下文已自动压缩摘要。", run_id=run_id)
+        session_context_impl.sync_session_memory_state(session)
 
         runtime = get_kernel_runtime()
         attachment_registry = runtime.registry
@@ -1759,7 +1793,8 @@ def _process_chat_request(
         auto_linked_attachment_ids = list(attachment_context["auto_linked_attachment_ids"] or [])
         effective_attachment_ids = list(attachment_context["effective_attachment_ids"] or [])
         attachment_context_key = str(attachment_context["attachment_context_key"] or "")
-        if new_task_requested and not requested_attachment_ids:
+        explicit_focus_reset = session_context_impl.message_explicitly_starts_new_task(req.message) or session_context_impl.message_clears_attachment_context(req.message)
+        if explicit_focus_reset and not requested_attachment_ids:
             clear_attachment_context = True
             attachment_context_mode = "cleared"
             auto_linked_attachment_ids = []
@@ -1779,6 +1814,13 @@ def _process_chat_request(
                 f"请求 {len(effective_attachment_ids)} 个，命中 {len(attachments)} 个。"
             ),
             run_id=run_id,
+            run_snapshot=_build_run_snapshot(
+                goal=req.message,
+                current_task_focus=session_context_impl.get_current_task_focus(session),
+                collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
+                turn_status="running",
+                cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
+            ),
         )
         found_attachment_ids = {str(item.get("id")) for item in attachments if item.get("id")}
         missing_attachment_ids = [file_id for file_id in effective_attachment_ids if file_id not in found_attachment_ids]
@@ -1832,11 +1874,22 @@ def _process_chat_request(
                 session,
                 attachment_ids=resolved_attachment_ids,
             )
-        if new_task_requested:
-            route_state_input = {}
-            route_state_scope = "task_reset"
-        history_turns_for_runtime = [] if new_task_requested else session.get("turns", [])
-        summary_for_runtime = "" if new_task_requested else session.get("summary", "")
+        route_state_input = session_context_impl.prepare_route_state_for_turn(
+            route_state_input,
+            reset_focus=focus_shift_requested,
+        )
+        route_state_scope = "focus_reset" if focus_shift_requested and route_state_scope == "session" else route_state_scope
+        history_turns_for_runtime = copy.deepcopy(session.get("turns", []))
+        summary_for_runtime = session.get("summary", "")
+        thread_memory_for_runtime = copy.deepcopy(session_context_impl.get_thread_memory(session))
+        current_task_focus_for_runtime = copy.deepcopy(session_context_impl.get_current_task_focus(session))
+        recent_tasks_for_runtime = copy.deepcopy(list(thread_memory_for_runtime.get("recent_tasks") or []))
+        artifact_memory_preview = copy.deepcopy(session_context_impl.get_artifact_memory_preview(session))
+        recalled_context = copy.deepcopy({
+            "recalled_task": attachment_context.get("recalled_task") or {},
+            "recalled_artifacts": attachment_context.get("recalled_artifacts") or [],
+            "recalled_artifact_ids": attachment_context.get("recalled_attachment_ids") or [],
+        })
 
         _emit_progress(
             progress_cb,
@@ -1847,6 +1900,13 @@ def _process_chat_request(
             status="running",
             detail="开始通过 vintage_programmer 执行。",
             run_id=run_id,
+            run_snapshot=_build_run_snapshot(
+                goal=req.message,
+                current_task_focus=current_task_focus_for_runtime,
+                collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
+                turn_status="running",
+                cwd=str((current_task_focus_for_runtime or {}).get("cwd") or session.get("cwd") or session_project.get("root_path") or ""),
+            ),
         )
         runtime_result = provider_runtime.run(
             message=req.message,
@@ -1866,6 +1926,11 @@ def _process_chat_request(
                     "is_worktree": bool(session_project.get("is_worktree")),
                 },
                 "summary": summary_for_runtime,
+                "thread_memory": thread_memory_for_runtime,
+                "current_task_focus": current_task_focus_for_runtime,
+                "recent_tasks": recent_tasks_for_runtime,
+                "artifact_memory_preview": artifact_memory_preview,
+                "recalled_context": recalled_context,
                 "history_turns": history_turns_for_runtime,
                 "route_state": route_state_input,
                 "attachments": [
@@ -1912,6 +1977,20 @@ def _process_chat_request(
             status="completed",
             detail="模型推理结束，开始写入会话与统计。",
             run_id=run_id,
+            run_snapshot=_build_run_snapshot(
+                goal=str(((inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}).get("goal") or req.message),
+                current_task_focus=(
+                    ((inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}).get("current_task_focus")
+                    or ((inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}).get("task_checkpoint")
+                ),
+                collaboration_mode=collaboration_mode,
+                turn_status=turn_status,
+                cwd=str((((inspector.get("session") or {}) if isinstance(inspector.get("session"), dict) else {}).get("cwd")) or session.get("cwd") or ""),
+                plan=plan,
+                pending_user_input=pending_user_input,
+                tool_count=len(tool_events),
+                evidence_status=str(((inspector.get("evidence") or {}) if isinstance(inspector.get("evidence"), dict) else {}).get("status") or "not_needed"),
+            ),
         )
         inspector_notes = list(inspector.get("notes") or [])
         if missing_attachment_ids:
@@ -1948,6 +2027,13 @@ def _process_chat_request(
         inspector_run_state = (inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}
         inspector_evidence = (inspector.get("evidence") or {}) if isinstance(inspector.get("evidence"), dict) else {}
         inspector_loaded_skills = list(inspector.get("loaded_skills") or [])
+        current_task_focus = dict(
+            inspector_run_state.get("current_task_focus")
+            or inspector_run_state.get("task_checkpoint")
+            or ((route_state or {}).get("current_task_focus") if isinstance(route_state, dict) else {})
+            or ((route_state or {}).get("task_checkpoint") if isinstance(route_state, dict) else {})
+            or {}
+        )
         tool_hits = [
             {
                 "name": str(item.get("name") or ""),
@@ -1972,7 +2058,8 @@ def _process_chat_request(
             "project_id": str(session.get("project_id") or ""),
             "project_root": str(session.get("project_root") or ""),
             "cwd": str((((inspector.get("session") or {}) if isinstance(inspector.get("session"), dict) else {}).get("cwd")) or session.get("cwd") or ""),
-            "task_checkpoint": dict(inspector_run_state.get("task_checkpoint") or ((route_state or {}).get("task_checkpoint") if isinstance(route_state, dict) else {})),
+            "current_task_focus": dict(current_task_focus),
+            "task_checkpoint": session_context_impl.compat_task_checkpoint_from_focus(current_task_focus),
             "tool_hits": tool_hits,
             "tool_count": len(tool_hits),
             "tool_names": [str(item.get("name") or "") for item in tool_hits if str(item.get("name") or "").strip()],
@@ -1984,7 +2071,33 @@ def _process_chat_request(
             ],
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
+        session_context_impl.record_turn_memory(
+            session,
+            user_message=req.message,
+            assistant_text=text,
+            attachments=attachments,
+            route_state=route_state,
+            tool_events=tool_events,
+            answer_bundle=answer_bundle,
+        )
         session["cwd"] = str(session["agent_state"].get("cwd") or session.get("project_root") or "")
+        thread_memory = session_context_impl.get_thread_memory(session)
+        recent_tasks = list(thread_memory.get("recent_tasks") or [])
+        artifact_memory_preview = session_context_impl.get_artifact_memory_preview(session)
+        current_task_focus = session_context_impl.get_current_task_focus(session)
+        inspector_run_state["thread_memory"] = dict(thread_memory)
+        inspector_run_state["recent_tasks"] = recent_tasks
+        inspector_run_state["artifact_memory_preview"] = artifact_memory_preview
+        inspector_run_state["current_task_focus"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
+        inspector_run_state["task_checkpoint"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
+        inspector["run_state"] = inspector_run_state
+        inspector_session = (inspector.get("session") or {}) if isinstance(inspector.get("session"), dict) else {}
+        inspector_session["current_task_focus"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
+        inspector_session["task_checkpoint"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
+        inspector_session["thread_memory"] = dict(thread_memory)
+        inspector_session["recent_tasks"] = recent_tasks
+        inspector_session["artifact_memory_preview"] = artifact_memory_preview
+        inspector["session"] = inspector_session
         try:
             attachment_module.store_scoped_route_state(
                 session=session,
@@ -2017,6 +2130,17 @@ def _process_chat_request(
             status="completed",
             detail="会话已写入本地存储。",
             run_id=run_id,
+            run_snapshot=_build_run_snapshot(
+                goal=str(inspector_run_state.get("goal") or req.message),
+                current_task_focus=current_task_focus,
+                collaboration_mode=collaboration_mode,
+                turn_status=turn_status,
+                cwd=str(session.get("cwd") or ""),
+                plan=plan,
+                pending_user_input=pending_user_input,
+                tool_count=len(tool_events),
+                evidence_status=str(inspector_evidence.get("status") or "not_needed"),
+            ),
         )
 
         selected_model = effective_model or req.settings.model or provider_config.default_model
@@ -2131,6 +2255,7 @@ def _process_chat_request(
         ]
         response = ChatResponse(
             session_id=session["id"],
+            thread_id=session["id"],
             run_id=run_id,
             agent_id="vintage_programmer",
             agent_title=str((inspector.get("agent") or {}).get("title") or "Vintage Programmer"),
@@ -2149,6 +2274,8 @@ def _process_chat_request(
             turn_status=turn_status,
             plan=plan,
             pending_user_input=pending_user_input,
+            current_task_focus=session_context_impl.compat_task_checkpoint_from_focus(current_task_focus),
+            recent_tasks=recent_tasks,
             token_usage=TokenUsage(**token_usage),
             session_token_totals=TokenTotals(**session_totals_raw),
             global_token_totals=TokenTotals(**global_totals_raw),
@@ -2165,6 +2292,17 @@ def _process_chat_request(
             status="completed",
             detail="本轮结果已准备完成。",
             run_id=run_id,
+            run_snapshot=_build_run_snapshot(
+                goal=str(inspector_run_state.get("goal") or req.message),
+                current_task_focus=current_task_focus,
+                collaboration_mode=collaboration_mode,
+                turn_status=turn_status,
+                cwd=str(session.get("cwd") or ""),
+                plan=plan,
+                pending_user_input=pending_user_input,
+                tool_count=len(tool_events),
+                evidence_status=str(inspector_evidence.get("status") or "not_needed"),
+            ),
         )
         return response
     finally:

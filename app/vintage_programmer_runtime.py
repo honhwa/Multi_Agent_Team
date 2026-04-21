@@ -12,6 +12,7 @@ import uuid
 from app.config import AppConfig
 from app.models import ChatSettings, ToolEvent
 from app.openai_auth import OpenAIAuthManager
+from app.session_context import compat_task_checkpoint_from_focus, normalize_current_task_focus
 from app.workbench import WorkbenchStore, build_tool_descriptors, split_frontmatter, tool_descriptor_by_name
 from packages.office_modules.intent_support import (
     has_image_attachments as has_image_attachments_helper,
@@ -550,7 +551,8 @@ class VintageProgrammerRuntime:
         parts.append("当用户直接在消息里粘贴代码、XML、HTML、JSON、YAML 或长文本时，应先就地分析当前消息内容，不要默认追问 workspace 路径。")
         parts.append("当用户贴出报错、代码片段、配置文本或日志时，默认把这些内容当作本轮要分析的对象；只有用户明确要求查看仓库文件、目录、网页或执行命令时，才优先调用工具。")
         parts.append("如果 runtime_context_json 里已经给出 attachments 的 name/path，就把它们视为当前轮已提供上下文，不要先否认附件或要求用户重新描述路径。")
-        parts.append("如果 runtime_context_json.current_task 里已经给出 goal/cwd/active_files/active_attachments，就把它们当作当前任务的硬上下文继续推进；不要重复声称不知道目录、文件或附件。")
+        parts.append("如果 runtime_context_json.current_task_focus 里已经给出 goal/cwd/active_files/active_attachments，就把它们当作当前任务的硬上下文继续推进；不要重复声称不知道目录、文件或附件。")
+        parts.append("如果 runtime_context_json.thread_memory.recent_tasks 或 recalled_context 里已经给出近期任务/附件回忆结果，回答'刚刚让我做什么'、'之前那张图'、'那封邮件'这类问题时必须优先基于这些结构化记忆。")
         parts.append("如果附件是图片，需要优先使用 image_read(path=...) 读取可见文字和画面内容；不要只报元数据，也不要声称未配置 OCR 或无法看图。")
         parts.append("如果附件是文档或 .msg，需要优先用 read/search_file/read_section/table_extract 等工具读取内容，不要只根据文件名猜测。")
         return "\n\n".join(item for item in parts if str(item).strip())
@@ -576,13 +578,29 @@ class VintageProgrammerRuntime:
             if isinstance(item, dict)
         ]
         route_state = dict(context.get("route_state") or {})
-        current_task = self._normalize_task_checkpoint(route_state.get("task_checkpoint"))
+        current_task_focus = normalize_current_task_focus(
+            context.get("current_task_focus")
+            or route_state.get("current_task_focus")
+            or route_state.get("task_checkpoint")
+        )
+        thread_memory = dict(context.get("thread_memory") or {})
+        recent_tasks = list(context.get("recent_tasks") or thread_memory.get("recent_tasks") or [])
+        artifact_memory_preview = list(context.get("artifact_memory_preview") or [])
         payload = {
             "session_id": str(context.get("session_id") or ""),
             "project": dict(context.get("project") or {}),
             "summary": str(context.get("summary") or "")[:4000],
+            "thread_memory": {
+                "summary": str(thread_memory.get("summary") or "")[:4000],
+                "recent_tasks": recent_tasks[:8],
+                "recent_cwds": list(thread_memory.get("recent_cwds") or [])[:6],
+                "recent_files": list(thread_memory.get("recent_files") or [])[:8],
+            },
             "route_state": route_state,
-            "current_task": current_task,
+            "current_task_focus": current_task_focus,
+            "recent_tasks": recent_tasks[:8],
+            "artifact_memory_preview": artifact_memory_preview[:8],
+            "recalled_context": dict(context.get("recalled_context") or {}),
             "user_input_response": dict(context.get("user_input_response") or {}),
             "attachments": attachments,
             "history_turns": recent_history,
@@ -608,6 +626,31 @@ class VintageProgrammerRuntime:
             out.append(item)
         return out
 
+    @staticmethod
+    def _build_run_snapshot(
+        *,
+        goal: str,
+        current_task_focus: dict[str, Any],
+        collaboration_mode: str,
+        turn_status: str,
+        plan_state: list[dict[str, Any]],
+        pending_user_input: dict[str, Any],
+        effective_cwd: str,
+        evidence_status: str,
+        tool_events: list[ToolEvent],
+    ) -> dict[str, Any]:
+        return {
+            "goal": str(goal or "").strip(),
+            "collaboration_mode": str(collaboration_mode or "default"),
+            "turn_status": str(turn_status or "running"),
+            "cwd": str(effective_cwd or current_task_focus.get("cwd") or "").strip(),
+            "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
+            "plan": [dict(item) for item in list(plan_state or [])[:12] if isinstance(item, dict)],
+            "pending_user_input": dict(pending_user_input or {}),
+            "tool_count": len(tool_events),
+            "evidence_status": str(evidence_status or "not_needed"),
+        }
+
     def _emit_stage(
         self,
         progress_cb: Callable[[dict[str, Any]], None] | None,
@@ -616,19 +659,21 @@ class VintageProgrammerRuntime:
         label: str,
         detail: str,
         status: str = "running",
+        run_snapshot: dict[str, Any] | None = None,
     ) -> None:
         if progress_cb is None:
             return
-        progress_cb(
-            {
-                "event": "stage",
-                "phase": phase,
-                "label": label,
-                "status": status,
-                "detail": detail,
-                "code": phase,
-            }
-        )
+        payload = {
+            "event": "stage",
+            "phase": phase,
+            "label": label,
+            "status": status,
+            "detail": detail,
+            "code": phase,
+        }
+        if run_snapshot:
+            payload["run_snapshot"] = dict(run_snapshot)
+        progress_cb(payload)
 
     def _collect_source_refs(self, result: dict[str, Any]) -> list[str]:
         refs: list[str] = []
@@ -1340,17 +1385,17 @@ class VintageProgrammerRuntime:
         project_id = str(project_context.get("project_id") or "").strip()
         effective_cwd = str(project_context.get("cwd") or project_root or "").strip()
         route_state_input = dict(context_payload.get("route_state") or {})
-        task_checkpoint = self._initial_task_checkpoint(
+        current_task_focus = self._initial_task_checkpoint(
             route_state=route_state_input,
             project_root=project_root,
             cwd=effective_cwd,
             goal=_truncate_goal(prompt_message),
             attachments=attachment_metas,
         )
-        current_goal = str(task_checkpoint.get("goal") or _truncate_goal(prompt_message))
-        task_checkpoint["goal"] = current_goal
-        if task_checkpoint.get("cwd"):
-            effective_cwd = str(task_checkpoint.get("cwd") or effective_cwd)
+        current_goal = str(current_task_focus.get("goal") or _truncate_goal(prompt_message))
+        current_task_focus["goal"] = current_goal
+        if current_task_focus.get("cwd"):
+            effective_cwd = str(current_task_focus.get("cwd") or effective_cwd)
 
         messages: list[Any] = [
             self._backend._SystemMessage(content=self._render_system_prompt(settings, spec=spec, loaded_skills=loaded_skills)),
@@ -1371,7 +1416,8 @@ class VintageProgrammerRuntime:
             notes.append("attachment_tooling_expected")
         if has_image_attachments:
             notes.append("image_attachment_context")
-        if route_state_input.get("task_checkpoint"):
+        if route_state_input.get("current_task_focus") or route_state_input.get("task_checkpoint"):
+            notes.append("current_task_focus_restored")
             notes.append("task_checkpoint_restored")
         tool_events: list[ToolEvent] = []
         effective_model = requested_model
@@ -1434,6 +1480,17 @@ class VintageProgrammerRuntime:
                         label="Cancelled",
                         detail="用户已取消当前运行。",
                         status="cancelled",
+                        run_snapshot=self._build_run_snapshot(
+                            goal=current_goal,
+                            current_task_focus=current_task_focus,
+                            collaboration_mode=collaboration_mode,
+                            turn_status=turn_status,
+                            plan_state=plan_state,
+                            pending_user_input=pending_user_input,
+                            effective_cwd=effective_cwd,
+                            evidence_status="not_needed",
+                            tool_events=tool_events,
+                        ),
                     )
                     break
                 if max_turn_seconds and (time.monotonic() - turn_started_at) >= max_turn_seconds:
@@ -1569,8 +1626,8 @@ class VintageProgrammerRuntime:
                         }
                     if name == "image_read" and bool(result.get("ok")):
                         last_image_read_result = dict(result)
-                    task_checkpoint = self._task_checkpoint_from_tool(
-                        checkpoint=task_checkpoint,
+                    current_task_focus = self._task_checkpoint_from_tool(
+                        checkpoint=current_task_focus,
                         tool_name=name,
                         arguments=arguments,
                         result=result,
@@ -1578,7 +1635,7 @@ class VintageProgrammerRuntime:
                         fallback_project_root=project_root,
                         fallback_cwd=effective_cwd,
                     )
-                    effective_cwd = str(task_checkpoint.get("cwd") or effective_cwd or project_root)
+                    effective_cwd = str(current_task_focus.get("cwd") or effective_cwd or project_root)
                     self._set_tools_runtime_context(
                         execution_mode=settings.execution_mode,
                         session_id=str(context_payload.get("session_id") or ""),
@@ -1616,6 +1673,17 @@ class VintageProgrammerRuntime:
                                 "tool_index": call_idx,
                                 "group": event.group,
                                 "agent_id": spec.agent_id,
+                                "run_snapshot": self._build_run_snapshot(
+                                    goal=current_goal,
+                                    current_task_focus=current_task_focus,
+                                    collaboration_mode=collaboration_mode,
+                                    turn_status=turn_status,
+                                    plan_state=plan_state,
+                                    pending_user_input=pending_user_input,
+                                    effective_cwd=effective_cwd,
+                                    evidence_status="collected" if any(item.status == "ok" for item in tool_events) else "not_needed",
+                                    tool_events=tool_events,
+                                ),
                             }
                         )
                     if name == "update_plan" and bool(result.get("ok")):
@@ -1628,6 +1696,17 @@ class VintageProgrammerRuntime:
                                     "explanation": str(result.get("explanation") or ""),
                                     "collaboration_mode": collaboration_mode,
                                     "turn_status": turn_status,
+                                    "run_snapshot": self._build_run_snapshot(
+                                        goal=current_goal,
+                                        current_task_focus=current_task_focus,
+                                        collaboration_mode=collaboration_mode,
+                                        turn_status=turn_status,
+                                        plan_state=plan_state,
+                                        pending_user_input=pending_user_input,
+                                        effective_cwd=effective_cwd,
+                                        evidence_status="collected" if any(item.status == "ok" for item in tool_events) else "not_needed",
+                                        tool_events=tool_events,
+                                    ),
                                 }
                             )
                     if name == "request_user_input" and bool(result.get("ok")):
@@ -1644,6 +1723,17 @@ class VintageProgrammerRuntime:
                                     "pending_user_input": pending_user_input,
                                     "collaboration_mode": collaboration_mode,
                                     "turn_status": turn_status,
+                                    "run_snapshot": self._build_run_snapshot(
+                                        goal=current_goal,
+                                        current_task_focus=current_task_focus,
+                                        collaboration_mode=collaboration_mode,
+                                        turn_status=turn_status,
+                                        plan_state=plan_state,
+                                        pending_user_input=pending_user_input,
+                                        effective_cwd=effective_cwd,
+                                        evidence_status="collected" if any(item.status == "ok" for item in tool_events) else "not_needed",
+                                        tool_events=tool_events,
+                                    ),
                                 }
                             )
                     result_json = json.dumps(result, ensure_ascii=False)
@@ -1769,20 +1859,20 @@ class VintageProgrammerRuntime:
             notes.append("strict_agentic_blocked_after_steer")
         else:
             turn_status = "completed"
-        task_checkpoint["project_root"] = project_root
-        task_checkpoint["cwd"] = effective_cwd or project_root
-        task_checkpoint["active_attachments"] = self._attachment_refs(attachment_metas)
+        current_task_focus["project_root"] = project_root
+        current_task_focus["cwd"] = effective_cwd or project_root
+        current_task_focus["active_attachments"] = self._attachment_refs(attachment_metas)
         if pending_user_input:
-            task_checkpoint["next_action"] = str(pending_user_input.get("summary") or "user input required")
+            current_task_focus["next_action"] = str(pending_user_input.get("summary") or "user input required")
         elif turn_status == "blocked":
-            task_checkpoint["next_action"] = raw_text[:240]
+            current_task_focus["next_action"] = raw_text[:240]
         elif turn_status == "cancelled":
-            task_checkpoint["next_action"] = "cancelled"
+            current_task_focus["next_action"] = "cancelled"
         else:
-            task_checkpoint["next_action"] = ""
-        if not str(task_checkpoint.get("last_completed_step") or "").strip() and tool_events:
+            current_task_focus["next_action"] = ""
+        if not str(current_task_focus.get("last_completed_step") or "").strip() and tool_events:
             last_tool = tool_events[-1]
-            task_checkpoint["last_completed_step"] = f"{last_tool.name}: {last_tool.summary or last_tool.output_preview[:120]}"[:240]
+            current_task_focus["last_completed_step"] = f"{last_tool.name}: {last_tool.summary or last_tool.output_preview[:120]}"[:240]
         answer_bundle = self._build_answer_bundle(
             raw_text=raw_text,
             tool_events=tool_events,
@@ -1806,7 +1896,11 @@ class VintageProgrammerRuntime:
                 "tool_round_limit": tool_round_limit,
                 "network_mode": spec.network_mode,
                 "inline_document": inline_document,
-                "task_checkpoint": dict(task_checkpoint),
+                "thread_memory": dict(context_payload.get("thread_memory") or {}),
+                "recent_tasks": list(context_payload.get("recent_tasks") or []),
+                "artifact_memory_preview": list(context_payload.get("artifact_memory_preview") or []),
+                "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
+                "task_checkpoint": compat_task_checkpoint_from_focus(current_task_focus),
                 "project_root": project_root,
                 "cwd": effective_cwd,
             },
@@ -1825,7 +1919,11 @@ class VintageProgrammerRuntime:
                 "project_root": project_root,
                 "git_branch": str(project_context.get("git_branch") or ""),
                 "cwd": effective_cwd,
-                "task_checkpoint": dict(task_checkpoint),
+                "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
+                "task_checkpoint": compat_task_checkpoint_from_focus(current_task_focus),
+                "thread_memory": dict(context_payload.get("thread_memory") or {}),
+                "recent_tasks": list(context_payload.get("recent_tasks") or []),
+                "artifact_memory_preview": list(context_payload.get("artifact_memory_preview") or []),
                 "history_turn_count": len(list(context_payload.get("history_turns") or [])),
                 "attachment_count": len(list(context_payload.get("attachments") or [])),
             },
@@ -1852,6 +1950,8 @@ class VintageProgrammerRuntime:
             "turn_status": turn_status,
             "plan": plan_state,
             "pending_user_input": pending_user_input,
+            "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
+            "recent_tasks": list(context_payload.get("recent_tasks") or []),
             "tool_events": [item.model_dump() for item in tool_events],
             "token_usage": usage_total,
             "inspector": inspector,
@@ -1870,6 +1970,7 @@ class VintageProgrammerRuntime:
                 "project_id": project_id,
                 "project_root": project_root,
                 "cwd": effective_cwd,
-                "task_checkpoint": dict(task_checkpoint),
+                "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
+                "task_checkpoint": compat_task_checkpoint_from_focus(current_task_focus),
             },
         }
