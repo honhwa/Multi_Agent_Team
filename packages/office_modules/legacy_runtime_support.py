@@ -13,6 +13,13 @@ from app.openai_auth import normalize_model_for_auth_mode
 from packages.agent_core import RoleContext, RoleResult, RunState, build_agent_capability_runtime
 
 
+def _legacy_primary_tool_module_id(module_id: str) -> str:
+    normalized = str(module_id or "").strip()
+    if normalized == "codex_core_tools":
+        return "workspace_tools"
+    return normalized
+
+
 def compact_legacy_session(agent: Any, session: dict[str, Any], keep_last_turns: int) -> bool:
     turns = session.get("turns", [])
     if len(turns) <= agent.config.summary_trigger_turns:
@@ -71,7 +78,9 @@ def legacy_capability_bundle_snapshot(agent: Any) -> dict[str, Any]:
         "output_modules": list(metadata.get("output_modules") or []),
         "memory_modules": list(metadata.get("memory_modules") or []),
         "primary_agent_module": agent._selected_agent_module_id,
-        "primary_tool_module": agent._selected_tool_module_id or metadata.get("primary_tool_module"),
+        "primary_tool_module": _legacy_primary_tool_module_id(
+            agent._selected_tool_module_id or metadata.get("primary_tool_module")
+        ),
         "primary_output_module": metadata.get("primary_output_module"),
         "primary_memory_module": metadata.get("primary_memory_module"),
         "extra_tool_modules": list(metadata.get("extra_tool_modules") or []),
@@ -87,7 +96,7 @@ def legacy_capability_multi_module_snapshot(agent: Any) -> dict[str, Any]:
     return {
         "module_paths": list(runtime.module_paths),
         "module_count": len(runtime.bundles),
-        "primary_tool_module": runtime.metadata.get("primary_tool_module"),
+        "primary_tool_module": _legacy_primary_tool_module_id(runtime.metadata.get("primary_tool_module")),
         "extra_tool_modules": list(runtime.metadata.get("extra_tool_modules") or []),
         "module_ids": [item.get("module_id") for item in runtime.metadata.get("modules") or []],
         "role_sources": dict(runtime.metadata.get("role_sources") or {}),

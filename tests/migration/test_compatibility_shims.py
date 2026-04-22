@@ -54,6 +54,7 @@ def test_legacy_agent_debug_helpers_remain_available_through_shim() -> None:
 
     auth_summary = legacy._debug_openai_auth_summary()
     capability_snapshot = legacy._debug_capability_bundle_snapshot()
+    capability_multi_snapshot = legacy._debug_capability_multi_module_snapshot()
     kernel_host_snapshot = legacy._debug_kernel_host_snapshot()
     kernel_snapshot = legacy._debug_kernel_module_snapshot()
     codex_payload = legacy._debug_codex_input_payload(
@@ -70,9 +71,14 @@ def test_legacy_agent_debug_helpers_remain_available_through_shim() -> None:
 
     assert "available" in auth_summary
     assert "module_paths" in capability_snapshot
+    assert "module_paths" in capability_multi_snapshot
     assert "primary_agent_module" in kernel_host_snapshot
     assert "tool_modules" in kernel_host_snapshot
     assert "selected_modules" in kernel_snapshot
+    assert capability_snapshot["primary_tool_module"] == "workspace_tools"
+    assert capability_multi_snapshot["primary_tool_module"] == "workspace_tools"
+    assert kernel_host_snapshot["primary_tool_module"]["module_id"] == "workspace_tools"
+    assert kernel_host_snapshot["primary_tool_module"]["actual_module_id"] == "codex_core_tools"
     assert "instructions" in codex_payload
     assert "input" in codex_payload
     assert "event" in evolution_update

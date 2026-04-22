@@ -14,6 +14,13 @@ _KERNEL_HOST_GETATTR_METRICS_LOCK = Lock()
 _KERNEL_HOST_GETATTR_METRICS_CACHE: dict[str, Any] | None = None
 
 
+def _legacy_primary_tool_module_id(module_id: str) -> str:
+    normalized = str(module_id or "").strip()
+    if normalized == "codex_core_tools":
+        return "workspace_tools"
+    return normalized
+
+
 def build_primary_agent(
     *,
     config: Any,
@@ -231,7 +238,8 @@ def kernel_host_snapshot(
             for item in tool_modules
         ],
         "primary_tool_module": {
-            "module_id": primary_tool_module.module_id,
+            "module_id": _legacy_primary_tool_module_id(primary_tool_module.module_id),
+            "actual_module_id": primary_tool_module.module_id,
             "title": primary_tool_module.title,
             "description": primary_tool_module.description,
             "tool_names": list(primary_tool_module.tool_names),
