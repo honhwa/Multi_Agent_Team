@@ -388,7 +388,7 @@ class VintageProgrammerRuntime:
         self,
         *,
         config: AppConfig,
-        kernel_runtime: Any,
+        kernel_runtime: Any | None = None,
         agent_dir: Path,
         backend: Any | None = None,
     ) -> None:
@@ -397,10 +397,7 @@ class VintageProgrammerRuntime:
         # Injected backends are treated as already-authenticated or auth-free test doubles
         # unless they opt back into the standard OpenAI auth gate.
         self._require_runtime_auth = backend is None
-        self._backend = backend or create_office_runtime_backend(
-            config,
-            kernel_runtime=kernel_runtime,
-        )
+        self._backend = backend or create_office_runtime_backend(config)
         if backend is not None:
             self._require_runtime_auth = bool(getattr(self._backend, "requires_auth", False))
         self._tool_specs = list(getattr(self._backend.tools, "tool_specs", []) or [])

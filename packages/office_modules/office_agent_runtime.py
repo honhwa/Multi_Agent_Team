@@ -76,7 +76,6 @@ from packages.office_modules.legacy_runtime_support import (
     legacy_codex_input_payload as legacy_codex_input_payload_helper,
     legacy_evolution_overlay_snapshot as legacy_evolution_overlay_snapshot_helper,
     legacy_evolution_turn_update as legacy_evolution_turn_update_helper,
-    legacy_kernel_module_snapshot as legacy_kernel_module_snapshot_helper,
     legacy_normalize_model_for_auth as legacy_normalize_model_for_auth_helper,
     legacy_openai_auth_summary as legacy_openai_auth_summary_helper,
     legacy_role_lab_multi_instance_batch as legacy_role_lab_multi_instance_batch_helper,
@@ -85,7 +84,6 @@ from packages.office_modules.legacy_runtime_support import (
     legacy_route_runtime_override_attachment_context_requires_tooling as legacy_route_runtime_override_attachment_context_requires_tooling_helper,
     legacy_route_runtime_override_force_tool_followup as legacy_route_runtime_override_force_tool_followup_helper,
     legacy_role_lab_runtime_snapshot as legacy_role_lab_runtime_snapshot_helper,
-    legacy_tool_registry_snapshot as legacy_tool_registry_snapshot_helper,
 )
 from packages.office_modules.structurer_role import run_structurer_role as run_structurer_role_helper
 from packages.office_modules.specialist_role import (
@@ -99,25 +97,6 @@ from packages.office_modules.specialist_role import (
 from app.attachments import extract_document_text, image_to_data_url_with_meta, summarize_file_payload
 from app.config import AppConfig, get_access_roots
 from app.codex_runner import CodexResponsesRunner
-from app.core.bootstrap import KernelRuntime, build_kernel_runtime
-from app.core.kernel_debug_support import (
-    debug_kernel_active_contracts as debug_kernel_active_contracts_helper,
-    debug_kernel_shadow_auto_repair_broken_manifest as debug_kernel_shadow_auto_repair_broken_manifest_helper,
-    debug_kernel_shadow_contracts as debug_kernel_shadow_contracts_helper,
-    debug_kernel_shadow_package_path_router as debug_kernel_shadow_package_path_router_helper,
-    debug_kernel_shadow_package_syncs_module_version as debug_kernel_shadow_package_syncs_module_version_helper,
-    debug_kernel_shadow_patch_worker_persists_missing_tasks as debug_kernel_shadow_patch_worker_persists_missing_tasks_helper,
-    debug_kernel_shadow_pipeline as debug_kernel_shadow_pipeline_helper,
-    debug_kernel_shadow_pipeline_classifies_broken_manifest as debug_kernel_shadow_pipeline_classifies_broken_manifest_helper,
-    debug_kernel_shadow_promote_rejects_dependency_mismatch as debug_kernel_shadow_promote_rejects_dependency_mismatch_helper,
-    debug_kernel_shadow_promote_rejects_module_version_mismatch as debug_kernel_shadow_promote_rejects_module_version_mismatch_helper,
-    debug_kernel_shadow_promote_rejects_path_refs as debug_kernel_shadow_promote_rejects_path_refs_helper,
-    debug_kernel_shadow_replay as debug_kernel_shadow_replay_helper,
-    debug_kernel_shadow_self_upgrade_flow as debug_kernel_shadow_self_upgrade_flow_helper,
-    debug_kernel_shadow_stage_and_smoke as debug_kernel_shadow_stage_and_smoke_helper,
-    debug_kernel_shadow_upgrade_flow as debug_kernel_shadow_upgrade_flow_helper,
-    debug_kernel_shadow_validation_rejects_broken_manifest as debug_kernel_shadow_validation_rejects_broken_manifest_helper,
-)
 from packages.office_modules.execution_policy import execution_policy_spec, planner_enabled_for_policy
 from app.intent_classifier import IntentClassifier
 from app.intent_schema import RouteTrace
@@ -812,7 +791,7 @@ class OfficeAgent:
         self,
         config: AppConfig,
         *,
-        kernel_runtime: KernelRuntime | None = None,
+        kernel_runtime: Any | None = None,
         capability_runtime: AgentCapabilityRuntime | None = None,
         tool_executor: Any | None = None,
         host: Any | None = None,
@@ -844,7 +823,6 @@ class OfficeAgent:
             except Exception:
                 pass
         self._auth_manager = OpenAIAuthManager(config)
-        self._kernel_runtime = kernel_runtime or build_kernel_runtime(config)
         self._product_profile_key = (
             str(
                 os.environ.get("VP_APP_PROFILE") or ""
@@ -867,26 +845,8 @@ class OfficeAgent:
         self._ToolMessage = ToolMessage
         self._StructuredTool = StructuredTool
         self._ChatOpenAI = ChatOpenAI
-        tool_registry = getattr(self._kernel_runtime.registry, "tool_registry", None)
-        tool_registry_ref = str((self._kernel_runtime.registry.selected_refs or {}).get("tool_registry") or "")
-        fallback_tool_registry_ref = "tool_registry@1.0.0"
-        if tool_registry is not None and hasattr(tool_registry, "build_langchain_tools"):
-            try:
-                self._lc_tools = list(tool_registry.build_langchain_tools(agent=self))
-                self._record_module_success(
-                    kind="tool_registry",
-                    selected_ref=tool_registry_ref or fallback_tool_registry_ref,
-                )
-            except Exception as exc:
-                self._record_module_failure(
-                    kind="tool_registry",
-                    requested_ref=tool_registry_ref or fallback_tool_registry_ref,
-                    fallback_ref=fallback_tool_registry_ref,
-                    error=str(exc),
-                )
-                self._lc_tools = self._build_langchain_tools()
-        else:
-            self._lc_tools = self._build_langchain_tools()
+        _ = kernel_runtime
+        self._lc_tools = self._build_langchain_tools()
         self._lc_tool_map = {
             str(getattr(tool, "name", "") or "").strip(): tool
             for tool in self._lc_tools
@@ -922,10 +882,20 @@ class OfficeAgent:
         return legacy_normalize_model_for_auth_helper(model, auth_mode)
 
     def _debug_kernel_module_snapshot(self) -> dict[str, Any]:
-        return legacy_kernel_module_snapshot_helper(self)
+        return self._legacy_platform_removed_debug_payload("kernel_module_snapshot")
 
     def _debug_tool_registry_snapshot(self) -> dict[str, Any]:
-        return legacy_tool_registry_snapshot_helper(self)
+        return {
+            "selected_ref": "",
+            "tool_count": len(self._lc_tools),
+            "tools": [
+                {
+                    "name": str(getattr(tool, "name", "") or ""),
+                    "description": str(getattr(tool, "description", "") or "")[:200],
+                }
+                for tool in self._lc_tools
+            ],
+        }
 
     def _debug_evolution_overlay_snapshot(self) -> dict[str, Any]:
         return legacy_evolution_overlay_snapshot_helper(self)
@@ -1089,53 +1059,68 @@ class OfficeAgent:
             return True, f"{tool_name} 命中可重试错误，Coordinator 已安排局部重试。"
         return False, ""
 
+    def _legacy_platform_removed_debug_payload(self, surface: str) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "removed": True,
+            "surface": str(surface or ""),
+            "detail": "Legacy kernel/platform runtime was removed from the chat-product mainline.",
+        }
+
     def _debug_kernel_shadow_upgrade_flow(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
-        return debug_kernel_shadow_upgrade_flow_helper(self, target_router_ref)
+        _ = target_router_ref
+        return self._legacy_platform_removed_debug_payload("kernel_shadow_upgrade_flow")
 
     def _debug_kernel_shadow_validation_rejects_broken_manifest(
         self,
         broken_router_ref: str = "router_rules@999.0.0",
     ) -> dict[str, Any]:
-        return debug_kernel_shadow_validation_rejects_broken_manifest_helper(self, broken_router_ref)
+        _ = broken_router_ref
+        return self._legacy_platform_removed_debug_payload("kernel_shadow_validation_rejects_broken_manifest")
 
     def _debug_kernel_shadow_stage_and_smoke(
         self,
         target_router_ref: str = "router_rules@2.0.0",
     ) -> dict[str, Any]:
-        return debug_kernel_shadow_stage_and_smoke_helper(self, target_router_ref)
+        _ = target_router_ref
+        return self._legacy_platform_removed_debug_payload("kernel_shadow_stage_and_smoke")
 
     def _debug_kernel_shadow_replay(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
-        return debug_kernel_shadow_replay_helper(self, target_router_ref)
+        _ = target_router_ref
+        return self._legacy_platform_removed_debug_payload("kernel_shadow_replay")
 
     def _debug_kernel_shadow_contracts(self) -> dict[str, Any]:
-        return debug_kernel_shadow_contracts_helper(self)
+        return self._legacy_platform_removed_debug_payload("kernel_shadow_contracts")
 
     def _debug_kernel_active_contracts(self) -> dict[str, Any]:
-        return debug_kernel_active_contracts_helper(self)
+        return self._legacy_platform_removed_debug_payload("kernel_active_contracts")
 
     def _debug_kernel_shadow_pipeline(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
-        return debug_kernel_shadow_pipeline_helper(self, target_router_ref)
+        _ = target_router_ref
+        return self._legacy_platform_removed_debug_payload("kernel_shadow_pipeline")
 
     def _debug_kernel_shadow_pipeline_classifies_broken_manifest(
         self,
         broken_router_ref: str = "router_rules@999.0.0",
     ) -> dict[str, Any]:
-        return debug_kernel_shadow_pipeline_classifies_broken_manifest_helper(self, broken_router_ref)
+        _ = broken_router_ref
+        return self._legacy_platform_removed_debug_payload("kernel_shadow_pipeline_classifies_broken_manifest")
 
     def _debug_kernel_shadow_auto_repair_broken_manifest(
         self,
         broken_router_ref: str = "router_rules@999.0.0",
     ) -> dict[str, Any]:
-        return debug_kernel_shadow_auto_repair_broken_manifest_helper(self, broken_router_ref)
+        _ = broken_router_ref
+        return self._legacy_platform_removed_debug_payload("kernel_shadow_auto_repair_broken_manifest")
 
     def _debug_kernel_shadow_promote_rejects_path_refs(self) -> dict[str, Any]:
-        return debug_kernel_shadow_promote_rejects_path_refs_helper(self)
+        return self._legacy_platform_removed_debug_payload("kernel_shadow_promote_rejects_path_refs")
 
     def _debug_kernel_shadow_patch_worker_persists_missing_tasks(self) -> dict[str, Any]:
-        return debug_kernel_shadow_patch_worker_persists_missing_tasks_helper(self)
+        return self._legacy_platform_removed_debug_payload("kernel_shadow_patch_worker_persists_missing_tasks")
 
     def _debug_kernel_shadow_package_path_router(self) -> dict[str, Any]:
-        return debug_kernel_shadow_package_path_router_helper(self)
+        return self._legacy_platform_removed_debug_payload("kernel_shadow_package_path_router")
 
     def _debug_role_contract_matrix(self) -> dict[str, Any]:
         return debug_role_contract_matrix_helper(self)
@@ -1150,19 +1135,16 @@ class OfficeAgent:
         return legacy_route_runtime_override_force_tool_followup_helper(self)
 
     def _debug_kernel_shadow_package_syncs_module_version(self) -> dict[str, Any]:
-        return debug_kernel_shadow_package_syncs_module_version_helper(self)
+        return self._legacy_platform_removed_debug_payload("kernel_shadow_package_syncs_module_version")
 
     def _debug_kernel_shadow_promote_rejects_module_version_mismatch(self) -> dict[str, Any]:
-        return debug_kernel_shadow_promote_rejects_module_version_mismatch_helper(self)
+        return self._legacy_platform_removed_debug_payload("kernel_shadow_promote_rejects_module_version_mismatch")
 
     def _debug_kernel_shadow_promote_rejects_dependency_mismatch(self) -> dict[str, Any]:
-        return debug_kernel_shadow_promote_rejects_dependency_mismatch_helper(self)
+        return self._legacy_platform_removed_debug_payload("kernel_shadow_promote_rejects_dependency_mismatch")
 
     def _debug_kernel_shadow_self_upgrade_flow(self) -> dict[str, Any]:
-        return debug_kernel_shadow_self_upgrade_flow_helper(self)
-
-    def _module_registry(self):
-        return self._kernel_runtime.registry
+        return self._legacy_platform_removed_debug_payload("kernel_shadow_self_upgrade_flow")
 
     def _record_module_failure(
         self,
@@ -1173,16 +1155,10 @@ class OfficeAgent:
         error: str,
         mode: str | None = None,
     ) -> None:
-        self._kernel_runtime.record_module_failure(
-            kind=kind,
-            requested_ref=requested_ref,
-            fallback_ref=fallback_ref,
-            error=error,
-            mode=mode,
-        )
+        _ = (kind, requested_ref, fallback_ref, error, mode)
 
     def _record_module_success(self, *, kind: str, selected_ref: str, mode: str | None = None) -> None:
-        self._kernel_runtime.record_module_success(kind=kind, selected_ref=selected_ref, mode=mode)
+        _ = (kind, selected_ref, mode)
 
     def _ensure_openai_ca_env(self, ca_cert_path: str) -> None:
         os.environ.setdefault("SSL_CERT_FILE", ca_cert_path)
@@ -1667,12 +1643,8 @@ class OfficeAgent:
                     "如果当前用户消息只是“上网查一下/再查一下/搜一下”这类短跟进，默认延续最近一轮用户主题，不要假装丢失上下文重新问用户想查什么。\n"
                     "当用户给出 GitHub/仓库 URL 并要求读取仓库内容时，先直接联网抓取目录或正文，必要时用 run_shell 执行 git clone 后继续分析；"
                     "不要以“planner 约束只能输出计划/不能联网下载”作为拒绝理由。\n"
-                    "当用户要求模块进化、自我修复、自我升级时，允许在 shadow 副本执行修复与验证；"
-                    "禁止的是未经验证直接覆盖在线核心，不要笼统回复“这是禁止能力”。\n"
-                    "这类升级任务优先调用 kernel_shadow_self_upgrade 或 kernel_shadow_pipeline / kernel_runtime_status，"
-                    "不要改成泛化问答或反复追问。\n"
-                    "当用户问“现在能不能升级模块”时，先调用 kernel_runtime_status 给出现状；"
-                    "如果用户继续要求执行，就直接调用 kernel_shadow_self_upgrade，不要回答“不能自主升级模块”。\n"
+                    "如果用户要求已经退场的 kernel/platform 自我升级能力，必须明确说明该能力已不在当前聊天产品主线中，"
+                    "并引导回当前支持的聊天、代码、文档、图片与本地工具工作流。\n"
                     "如果参数可合理推断（如标题、默认文件名、默认目录），请直接执行并在回复里说明假设；"
                     "不要因为参数不完整而连续多轮追问。\n"
                     "联网信息不足时，先自动换来源继续抓取；即使正文不完整，也先基于可访问到的标题/摘要给临时结论，"
@@ -2897,10 +2869,8 @@ class OfficeAgent:
                                 "用户当前请求已授权你直接继续执行。",
                                 "请立即调用必要工具完成任务（例如 read/exec_command/apply_patch），",
                                 "并直接返回最终结果。",
-                                "不要再用“planner 约束只能输出计划/不能联网下载/禁止自我更新”做拒绝理由；",
-                                "涉及模块进化时应切到 shadow 修复与验证路径。",
-                                "如果用户在问“现在能不能升级模块”，先调 kernel_runtime_status 给出现状；",
-                                "如果用户要求执行升级，就直接调 kernel_shadow_self_upgrade。",
+                                "不要再用“planner 约束只能输出计划/不能联网下载”做拒绝理由；",
+                                "如果用户要求已经退场的 kernel/platform 升级能力，要明确说明该能力不在当前聊天产品主线中。",
                             ]
                         )
                     else:
@@ -4199,43 +4169,13 @@ class OfficeAgent:
         tool_events: list[ToolEvent] | None = None,
         inline_followup_context: bool = False,
     ) -> str:
-        registry = self._module_registry()
-        module = getattr(registry, "finalizer", None)
-        selected_ref = str((registry.selected_refs or {}).get("finalizer") or "")
-        fallback_ref = "finalizer@1.0.0"
-        if module is None or not hasattr(module, "sanitize"):
-            return self._sanitize_final_answer_text_impl(
-                text,
-                user_message=user_message,
-                attachment_metas=attachment_metas,
-                tool_events=tool_events,
-                inline_followup_context=inline_followup_context,
-            )
-        try:
-            sanitized = module.sanitize(
-                agent=self,
-                text=text,
-                user_message=user_message,
-                attachment_metas=attachment_metas,
-                tool_events=tool_events,
-                inline_followup_context=inline_followup_context,
-            )
-            self._record_module_success(kind="finalizer", selected_ref=selected_ref or fallback_ref)
-            return sanitized
-        except Exception as exc:
-            self._record_module_failure(
-                kind="finalizer",
-                requested_ref=selected_ref or fallback_ref,
-                fallback_ref=fallback_ref,
-                error=str(exc),
-            )
-            return self._sanitize_final_answer_text_impl(
-                text,
-                user_message=user_message,
-                attachment_metas=attachment_metas,
-                tool_events=tool_events,
-                inline_followup_context=inline_followup_context,
-            )
+        return self._sanitize_final_answer_text_impl(
+            text,
+            user_message=user_message,
+            attachment_metas=attachment_metas,
+            tool_events=tool_events,
+            inline_followup_context=inline_followup_context,
+        )
 
     def _sanitize_final_answer_text_impl(
         self,
@@ -6679,29 +6619,7 @@ class OfficeAgent:
         fallback: dict[str, Any],
         settings: ChatSettings,
     ) -> dict[str, Any]:
-        registry = self._module_registry()
-        module = getattr(registry, "policy", None)
-        selected_ref = str((registry.selected_refs or {}).get("policy") or "")
-        fallback_ref = "policy_resolver@1.0.0"
-        if module is None or not hasattr(module, "normalize_route"):
-            return self._normalize_route_decision_impl(route=route, fallback=fallback, settings=settings)
-        try:
-            normalized = module.normalize_route(
-                agent=self,
-                route=route,
-                fallback=fallback,
-                settings=settings,
-            )
-            self._record_module_success(kind="policy", selected_ref=selected_ref or fallback_ref)
-            return normalized
-        except Exception as exc:
-            self._record_module_failure(
-                kind="policy",
-                requested_ref=selected_ref or fallback_ref,
-                fallback_ref=fallback_ref,
-                error=str(exc),
-            )
-            return self._normalize_route_decision_impl(route=route, fallback=fallback, settings=settings)
+        return self._normalize_route_decision_impl(route=route, fallback=fallback, settings=settings)
 
     def _normalize_route_decision_impl(
         self,
@@ -6760,43 +6678,13 @@ class OfficeAgent:
         route_state: dict[str, Any] | None = None,
         inline_followup_context: bool = False,
     ) -> dict[str, Any]:
-        registry = self._module_registry()
-        module = getattr(registry, "router", None)
-        selected_ref = str((registry.selected_refs or {}).get("router") or "")
-        fallback_ref = "router_rules@1.0.0"
-        if module is None or not hasattr(module, "route"):
-            return self._route_request_by_rules_impl(
-                user_message=user_message,
-                attachment_metas=attachment_metas,
-                settings=settings,
-                route_state=route_state,
-                inline_followup_context=inline_followup_context,
-            )
-        try:
-            routed = module.route(
-                agent=self,
-                user_message=user_message,
-                attachment_metas=attachment_metas,
-                settings=settings,
-                route_state=route_state,
-                inline_followup_context=inline_followup_context,
-            )
-            self._record_module_success(kind="router", selected_ref=selected_ref or fallback_ref)
-            return routed
-        except Exception as exc:
-            self._record_module_failure(
-                kind="router",
-                requested_ref=selected_ref or fallback_ref,
-                fallback_ref=fallback_ref,
-                error=str(exc),
-            )
-            return self._route_request_by_rules_impl(
-                user_message=user_message,
-                attachment_metas=attachment_metas,
-                settings=settings,
-                route_state=route_state,
-                inline_followup_context=inline_followup_context,
-            )
+        return self._route_request_by_rules_impl(
+            user_message=user_message,
+            attachment_metas=attachment_metas,
+            settings=settings,
+            route_state=route_state,
+            inline_followup_context=inline_followup_context,
+        )
 
     def _route_request_by_rules_impl(
         self,
@@ -7248,38 +7136,6 @@ class OfficeAgent:
 
     def _build_llm(self, model: str, max_output_tokens: int, use_responses_api: bool | None = None):
         auth = self._auth_manager.require()
-        provider_mode = str(auth.mode or "").strip().lower()
-        registry = self._module_registry()
-        provider = registry.provider_for_mode(provider_mode) if registry is not None else None
-        selected_ref = str((registry.selected_refs or {}).get(f"provider:{provider_mode}") or "")
-        fallback_ref = (
-            "provider_codex_auth@1.0.0"
-            if provider_mode == "codex_auth"
-            else "provider_openai_api@1.0.0"
-        )
-        if provider is not None and hasattr(provider, "build_runner"):
-            try:
-                runner = provider.build_runner(
-                    agent=self,
-                    auth=auth,
-                    model=model,
-                    max_output_tokens=max_output_tokens,
-                    use_responses_api=use_responses_api,
-                )
-                self._record_module_success(
-                    kind="provider",
-                    selected_ref=selected_ref or fallback_ref,
-                    mode=provider_mode,
-                )
-                return runner
-            except Exception as exc:
-                self._record_module_failure(
-                    kind="provider",
-                    requested_ref=selected_ref or fallback_ref,
-                    fallback_ref=fallback_ref,
-                    error=str(exc),
-                    mode=provider_mode,
-                )
         return self._build_llm_direct_fallback(
             auth=auth,
             model=model,
@@ -8420,27 +8276,11 @@ class OfficeAgent:
         return json.dumps(result, ensure_ascii=False)
 
     def _kernel_runtime_status_tool(self, include_roles: bool = True, include_runtime_files: bool = False) -> str:
-        try:
-            snapshot = self._kernel_runtime.health_snapshot()
-            payload: dict[str, Any] = {
-                "ok": True,
-                "active_manifest": dict(snapshot.active_manifest),
-                "selected_modules": dict(snapshot.selected_modules),
-                "module_health": dict(snapshot.module_health),
-                "last_upgrade_run": self._kernel_runtime.read_last_upgrade_run(),
-                "last_repair_run": self._kernel_runtime.read_last_repair_run(),
-                "last_patch_worker_run": self._kernel_runtime.read_last_patch_worker_run(),
-                "last_package_run": self._kernel_runtime.read_last_package_run(),
-                "last_shadow_run": self._kernel_runtime.read_last_shadow_run(),
-            }
-            if include_runtime_files:
-                payload["runtime_files"] = dict(snapshot.runtime_files)
-            if include_roles:
-                payload["role_registry"] = self._role_registry.snapshot()
-                payload["stage4_readiness"] = self._role_runtime_controller.stage4_readiness()
-            return json.dumps(payload, ensure_ascii=False)
-        except Exception as exc:
-            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+        _ = (include_roles, include_runtime_files)
+        return json.dumps(
+            self._legacy_platform_removed_debug_payload("kernel_runtime_status_tool"),
+            ensure_ascii=False,
+        )
 
     def _kernel_shadow_pipeline_tool(
         self,
@@ -8448,29 +8288,11 @@ class OfficeAgent:
         validate_provider: bool = True,
         promote_if_healthy: bool = False,
     ) -> str:
-        try:
-            pipeline = self._kernel_runtime.run_shadow_pipeline(
-                overrides={},
-                smoke_message=smoke_message,
-                validate_provider=bool(validate_provider),
-                replay_record=None,
-                promote_if_healthy=bool(promote_if_healthy),
-            )
-            payload = {
-                "ok": bool(pipeline.get("ok")),
-                "run_id": str(pipeline.get("run_id") or ""),
-                "failure_classification": dict(pipeline.get("failure_classification") or {}),
-                "remediation_hints": list(pipeline.get("remediation_hints") or []),
-                "validation": dict(pipeline.get("validation") or {}),
-                "contracts": dict(pipeline.get("contracts") or {}),
-                "smoke": dict(pipeline.get("smoke") or {}),
-                "replay": dict(pipeline.get("replay") or {}),
-                "promotion": dict(pipeline.get("promotion") or {}),
-                "pipeline": pipeline,
-            }
-            return json.dumps(payload, ensure_ascii=False)
-        except Exception as exc:
-            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+        _ = (smoke_message, validate_provider, promote_if_healthy)
+        return json.dumps(
+            self._legacy_platform_removed_debug_payload("kernel_shadow_pipeline_tool"),
+            ensure_ascii=False,
+        )
 
     def _kernel_shadow_self_upgrade_tool(
         self,
@@ -8481,47 +8303,18 @@ class OfficeAgent:
         max_rounds: int = 2,
         promote_if_healthy: bool = True,
     ) -> str:
-        try:
-            base_upgrade_run = self._kernel_runtime.read_last_upgrade_run()
-            bootstrap_pipeline: dict[str, Any] = {}
-            bootstrap_triggered = False
-            if not isinstance(base_upgrade_run, dict) or not base_upgrade_run:
-                bootstrap_triggered = True
-                bootstrap_pipeline = self._kernel_runtime.run_shadow_pipeline(
-                    overrides={},
-                    smoke_message=smoke_message,
-                    validate_provider=bool(validate_provider),
-                    replay_record=None,
-                    promote_if_healthy=False,
-                )
-                base_upgrade_run = bootstrap_pipeline
-
-            self_upgrade = self._kernel_runtime.run_shadow_self_upgrade(
-                base_upgrade_run=base_upgrade_run if isinstance(base_upgrade_run, dict) and base_upgrade_run else None,
-                replay_record=None,
-                smoke_message=smoke_message,
-                validate_provider=bool(validate_provider),
-                max_attempts=max(1, min(5, int(max_attempts))),
-                max_tasks=max(1, min(10, int(max_tasks))),
-                max_rounds=max(1, min(5, int(max_rounds))),
-                promote_if_healthy=bool(promote_if_healthy),
-            )
-            payload = {
-                "ok": bool(self_upgrade.get("ok")),
-                "bootstrap_triggered": bootstrap_triggered,
-                "bootstrap_upgrade_run_id": str(bootstrap_pipeline.get("run_id") or ""),
-                "base_upgrade_run_id": str((base_upgrade_run or {}).get("run_id") or ""),
-                "self_upgrade_run_id": str(self_upgrade.get("run_id") or ""),
-                "stop_reason": str(self_upgrade.get("stop_reason") or ""),
-                "final_pipeline": dict(self_upgrade.get("final_pipeline") or {}),
-                "promotion": dict(self_upgrade.get("promotion") or {}),
-                "repair": dict(self_upgrade.get("repair") or {}),
-                "patch_worker": dict(self_upgrade.get("patch_worker") or {}),
-                "self_upgrade": self_upgrade,
-            }
-            return json.dumps(payload, ensure_ascii=False)
-        except Exception as exc:
-            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+        _ = (
+            smoke_message,
+            validate_provider,
+            max_attempts,
+            max_tasks,
+            max_rounds,
+            promote_if_healthy,
+        )
+        return json.dumps(
+            self._legacy_platform_removed_debug_payload("kernel_shadow_self_upgrade_tool"),
+            ensure_ascii=False,
+        )
 
     def _list_sessions_tool(self, max_sessions: int = 20) -> str:
         result = self.tools.list_sessions(max_sessions=max_sessions)
@@ -9029,7 +8822,7 @@ class OfficeAgent:
 def create_office_runtime_backend(
     config: Any,
     *,
-    kernel_runtime: Any,
+    kernel_runtime: Any | None = None,
     capability_runtime: Any | None = None,
     tool_executor: Any | None = None,
     host: Any | None = None,

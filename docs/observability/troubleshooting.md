@@ -1,71 +1,84 @@
 # Troubleshooting Guide
 
-## Start With The Smallest Repro
+## Start With The Product Path
 
-Use the minimal demo first:
+Use the chat product entrypoint first:
 
 ```bash
-python scripts/demo_minimal_agent_os.py --check
+./run.sh
 ```
 
-If that fails, the issue is below the LLM layer and usually sits in KernelHost, ToolRegistry, ProviderRegistry, or workspace access.
+On Windows:
+
+```powershell
+.\run.ps1
+```
+
+If the app starts but behavior looks wrong, reproduce the issue in the current chat UI before checking lower-level diagnostics.
 
 ## Where To Look
 
-- request path: [`docs/architecture/current_execution_path.md`](../architecture/current_execution_path.md)
+- request/stream behavior: chat UI + browser devtools network tab
 - trace fields: [`docs/observability/trace_guide.md`](trace_guide.md)
 - tool/provider degradation: [`docs/operations/tool_provider_degradation_guide.md`](../operations/tool_provider_degradation_guide.md)
+- runtime snapshot: `GET /api/runtime-status`
+- workbench diagnostics: `Run`, `Logs`, `Recent Tools`, `Context Meter`
 
 ## Common Failure Modes
 
-### Module not found
+### Provider auth missing or model unavailable
 
 Symptoms:
 
-- `business module not found`
-- trace stops before `module_complete`
+- assistant replies that no model auth is available
+- requests fail before any tool call happens
+- provider/model switches appear to recover the issue
 
 Check:
 
-- module registration in `assemble_runtime()`
-- manifest validation
-- `KernelHost.resolve_module(...)`
+- provider API key in `Settings`
+- `.env` provider defaults
+- `GET /api/runtime-status` provider/auth snapshot
 
-### Provider degraded or circuit open
+### Tool dispatch works but the answer stalls
 
 Symptoms:
 
-- tool dispatch happens but no successful result arrives
-- trace contains `provider_failed` or `provider_circuit_open`
+- final text appears
+- send button keeps spinning too long
+- thread or runtime metadata updates lag behind the message
 
 Check:
 
-- `kernel.health_snapshot()['registry']['provider_states']`
-- provider health check
-- fallback provider availability
+- SSE stream completion in browser devtools
+- `Run` panel live state
+- background refresh logs
+
+### Attachments are present but not used
+
+Symptoms:
+
+- uploaded image, mail, or document is ignored
+- assistant asks for missing context even though an attachment exists
+
+Check:
+
+- upload succeeded in the network tab
+- `active_attachments` and current focus in the workbench
+- attachment/tool events in the current turn log
 
 ### Trace exists but is not detailed enough
 
 Set:
 
-- `AGENT_OS_TRACE=1`
-- `AGENT_OS_TRACE_VERBOSE=1`
+- `VP_TRACE=1`
 
-Then inspect `artifacts/agent_os_traces/`.
-
-### HTTP service runs but product path feels wrong
-
-Check whether you are using the correct entrypoint:
-
-- day-to-day app: `./run.sh` or `./run.ps1`
-- role lab: `./run-role-agent-lab.sh`
-- main product alias: `./run-multi-agent-robot.sh`
-- legacy alias: `./run-kernel-robot.sh`
+Then inspect the current thread log and shadow log output under `app/data/`.
 
 ## Escalation Order
 
-1. minimal demo
-2. kernel trace
-3. provider state
-4. module health
-5. full HTTP/UI reproduction
+1. reproduce in the current chat UI
+2. inspect `Run` / `Logs` / `Recent Tools`
+3. inspect `/api/runtime-status`
+4. inspect provider/auth configuration
+5. full HTTP/UI reproduction with attachment/tool evidence

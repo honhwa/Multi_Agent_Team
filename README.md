@@ -8,7 +8,7 @@ Single repository. Multiple user languages.
 - [Windows Guide](README.windows.md)
 - [Release Flow](RELEASING.md)
 
-Current stable release: `v2.3.1`
+Current stable release: `v2.3.2`
 
 This repository keeps one code mainline and localizes user-facing text through a locale layer instead of splitting into separate language-specific repos.
 
@@ -17,6 +17,4 @@ Default deployment language can be set in `.env` with `VP_DEFAULT_LOCALE`.
 - Supported values: `zh-CN`, `ja-JP`, `en`
 - Effective priority: current user selection in Settings > local browser preference > browser language > `VP_DEFAULT_LOCALE`
 
-Current product focus is the single-agent chat workbench. Historical kernel / research / swarm paths remain available only as a legacy compatibility surface during the migration to a chat-product-only runtime.
-
-- [Legacy Compatibility Notes](docs/legacy/README.md)
+Current product focus is the single-agent chat workbench.

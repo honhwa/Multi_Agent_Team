@@ -26,12 +26,8 @@ from app.context_meter import (
     ensure_compaction_state,
     maybe_auto_compact_session,
 )
-from app.core.bootstrap import build_kernel_runtime
-from app.core.healthcheck import build_kernel_health_payload
-from app.evals import run_regression_evals
 from app.evolution import EvolutionStore
 from app.i18n import normalize_locale, supported_locales, translate
-from app.legacy_platform_runtime import get_legacy_agent_os_runtime
 from app.models import (
     BootstrapResponse,
     ChatRequest,
@@ -39,20 +35,7 @@ from app.models import (
     ClearStatsResponse,
     DeleteThreadResponse,
     DeleteSessionResponse,
-    EvalCaseResult,
-    EvalRunRequest,
-    EvalRunResponse,
-    EvolutionRuntimeResponse,
     HealthResponse,
-    KernelManifestUpdateRequest,
-    KernelShadowPipelineRequest,
-    KernelShadowAutoRepairRequest,
-    KernelShadowPackageRequest,
-    KernelShadowPatchWorkerRequest,
-    KernelShadowReplayRequest,
-    KernelShadowSelfUpgradeRequest,
-    KernelRuntimeResponse,
-    KernelShadowSmokeRequest,
     NewSessionResponse,
     NewSessionRequest,
     NewThreadResponse,
@@ -91,7 +74,6 @@ from app.models import (
     WorkbenchToolsResponse,
 )
 from app.openai_auth import OpenAIAuthManager
-from app.operations_overview import build_platform_operations_overview
 from app.pricing import estimate_usage_cost
 from app import session_context as session_context_impl
 from app.session_context import normalize_attachment_ids
@@ -109,18 +91,16 @@ upload_store = UploadStore(config.uploads_dir)
 token_stats_store = TokenStatsStore(config.token_stats_path)
 shadow_log_store = ShadowLogStore(config.shadow_logs_dir)
 evolution_store = EvolutionStore(config.overlay_profile_path, config.evolution_logs_dir)
-kernel_runtime = build_kernel_runtime(config)
 chat_product_runtime = ChatProductRuntime(config)
 vintage_programmer_runtime = VintageProgrammerRuntime(
     config=config,
-    kernel_runtime=kernel_runtime,
     agent_dir=AGENT_DIR,
 )
 workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "2.3.1"
+APP_VERSION = "2.3.2"
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
 _provider_runtime_lock = threading.Lock()
@@ -165,7 +145,6 @@ def _resolve_build_version() -> str:
 
 
 BUILD_VERSION = _resolve_build_version()
-LEGACY_AGENT_DIR = Path(__file__).resolve().parent / "agents"
 
 
 class AgentRunQueue:
@@ -231,38 +210,6 @@ class _AgentRunQueueTicket:
 run_queue = AgentRunQueue(config.max_concurrent_runs)
 
 
-def get_kernel_runtime():
-    return kernel_runtime
-
-
-def _list_legacy_agent_manifests() -> list[dict[str, Any]]:
-    manifests: list[dict[str, Any]] = []
-    if not LEGACY_AGENT_DIR.is_dir():
-        return manifests
-    for manifest_path in sorted(LEGACY_AGENT_DIR.glob("*/manifest.json")):
-        agent_id = manifest_path.parent.name
-        payload: dict[str, Any] = {
-            "id": agent_id,
-            "name": agent_id,
-            "title": agent_id,
-            "path": str(manifest_path.parent),
-        }
-        try:
-            raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                payload.update(
-                    {
-                        "id": str(raw.get("id") or agent_id),
-                        "name": str(raw.get("name") or raw.get("id") or agent_id),
-                        "title": str(raw.get("title") or raw.get("name") or raw.get("id") or agent_id),
-                    }
-                )
-        except Exception:
-            pass
-        manifests.append(payload)
-    return manifests
-
-
 def get_project_store() -> ProjectStore:
     return project_store
 
@@ -273,11 +220,6 @@ def get_evolution_store() -> EvolutionStore:
 
 def get_chat_product_runtime() -> ChatProductRuntime:
     return chat_product_runtime
-
-
-def get_agent_os_runtime() -> Any:
-    return get_legacy_agent_os_runtime(config=config, kernel_runtime=kernel_runtime)
-
 
 def get_vintage_programmer_runtime() -> VintageProgrammerRuntime:
     return vintage_programmer_runtime
@@ -355,7 +297,6 @@ def _provider_runtime(provider: str) -> tuple[AppConfig, VintageProgrammerRuntim
             provider_config = build_provider_config(config, normalized)
             cached = VintageProgrammerRuntime(
                 config=provider_config,
-                kernel_runtime=kernel_runtime,
                 agent_dir=AGENT_DIR,
             )
             _provider_runtime_cache[normalized] = cached
@@ -506,31 +447,6 @@ def runtime_status(project_id: str | None = None, model: str | None = None, max_
     )
 
 
-@app.get("/api/agents")
-def list_legacy_agents() -> dict[str, Any]:
-    agents = _list_legacy_agent_manifests()
-    return {
-        "ok": True,
-        "count": len(agents),
-        "agents": agents,
-    }
-
-
-@app.post("/api/agents/{agent_id}/reload")
-def reload_legacy_agent(agent_id: str) -> dict[str, Any]:
-    normalized = str(agent_id or "").strip()
-    if not normalized:
-        raise HTTPException(status_code=400, detail="agent_id is required")
-    known = {str(item.get("id") or "") for item in _list_legacy_agent_manifests()}
-    if normalized not in known:
-        raise HTTPException(status_code=404, detail=f"Unknown agent: {normalized}")
-    return {
-        "ok": True,
-        "agent_id": normalized,
-        "reloaded": True,
-    }
-
-
 @app.get("/api/workbench/tools", response_model=WorkbenchToolsResponse)
 def workbench_tools() -> WorkbenchToolsResponse:
     payload = get_vintage_programmer_runtime().descriptor()
@@ -668,87 +584,6 @@ def workbench_write_spec(name: str, req: SpecUpsertRequest, locale: str | None =
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-def _kernel_runtime_response(
-    *,
-    ok: bool,
-    detail: str = "",
-    validation: dict[str, object] | None = None,
-    contracts: dict[str, object] | None = None,
-    smoke: dict[str, object] | None = None,
-    replay: dict[str, object] | None = None,
-    pipeline: dict[str, object] | None = None,
-    repair: dict[str, object] | None = None,
-    patch_worker: dict[str, object] | None = None,
-) -> KernelRuntimeResponse:
-    kernel_health = build_kernel_health_payload(get_kernel_runtime())
-    evolution_payload = get_evolution_store().runtime_payload(limit=10)
-    tool_registry = get_agent_os_runtime().debug_tool_registry_snapshot()
-    return KernelRuntimeResponse(
-        ok=ok,
-        detail=detail,
-        validation=dict(validation or {}),
-        contracts=dict(contracts or {}),
-        smoke=dict(smoke or {}),
-        replay=dict(replay or {}),
-        pipeline=dict(pipeline or {}),
-        repair=dict(repair or {}),
-        patch_worker=dict(patch_worker or {}),
-        kernel_active_manifest=dict(kernel_health.get("active_manifest") or {}),
-        kernel_shadow_manifest=dict(kernel_health.get("shadow_manifest") or {}),
-        kernel_shadow_validation=dict(kernel_health.get("shadow_validation") or {}),
-        kernel_shadow_promote_check=dict(kernel_health.get("shadow_promote_check") or {}),
-        kernel_rollback_pointer=dict(kernel_health.get("rollback_pointer") or {}),
-        kernel_last_shadow_run=dict(kernel_health.get("last_shadow_run") or {}),
-        kernel_last_upgrade_run=dict(kernel_health.get("last_upgrade_run") or {}),
-        kernel_last_repair_run=dict(kernel_health.get("last_repair_run") or {}),
-        kernel_last_patch_worker_run=dict(kernel_health.get("last_patch_worker_run") or {}),
-        kernel_last_package_run=dict(kernel_health.get("last_package_run") or {}),
-        kernel_selected_modules=dict(kernel_health.get("selected_modules") or {}),
-        kernel_module_health=dict(kernel_health.get("module_health") or {}),
-        kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
-        kernel_tool_registry=dict(tool_registry or {}),
-        assistant_overlay_profile=dict(evolution_payload.get("overlay_profile") or {}),
-        assistant_evolution_recent=list(evolution_payload.get("recent_events") or []),
-    )
-
-
-@app.get("/api/evolution/runtime", response_model=EvolutionRuntimeResponse)
-def evolution_runtime_state(limit: int = 10) -> EvolutionRuntimeResponse:
-    payload = get_evolution_store().runtime_payload(limit=limit)
-    return EvolutionRuntimeResponse(
-        ok=True,
-        detail="当前个体覆层与最近进化日志。",
-        assistant_overlay_profile=dict(payload.get("overlay_profile") or {}),
-        assistant_evolution_recent=list(payload.get("recent_events") or []),
-    )
-
-
-@app.get("/api/operations/overview")
-def platform_operations_overview() -> dict[str, Any]:
-    repo_root = Path(__file__).resolve().parent.parent
-    return build_platform_operations_overview(repo_root)
-
-
-def _find_shadow_replay_record(run_id: str | None = None) -> dict[str, Any] | None:
-    run_id_text = str(run_id or "").strip()
-    if run_id_text:
-        return shadow_log_store.find_run(run_id_text)
-    recent = shadow_log_store.list_recent(limit=1)
-    return recent[0] if recent else None
-
-
-def _find_upgrade_run(run_id: str | None = None) -> dict[str, Any] | None:
-    runtime = get_kernel_runtime()
-    payload = runtime.find_upgrade_run(run_id)
-    return payload if isinstance(payload, dict) and payload else None
-
-
-def _find_repair_run(run_id: str | None = None) -> dict[str, Any] | None:
-    runtime = get_kernel_runtime()
-    payload = runtime.find_repair_run(run_id)
-    return payload if isinstance(payload, dict) and payload else None
 
 
 def _default_project() -> dict[str, Any]:
@@ -1010,400 +845,6 @@ def _thread_detail_response_payload(session_id: str, max_turns: int = 200) -> Th
         context_meter=context_meter,
         compaction_status=compaction_status,
         turns=turns,
-    )
-
-
-@app.get("/api/kernel/runtime", response_model=KernelRuntimeResponse)
-def kernel_runtime_state() -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    return _kernel_runtime_response(
-        ok=True,
-        detail="内核运行时状态。",
-        validation=runtime.validate_shadow_manifest(),
-    )
-
-
-@app.get("/api/kernel/repairs", response_model=KernelRuntimeResponse)
-def kernel_repair_history(limit: int = 10) -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    runs = runtime.list_repair_runs(limit=limit)
-    summary = [
-        {
-            "run_id": str(item.get("run_id") or ""),
-            "ok": bool(item.get("ok")),
-            "base_upgrade_run_id": str(item.get("base_upgrade_run_id") or ""),
-            "strategy": str(item.get("strategy") or ""),
-            "attempt_count": len(item.get("attempts") or []) if isinstance(item.get("attempts"), list) else 0,
-            "finished_at": str(item.get("finished_at") or ""),
-        }
-        for item in runs
-    ]
-    return _kernel_runtime_response(
-        ok=True,
-        detail="最近 repair attempts。",
-        repair={"repair_runs": summary},
-    )
-
-
-@app.get("/api/kernel/patch-workers", response_model=KernelRuntimeResponse)
-def kernel_patch_worker_history(limit: int = 10) -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    runs = runtime.list_patch_worker_runs(limit=limit)
-    summary = [
-        {
-            "run_id": str(item.get("run_id") or ""),
-            "ok": bool(item.get("ok")),
-            "base_repair_run_id": str(item.get("base_repair_run_id") or ""),
-            "task_count": len(item.get("executed_tasks") or []) if isinstance(item.get("executed_tasks"), list) else 0,
-            "round_count": int(item.get("round_count") or 0),
-            "stop_reason": str(item.get("stop_reason") or ""),
-            "finished_at": str(item.get("finished_at") or ""),
-        }
-        for item in runs
-    ]
-    return _kernel_runtime_response(
-        ok=True,
-        detail="最近 patch worker runs。",
-        patch_worker={"patch_worker_runs": summary},
-    )
-
-
-@app.get("/api/kernel/packages", response_model=KernelRuntimeResponse)
-def kernel_package_history(limit: int = 10) -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    runs = runtime.list_package_runs(limit=limit)
-    summary = [
-        {
-            "run_id": str(item.get("run_id") or ""),
-            "ok": bool(item.get("ok")),
-            "packaged_count": len(item.get("packaged_modules") or []) if isinstance(item.get("packaged_modules"), list) else 0,
-            "packaged_labels": list(item.get("packaged_labels") or []) if isinstance(item.get("packaged_labels"), list) else [],
-            "finished_at": str(item.get("finished_at") or ""),
-        }
-        for item in runs
-    ]
-    return _kernel_runtime_response(
-        ok=True,
-        detail="最近 package runs。",
-        pipeline={"package_runs": summary},
-    )
-
-
-@app.get("/api/kernel/upgrades", response_model=KernelRuntimeResponse)
-def kernel_upgrade_history(limit: int = 10) -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    runs = runtime.list_upgrade_runs(limit=limit)
-    summary = [
-        {
-            "run_id": str(item.get("run_id") or ""),
-            "ok": bool(item.get("ok")),
-            "started_at": str(item.get("started_at") or ""),
-            "finished_at": str(item.get("finished_at") or ""),
-            "failed_stage": str(((item.get("failure_classification") or {}) if isinstance(item.get("failure_classification"), dict) else {}).get("failed_stage") or ""),
-            "category": str(((item.get("failure_classification") or {}) if isinstance(item.get("failure_classification"), dict) else {}).get("category") or ""),
-        }
-        for item in runs
-    ]
-    return _kernel_runtime_response(
-        ok=True,
-        detail="最近 upgrade attempts。",
-        pipeline={"upgrade_runs": summary},
-    )
-
-
-@app.post("/api/kernel/shadow/stage", response_model=KernelRuntimeResponse)
-def kernel_shadow_stage(req: KernelManifestUpdateRequest) -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    result = runtime.stage_shadow_manifest(overrides=req.model_dump(exclude_none=True))
-    return _kernel_runtime_response(
-        ok=bool(result.get("ok")),
-        detail="shadow manifest 已更新。",
-        validation=result.get("validation") if isinstance(result.get("validation"), dict) else {},
-    )
-
-
-@app.post("/api/kernel/shadow/validate", response_model=KernelRuntimeResponse)
-def kernel_shadow_validate() -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    validation = runtime.validate_shadow_manifest()
-    return _kernel_runtime_response(
-        ok=bool(validation.get("ok")),
-        detail="shadow manifest 校验完成。",
-        validation=validation,
-    )
-
-
-@app.get("/api/kernel/shadow/promote-check", response_model=KernelRuntimeResponse)
-def kernel_shadow_promote_check() -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    promote_check = runtime.shadow_promote_check()
-    return _kernel_runtime_response(
-        ok=bool(promote_check.get("ok")),
-        detail="shadow promote 检查完成。",
-        validation=runtime.validate_shadow_manifest(),
-        pipeline={"promote_check": promote_check},
-    )
-
-
-@app.post("/api/kernel/shadow/contracts", response_model=KernelRuntimeResponse)
-def kernel_shadow_contracts() -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    contracts = runtime.run_shadow_contracts()
-    validation = runtime.validate_shadow_manifest()
-    return _kernel_runtime_response(
-        ok=bool(contracts.get("ok")),
-        detail="shadow contracts 已执行。",
-        validation=validation,
-        contracts=contracts,
-    )
-
-
-@app.post("/api/kernel/active/contracts", response_model=KernelRuntimeResponse)
-def kernel_active_contracts() -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    contracts = runtime.run_active_contracts()
-    validation = runtime.validate_active_manifest()
-    return _kernel_runtime_response(
-        ok=bool(contracts.get("ok")),
-        detail="active contracts 已执行。",
-        validation=validation,
-        contracts=contracts,
-    )
-
-
-@app.post("/api/kernel/shadow/smoke", response_model=KernelRuntimeResponse)
-def kernel_shadow_smoke(req: KernelShadowSmokeRequest) -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    smoke = runtime.run_shadow_smoke(
-        user_message=req.message,
-        validate_provider=bool(req.validate_provider),
-    )
-    return _kernel_runtime_response(
-        ok=bool(smoke.get("ok")),
-        detail="shadow smoke 已执行。",
-        validation=runtime.validate_shadow_manifest(),
-        smoke=smoke,
-    )
-
-
-@app.get("/api/kernel/shadow/logs", response_model=KernelRuntimeResponse)
-def kernel_shadow_logs(limit: int = 10) -> KernelRuntimeResponse:
-    records = shadow_log_store.list_recent(limit=limit)
-    summary = [
-        {
-            "run_id": str(item.get("run_id") or ""),
-            "logged_at": str(item.get("logged_at") or ""),
-            "session_id": str(item.get("session_id") or ""),
-            "message_preview": str(item.get("message_preview") or ""),
-            "effective_model": str(item.get("effective_model") or ""),
-        }
-        for item in records
-    ]
-    return _kernel_runtime_response(
-        ok=True,
-        detail="最近 shadow log 列表。",
-        pipeline={"recent_runs": summary},
-    )
-
-
-@app.post("/api/kernel/shadow/replay", response_model=KernelRuntimeResponse)
-def kernel_shadow_replay(req: KernelShadowReplayRequest) -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    record = _find_shadow_replay_record(req.run_id)
-    if not isinstance(record, dict):
-        return _kernel_runtime_response(
-            ok=False,
-            detail="未找到可回放的 shadow log 记录。",
-        )
-    replay = runtime.run_shadow_replay(replay_record=record)
-    return _kernel_runtime_response(
-        ok=bool(replay.get("ok")),
-        detail="shadow replay 已执行。",
-        validation=runtime.validate_shadow_manifest(),
-        replay=replay,
-    )
-
-
-@app.post("/api/kernel/shadow/promote", response_model=KernelRuntimeResponse)
-def kernel_shadow_promote() -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    result = runtime.promote_shadow_manifest()
-    return _kernel_runtime_response(
-        ok=bool(result.get("ok")),
-        detail="shadow manifest promote 完成。" if result.get("ok") else "shadow manifest promote 失败。",
-        validation=result.get("validation") if isinstance(result.get("validation"), dict) else {},
-    )
-
-
-@app.post("/api/kernel/rollback", response_model=KernelRuntimeResponse)
-def kernel_runtime_rollback() -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    result = runtime.rollback_active_manifest()
-    return _kernel_runtime_response(
-        ok=bool(result.get("ok")),
-        detail="active manifest 回滚完成。" if result.get("ok") else "active manifest 回滚失败。",
-        validation=result.get("validation") if isinstance(result.get("validation"), dict) else {},
-    )
-
-
-@app.post("/api/kernel/shadow/pipeline", response_model=KernelRuntimeResponse)
-def kernel_shadow_pipeline(req: KernelShadowPipelineRequest) -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    overrides = req.model_dump(
-        exclude_none=True,
-        include={"router", "policy", "attachment_context", "finalizer", "tool_registry", "providers"},
-    )
-    replay_record = _find_shadow_replay_record(req.replay_run_id) if (req.replay_run_id or shadow_log_store.list_recent(limit=1)) else None
-    pipeline = runtime.run_shadow_pipeline(
-        overrides=overrides,
-        smoke_message=req.smoke_message,
-        validate_provider=bool(req.validate_provider),
-        replay_record=replay_record if isinstance(replay_record, dict) else None,
-        promote_if_healthy=bool(req.promote_if_healthy),
-    )
-    validation = pipeline.get("validation") if isinstance(pipeline.get("validation"), dict) else {}
-    contracts = pipeline.get("contracts") if isinstance(pipeline.get("contracts"), dict) else {}
-    smoke = pipeline.get("smoke") if isinstance(pipeline.get("smoke"), dict) else {}
-    replay = pipeline.get("replay") if isinstance(pipeline.get("replay"), dict) else {}
-
-    return _kernel_runtime_response(
-        ok=bool(pipeline.get("ok")),
-        detail="shadow pipeline 已执行。",
-        validation=validation,
-        contracts=contracts,
-        smoke=smoke,
-        replay=replay,
-        pipeline=pipeline,
-    )
-
-
-@app.post("/api/kernel/shadow/auto-repair", response_model=KernelRuntimeResponse)
-def kernel_shadow_auto_repair(req: KernelShadowAutoRepairRequest) -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    base_upgrade_run = _find_upgrade_run(req.upgrade_run_id)
-    if not isinstance(base_upgrade_run, dict):
-        return _kernel_runtime_response(
-            ok=False,
-            detail="未找到可修复的 upgrade attempt。",
-        )
-    replay_source_run_id = req.replay_run_id or str(base_upgrade_run.get("replay_source_run_id") or "").strip() or None
-    replay_record = _find_shadow_replay_record(replay_source_run_id)
-    repair = runtime.run_shadow_auto_repair(
-        base_upgrade_run=base_upgrade_run,
-        replay_record=replay_record if isinstance(replay_record, dict) else None,
-        smoke_message=req.smoke_message,
-        validate_provider=req.validate_provider,
-        promote_if_healthy=req.promote_if_healthy,
-        max_attempts=req.max_attempts,
-    )
-    repaired_pipeline = repair.get("repaired_pipeline") if isinstance(repair.get("repaired_pipeline"), dict) else {}
-    validation = repaired_pipeline.get("validation") if isinstance(repaired_pipeline.get("validation"), dict) else runtime.validate_shadow_manifest()
-    contracts = repaired_pipeline.get("contracts") if isinstance(repaired_pipeline.get("contracts"), dict) else {}
-    smoke = repaired_pipeline.get("smoke") if isinstance(repaired_pipeline.get("smoke"), dict) else {}
-    replay = repaired_pipeline.get("replay") if isinstance(repaired_pipeline.get("replay"), dict) else {}
-    return _kernel_runtime_response(
-        ok=bool(repair.get("ok")),
-        detail="shadow auto-repair 已执行。",
-        validation=validation,
-        contracts=contracts,
-        smoke=smoke,
-        replay=replay,
-        repair=repair,
-    )
-
-
-@app.post("/api/kernel/shadow/patch-worker", response_model=KernelRuntimeResponse)
-def kernel_shadow_patch_worker(req: KernelShadowPatchWorkerRequest) -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    repair_run = _find_repair_run(req.repair_run_id)
-    if not isinstance(repair_run, dict):
-        return _kernel_runtime_response(
-            ok=False,
-            detail="未找到可执行 patch worker 的 repair run。",
-        )
-    replay_source_run_id = req.replay_run_id or str((repair_run.get("repaired_pipeline") or {}).get("replay_source_run_id") or "").strip() or None
-    replay_record = _find_shadow_replay_record(replay_source_run_id)
-    patch_worker = runtime.run_shadow_patch_worker(
-        repair_run=repair_run,
-        replay_record=replay_record if isinstance(replay_record, dict) else None,
-        max_tasks=req.max_tasks,
-        max_rounds=req.max_rounds,
-        auto_package_on_success=bool(req.auto_package_on_success),
-        promote_if_healthy=req.promote_if_healthy,
-    )
-    pipeline = patch_worker.get("pipeline") if isinstance(patch_worker.get("pipeline"), dict) else {}
-    validation = pipeline.get("validation") if isinstance(pipeline.get("validation"), dict) else runtime.validate_shadow_manifest()
-    contracts = pipeline.get("contracts") if isinstance(pipeline.get("contracts"), dict) else {}
-    smoke = pipeline.get("smoke") if isinstance(pipeline.get("smoke"), dict) else {}
-    replay = pipeline.get("replay") if isinstance(pipeline.get("replay"), dict) else {}
-    return _kernel_runtime_response(
-        ok=bool(patch_worker.get("ok")),
-        detail="shadow patch worker 已执行。",
-        validation=validation,
-        contracts=contracts,
-        smoke=smoke,
-        replay=replay,
-        pipeline=pipeline,
-        patch_worker=patch_worker,
-    )
-
-
-@app.post("/api/kernel/shadow/package", response_model=KernelRuntimeResponse)
-def kernel_shadow_package(req: KernelShadowPackageRequest) -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    package_run = runtime.package_shadow_modules(
-        labels=req.labels,
-        package_note=req.package_note,
-        source_run_id=str(req.source_run_id or ""),
-        repair_run_id=str(req.repair_run_id or ""),
-        patch_worker_run_id=str(req.patch_worker_run_id or ""),
-        runtime_profile=req.runtime_profile,
-    )
-    validation = package_run.get("validation") if isinstance(package_run.get("validation"), dict) else runtime.validate_shadow_manifest()
-    return _kernel_runtime_response(
-        ok=bool(package_run.get("ok")),
-        detail="shadow modules 已打包为正式版本。" if package_run.get("ok") else "shadow modules 打包失败。",
-        validation=validation,
-        pipeline={"package_run": package_run},
-    )
-
-
-@app.post("/api/kernel/shadow/self-upgrade", response_model=KernelRuntimeResponse)
-def kernel_shadow_self_upgrade(req: KernelShadowSelfUpgradeRequest) -> KernelRuntimeResponse:
-    runtime = get_kernel_runtime()
-    base_upgrade_run = _find_upgrade_run(req.upgrade_run_id)
-    if not isinstance(base_upgrade_run, dict):
-        return _kernel_runtime_response(
-            ok=False,
-            detail="未找到可执行 self-upgrade 的 upgrade run。",
-        )
-    replay_source_run_id = req.replay_run_id or str(base_upgrade_run.get("replay_source_run_id") or "").strip() or None
-    replay_record = _find_shadow_replay_record(replay_source_run_id)
-    self_upgrade = runtime.run_shadow_self_upgrade(
-        base_upgrade_run=base_upgrade_run,
-        replay_record=replay_record if isinstance(replay_record, dict) else None,
-        smoke_message=req.smoke_message,
-        validate_provider=req.validate_provider,
-        max_attempts=req.max_attempts,
-        max_tasks=req.max_tasks,
-        max_rounds=req.max_rounds,
-        promote_if_healthy=bool(req.promote_if_healthy),
-    )
-    final_pipeline = self_upgrade.get("final_pipeline") if isinstance(self_upgrade.get("final_pipeline"), dict) else {}
-    validation = final_pipeline.get("validation") if isinstance(final_pipeline.get("validation"), dict) else runtime.validate_shadow_manifest()
-    contracts = final_pipeline.get("contracts") if isinstance(final_pipeline.get("contracts"), dict) else {}
-    smoke = final_pipeline.get("smoke") if isinstance(final_pipeline.get("smoke"), dict) else {}
-    replay = final_pipeline.get("replay") if isinstance(final_pipeline.get("replay"), dict) else {}
-    return _kernel_runtime_response(
-        ok=bool(self_upgrade.get("ok")),
-        detail="shadow self-upgrade 已执行。",
-        validation=validation,
-        contracts=contracts,
-        smoke=smoke,
-        replay=replay,
-        pipeline={"self_upgrade": self_upgrade},
-        repair=self_upgrade.get("repair") if isinstance(self_upgrade.get("repair"), dict) else {},
-        patch_worker=self_upgrade.get("patch_worker") if isinstance(self_upgrade.get("patch_worker"), dict) else {},
     )
 
 
@@ -1705,39 +1146,6 @@ def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
         docker_message=docker_msg,
         summary=summary,
         steps=steps,
-    )
-
-
-@app.post("/api/evals/run", response_model=EvalRunResponse)
-def run_evals(req: EvalRunRequest) -> EvalRunResponse:
-    run_id = str(uuid.uuid4())
-    summary = run_regression_evals(
-        include_optional=bool(req.include_optional),
-        name_filter=str(req.name_filter or "").strip(),
-    )
-    passed = int(summary.get("passed") or 0)
-    failed = int(summary.get("failed") or 0)
-    skipped = int(summary.get("skipped") or 0)
-    total = int(summary.get("total") or 0)
-    duration_ms = int(summary.get("duration_ms") or 0)
-    summary_text = (
-        f"回归测试通过：passed={passed}, failed={failed}, skipped={skipped}, total={total}"
-        if failed == 0
-        else f"回归测试失败：passed={passed}, failed={failed}, skipped={skipped}, total={total}"
-    )
-    return EvalRunResponse(
-        ok=bool(summary.get("ok")),
-        run_id=run_id,
-        include_optional=bool(summary.get("include_optional")),
-        name_filter=str(summary.get("name_filter") or ""),
-        cases_path=str(summary.get("cases_path") or ""),
-        passed=passed,
-        failed=failed,
-        skipped=skipped,
-        total=total,
-        duration_ms=duration_ms,
-        summary=summary_text,
-        results=[EvalCaseResult(**item) for item in summary.get("results") or [] if isinstance(item, dict)],
     )
 
 
@@ -2250,33 +1658,11 @@ def _process_chat_request(
             )
         session_context_impl.sync_session_memory_state(session)
 
-        runtime = get_kernel_runtime()
-        attachment_registry = runtime.registry
-        attachment_module = attachment_registry.attachment_context
-        attachment_selected_ref = str((attachment_registry.selected_refs or {}).get("attachment_context") or "")
-        attachment_fallback_ref = "attachment_context@1.0.0"
-        try:
-            attachment_context = attachment_module.resolve_attachment_context(
-                session=session,
-                message=req.message,
-                requested_attachment_ids=req.attachment_ids,
-            )
-            runtime.record_module_success(
-                kind="attachment_context",
-                selected_ref=attachment_selected_ref or attachment_fallback_ref,
-            )
-        except Exception as exc:
-            runtime.record_module_failure(
-                kind="attachment_context",
-                requested_ref=attachment_selected_ref or attachment_fallback_ref,
-                fallback_ref=attachment_fallback_ref,
-                error=str(exc),
-            )
-            attachment_context = session_context_impl.resolve_attachment_context(
-                session,
-                message=req.message,
-                requested_attachment_ids=req.attachment_ids,
-            )
+        attachment_context = session_context_impl.resolve_attachment_context(
+            session,
+            message=req.message,
+            requested_attachment_ids=req.attachment_ids,
+        )
         requested_attachment_ids = attachment_context["requested_attachment_ids"]
         clear_attachment_context = bool(attachment_context["clear_attachment_context"])
         attachment_context_mode = str(attachment_context["attachment_context_mode"] or "none")
@@ -2330,55 +1716,20 @@ def _process_chat_request(
         found_attachment_ids = {str(item.get("id")) for item in attachments if item.get("id")}
         missing_attachment_ids = [file_id for file_id in effective_attachment_ids if file_id not in found_attachment_ids]
         resolved_attachment_ids = [file_id for file_id in effective_attachment_ids if file_id in found_attachment_ids]
-        try:
-            attachment_module.apply_attachment_context_result(
-                session=session,
-                resolved_attachment_ids=resolved_attachment_ids,
-                attachment_context_mode=attachment_context_mode,
-                clear_attachment_context=clear_attachment_context,
-                requested_attachment_ids=requested_attachment_ids,
-            )
-            runtime.record_module_success(
-                kind="attachment_context",
-                selected_ref=attachment_selected_ref or attachment_fallback_ref,
-            )
-        except Exception as exc:
-            runtime.record_module_failure(
-                kind="attachment_context",
-                requested_ref=attachment_selected_ref or attachment_fallback_ref,
-                fallback_ref=attachment_fallback_ref,
-                error=str(exc),
-            )
-            session_context_impl.apply_attachment_context_result(
-                session,
-                resolved_attachment_ids=resolved_attachment_ids,
-                attachment_context_mode=attachment_context_mode,
-                clear_attachment_context=clear_attachment_context,
-                requested_attachment_ids=requested_attachment_ids,
-            )
+        session_context_impl.apply_attachment_context_result(
+            session,
+            resolved_attachment_ids=resolved_attachment_ids,
+            attachment_context_mode=attachment_context_mode,
+            clear_attachment_context=clear_attachment_context,
+            requested_attachment_ids=requested_attachment_ids,
+        )
         resolved_attachment_context_key = attachment_context_key or ""
         if resolved_attachment_ids:
             resolved_attachment_context_key = "|".join(normalize_attachment_ids(resolved_attachment_ids))
-        try:
-            route_state_input, route_state_scope = attachment_module.resolve_scoped_route_state(
-                session=session,
-                attachment_ids=resolved_attachment_ids,
-            )
-            runtime.record_module_success(
-                kind="attachment_context",
-                selected_ref=attachment_selected_ref or attachment_fallback_ref,
-            )
-        except Exception as exc:
-            runtime.record_module_failure(
-                kind="attachment_context",
-                requested_ref=attachment_selected_ref or attachment_fallback_ref,
-                fallback_ref=attachment_fallback_ref,
-                error=str(exc),
-            )
-            route_state_input, route_state_scope = session_context_impl.resolve_scoped_route_state(
-                session,
-                attachment_ids=resolved_attachment_ids,
-            )
+        route_state_input, route_state_scope = session_context_impl.resolve_scoped_route_state(
+            session,
+            attachment_ids=resolved_attachment_ids,
+        )
         route_state_input = session_context_impl.prepare_route_state_for_turn(
             route_state_input,
             reset_focus=focus_shift_requested,
@@ -2700,28 +2051,11 @@ def _process_chat_request(
         inspector_session["context_meter"] = dict(context_meter)
         inspector_session["compaction_status"] = dict(compaction_status)
         inspector["session"] = inspector_session
-        try:
-            attachment_module.store_scoped_route_state(
-                session=session,
-                attachment_ids=resolved_attachment_ids,
-                route_state=route_state,
-            )
-            runtime.record_module_success(
-                kind="attachment_context",
-                selected_ref=attachment_selected_ref or attachment_fallback_ref,
-            )
-        except Exception as exc:
-            runtime.record_module_failure(
-                kind="attachment_context",
-                requested_ref=attachment_selected_ref or attachment_fallback_ref,
-                fallback_ref=attachment_fallback_ref,
-                error=str(exc),
-            )
-            session_context_impl.store_scoped_route_state(
-                session,
-                attachment_ids=resolved_attachment_ids,
-                route_state=route_state,
-            )
+        session_context_impl.store_scoped_route_state(
+            session,
+            attachment_ids=resolved_attachment_ids,
+            route_state=route_state,
+        )
         session_store.save(session)
         _emit_progress(
             progress_cb,
@@ -2832,7 +2166,6 @@ def _process_chat_request(
             _emit_progress(progress_cb, "trace", message=evolution_note, run_id=run_id)
         inspector["notes"] = inspector_notes
         if config.enable_shadow_logging:
-            kernel_health = build_kernel_health_payload(get_kernel_runtime())
             shadow_path = shadow_log_store.append(
                 {
                     "run_id": run_id,
@@ -2859,8 +2192,6 @@ def _process_chat_request(
                     "summary_before": summary_before,
                     "history_turns_before": history_turns_before,
                     "attachment_metas": attachments,
-                    "kernel_selected_modules": kernel_health.get("selected_modules") or {},
-                    "kernel_module_health": kernel_health.get("module_health") or {},
                     "message_preview": req.message[:500],
                     "response_preview": text[:500],
                 }

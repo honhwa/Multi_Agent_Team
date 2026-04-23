@@ -13,8 +13,7 @@ class ChatProductRuntime:
     Thin runtime surface for the current chat product.
 
     This intentionally exposes only the live capabilities that the chat UI and
-    product APIs need, so the main FastAPI path no longer needs to assemble the
-    historical AgentOS/kernel compatibility runtime on startup.
+    product APIs need.
     """
 
     def __init__(self, config: AppConfig) -> None:

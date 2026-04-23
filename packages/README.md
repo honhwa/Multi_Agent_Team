@@ -10,15 +10,6 @@ These are the formal import targets:
 
 These should be treated as the stable Python package layer.
 
-## Product Shells
-
-These directories are product-facing shells, not shared runtime libraries:
-
-- `packages/kernel-robot` (legacy shell name for `Multi_Agent_Robot`)
-- `packages/role-agent-lab` (`Multi_Agent_Robot Lab`)
-
-They are consumers of the runtime, not the runtime itself.
-
 ## Experimental Or Internal Packages
 
 - `packages/office_addons`
@@ -38,5 +29,5 @@ Do not import from them in Python code.
 ## Removal Direction
 
 - keep snake_case directories as the canonical implementation
-- keep hyphenated directories as documentation-only placeholders during migration
+- keep only placeholders that are still required by current product packaging
 - remove compatibility placeholders once external references are updated
