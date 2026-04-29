@@ -351,6 +351,8 @@ def test_health_endpoint_exposes_single_agent_descriptor(monkeypatch, tmp_path: 
     assert payload["provider_options"]
     assert payload["llm_provider"] in [item["provider"] for item in payload["provider_options"]]
     assert payload["default_model"] in payload["model_options"]
+    assert payload["default_locale"] == main_app.config.default_locale
+    assert payload["default_locale"] in payload["supported_locales"]
     assert payload["context_meter"]["auto_compact_token_limit"] > 0
     assert payload["compaction_status"]["mode"] == "token_budget"
     assert "used_percent" in payload["context_meter"]

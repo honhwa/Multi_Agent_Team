@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.config import list_provider_profiles, load_config
 from app.openai_auth import OpenAIAuthManager
 
@@ -80,11 +82,12 @@ def test_provider_profiles_only_list_env_configured_providers(monkeypatch, tmp_p
     assert "google/gemma-4-31b-it:free" in openrouter["model_options"]
 
 
-def test_vp_default_locale_can_be_configured(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("locale", ["en", "zh-CN"])
+def test_vp_default_locale_can_be_configured(monkeypatch, tmp_path, locale: str) -> None:
     monkeypatch.setenv("VP_SKIP_DOTENV", "1")
     monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
-    monkeypatch.setenv("VP_DEFAULT_LOCALE", "en")
+    monkeypatch.setenv("VP_DEFAULT_LOCALE", locale)
 
     config = load_config()
 
-    assert config.default_locale == "en"
+    assert config.default_locale == locale
