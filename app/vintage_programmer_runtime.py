@@ -122,6 +122,36 @@ _INLINE_DOC_CODE_FENCE_HINTS = (
     "```jsx",
 )
 
+_REVISION_REQUEST_HINTS = (
+    "润色",
+    "改写",
+    "改成",
+    "重写",
+    "校对",
+    "语法",
+    "文法",
+    "proofread",
+    "grammar",
+    "rewrite",
+    "rephrase",
+    "polish",
+    "revise",
+    "edit",
+    "more natural",
+)
+
+_JAPANESE_REQUEST_HINTS = (
+    "日语",
+    "日文",
+    "日本语",
+    "日本語",
+    "japanese",
+    "敬语",
+    "敬語",
+)
+
+_JAPANESE_KANA_RE = re.compile(r"[ぁ-んァ-ヶ]")
+
 _TOOL_NAME_ALIASES = {
     "analyze_image": "image_read",
     "download_web_file": "web_download",
@@ -1099,6 +1129,7 @@ class VintageProgrammerRuntime:
         stage: str,
         model: str,
         tool_round: int,
+        answer_context: dict[str, Any] | None = None,
     ) -> Callable[[dict[str, Any]], None]:
         call_state = self._start_answer_stream_call(
             answer_stream_state,
@@ -1106,6 +1137,7 @@ class VintageProgrammerRuntime:
             phase=stage,
             tool_round=tool_round,
         )
+        activity_context = dict(answer_context or {})
 
         def observer(event: dict[str, Any]) -> None:
             payload = dict(event or {})
@@ -1148,11 +1180,19 @@ class VintageProgrammerRuntime:
                     locale=locale,
                     type="answer.started",
                     stage="answer_generation",
-                    detail="Receiving streamed answer chunks from the model.",
+                    detail=(
+                        self._activity_detail(
+                            task_type=activity_context.get("task_type"),
+                            output_mode=activity_context.get("output_mode"),
+                            stream_stage=stage,
+                        )
+                        or "Receiving streamed answer chunks from the model."
+                    ),
                     status="running",
                     payload={
                         "model": str(model or ""),
                         "stream_stage": str(stage or ""),
+                        **activity_context,
                     },
                     trace_events=trace_events,
                     sequence=int(answer_stream_state.get("delta_count") or 0),
@@ -1175,21 +1215,25 @@ class VintageProgrammerRuntime:
                 call_state["first_text_delta_at"] = timestamp
             call_state["last_text_delta_at"] = timestamp
             trace_delta_budget = int(answer_stream_state.get("text_delta_trace_count") or 0)
-            if trace_delta_budget < 8:
+            if trace_delta_budget < 4:
                 self._emit_activity_trace(
                     progress_cb,
                     run_id=run_id,
                     locale=locale,
                     type="answer.delta",
                     stage="answer_generation",
-                    detail=f"chunk {int(answer_stream_state.get('delta_count') or 0)} · {len(delta)} chars",
+                    detail=self._activity_detail(
+                        chunk=int(answer_stream_state.get("delta_count") or 0),
+                        chars=len(delta),
+                    ),
                     status="running",
                     payload={
                         "delta_length": len(delta),
+                        "delta_preview": safe_preview(delta, limit=120),
                         "model": str(model or ""),
                         "stream_stage": str(stage or ""),
+                        **activity_context,
                     },
-                    visible=False,
                     trace_events=trace_events,
                     sequence=int(answer_stream_state.get("delta_count") or 0),
                 )
@@ -1223,9 +1267,13 @@ class VintageProgrammerRuntime:
         trace_events: list[dict[str, Any]],
         answer_stream_state: dict[str, Any],
         final_text: str,
+        answer_context: dict[str, Any] | None = None,
+        revision_summary: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         final_text_value = str(final_text or "")
         streamed_text = str(answer_stream_state.get("text") or "")
+        activity_context = dict(answer_context or {})
+        revision_payload = dict(revision_summary or {})
         if answer_stream_state.get("item_started"):
             if final_text_value.startswith(streamed_text):
                 tail = final_text_value[len(streamed_text) :]
@@ -1262,23 +1310,39 @@ class VintageProgrammerRuntime:
                 locale=locale,
                 type="answer.started",
                 stage="answer_generation",
-                detail="Preparing the final answer text.",
+                detail=(
+                    self._activity_detail(
+                        task_type=activity_context.get("task_type"),
+                        output_mode=activity_context.get("output_mode"),
+                        answer_source="final_text",
+                    )
+                    or "Preparing the final answer text."
+                ),
                 status="running",
-                payload=diagnostics,
+                payload={**diagnostics, **activity_context},
                 trace_events=trace_events,
             ) or ""
         if final_text_value and not answer_stream_state.get("trace_done_id"):
+            done_detail = diagnostics.get("summary") or ""
+            context_detail = self._activity_detail(
+                task_type=activity_context.get("task_type"),
+                output_mode=activity_context.get("output_mode"),
+            )
+            if context_detail:
+                done_detail = f"{context_detail} · {done_detail}" if done_detail else context_detail
             answer_stream_state["trace_done_id"] = self._emit_activity_trace(
                 progress_cb,
                 run_id=run_id,
                 locale=locale,
                 type="answer.done",
                 stage="answer_generation",
-                detail=diagnostics.get("summary") or "",
+                detail=done_detail,
                 status="success",
                 payload={
                     "preview": safe_preview(final_text_value, limit=240),
                     "stream_diagnostics": diagnostics,
+                    **activity_context,
+                    **({"revision_summary": revision_payload} if revision_payload else {}),
                 },
                 parent_id=str(answer_stream_state.get("trace_started_id") or "") or None,
                 trace_events=trace_events,
@@ -1639,6 +1703,135 @@ class VintageProgrammerRuntime:
             "claims": [],
             "citations": citations,
             "warnings": warnings,
+        }
+
+    @staticmethod
+    def _activity_detail(**fields: Any) -> str:
+        parts: list[str] = []
+        for key, value in fields.items():
+            if value is None:
+                continue
+            if isinstance(value, bool):
+                normalized = "true" if value else "false"
+            else:
+                normalized = str(value).strip()
+            if not normalized:
+                continue
+            parts.append(f"{key}={normalized}")
+        return " · ".join(parts)
+
+    @staticmethod
+    def _looks_like_revision_request(text: str, *, route_state: dict[str, Any] | None = None) -> bool:
+        route = dict(route_state or {})
+        if bool(route.get("use_revision")):
+            return True
+        raw = str(text or "")
+        lowered = raw.lower()
+        return any(token in raw for token in _REVISION_REQUEST_HINTS) or any(token in lowered for token in _REVISION_REQUEST_HINTS)
+
+    @classmethod
+    def _looks_like_japanese_review_request(cls, text: str, *, route_state: dict[str, Any] | None = None) -> bool:
+        raw = str(text or "")
+        lowered = raw.lower()
+        route = dict(route_state or {})
+        route_task_type = str(route.get("task_type") or "").strip().lower()
+        if route_task_type == "translation_session":
+            return False
+        has_japanese_hint = any(token in raw for token in _JAPANESE_REQUEST_HINTS) or any(token in lowered for token in _JAPANESE_REQUEST_HINTS)
+        has_kana = bool(_JAPANESE_KANA_RE.search(raw))
+        return cls._looks_like_revision_request(raw, route_state=route) and (has_japanese_hint or has_kana)
+
+    @staticmethod
+    def _extract_activity_excerpt(text: str, *, prefer_japanese: bool = False) -> str:
+        lines: list[str] = []
+        for raw_line in str(text or "").splitlines():
+            line = " ".join(str(raw_line or "").split())
+            if not line:
+                continue
+            for separator in ("：", ":"):
+                if separator in line:
+                    prefix, suffix = line.split(separator, 1)
+                    candidate = suffix.strip()
+                    if candidate and (bool(_JAPANESE_KANA_RE.search(candidate)) or len(candidate) >= len(prefix.strip())):
+                        line = candidate
+                        break
+            lines.append(line)
+        if prefer_japanese:
+            japanese_lines = [line for line in lines if _JAPANESE_KANA_RE.search(line)]
+            if japanese_lines:
+                return str(safe_preview(" / ".join(japanese_lines[:2]), limit=220) or "")
+        candidates = [line for line in lines if len(line) >= 8] or lines
+        if not candidates:
+            return ""
+        return str(safe_preview(" / ".join(candidates[:2]), limit=220) or "")
+
+    def _classify_turn_activity(self, *, prompt_message: str, route_state: dict[str, Any]) -> dict[str, Any]:
+        route = dict(route_state or {})
+        route_task_type = str(route.get("task_type") or "").strip().lower()
+        route_primary_intent = str(route.get("primary_intent") or "").strip().lower()
+        execution_policy = str(route.get("execution_policy") or "").strip().lower()
+        revision_requested = self._looks_like_revision_request(prompt_message, route_state=route)
+        japanese_review = self._looks_like_japanese_review_request(prompt_message, route_state=route)
+        if japanese_review:
+            task_type = "japanese_grammar_review"
+        elif revision_requested and route_task_type in {"", "standard", "simple_understanding", "simple_qa", "followup_transform"}:
+            task_type = "rewrite_review"
+        else:
+            task_type = route_task_type or "standard"
+        if route_primary_intent:
+            primary_intent = route_primary_intent
+        elif revision_requested:
+            primary_intent = "transform"
+        elif task_type in {"simple_understanding", "simple_qa", "understanding"}:
+            primary_intent = "understanding"
+        else:
+            primary_intent = "standard"
+        output_mode = "revision_with_change_summary" if revision_requested else "direct_answer"
+        summary_reason = (
+            "Requested Japanese grammar cleanup and more natural phrasing."
+            if japanese_review
+            else ("Requested rewrite or polish." if revision_requested else "Direct answer path.")
+        )
+        return {
+            "task_type": task_type,
+            "route_task_type": route_task_type or "",
+            "primary_intent": primary_intent,
+            "execution_policy": execution_policy,
+            "output_mode": output_mode,
+            "prefer_change_summary": revision_requested,
+            "summary_reason": summary_reason,
+        }
+
+    def _build_revision_summary(
+        self,
+        *,
+        prompt_message: str,
+        raw_text: str,
+        activity_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        context = dict(activity_context or {})
+        if not bool(context.get("prefer_change_summary")):
+            return {}
+        task_type = str(context.get("task_type") or "").strip()
+        prefer_japanese = task_type == "japanese_grammar_review"
+        original_excerpt = self._extract_activity_excerpt(prompt_message, prefer_japanese=prefer_japanese)
+        result_excerpt = self._extract_activity_excerpt(raw_text, prefer_japanese=prefer_japanese)
+        if prefer_japanese and result_excerpt == original_excerpt:
+            fallback_excerpt = self._extract_activity_excerpt(raw_text, prefer_japanese=False)
+            if fallback_excerpt:
+                result_excerpt = fallback_excerpt
+        if not original_excerpt or not result_excerpt:
+            return {}
+        return {
+            "task_type": task_type,
+            "output_mode": str(context.get("output_mode") or ""),
+            "items": [
+                {
+                    "original_excerpt": original_excerpt,
+                    "result_excerpt": result_excerpt,
+                    "reason": str(context.get("summary_reason") or ""),
+                }
+            ],
         }
 
     def _looks_like_plan_only_response(self, text: str) -> bool:
@@ -2284,6 +2477,10 @@ class VintageProgrammerRuntime:
         context_window_known = bool(compaction_status.get("context_window_known"))
         live_compaction_status = dict(compaction_status)
         route_state_input = dict(context_payload.get("route_state") or {})
+        turn_activity_context = self._classify_turn_activity(
+            prompt_message=prompt_message,
+            route_state=route_state_input,
+        )
         current_task_focus = self._initial_task_checkpoint(
             route_state=route_state_input,
             project_root=project_root,
@@ -2389,6 +2586,7 @@ class VintageProgrammerRuntime:
                 "attachments": len(attachment_metas),
                 "expects_tools": expects_tools,
                 "collaboration_mode": collaboration_mode,
+                **turn_activity_context,
             },
         )
         self._emit_trace(
@@ -2402,13 +2600,37 @@ class VintageProgrammerRuntime:
             trace_events=trace_events,
         )
         emit_runtime_activity(
-            "activity.delta",
+            "activity.done",
+            "request_analysis",
+            self._activity_detail(
+                task_type=turn_activity_context.get("task_type"),
+                primary_intent=turn_activity_context.get("primary_intent"),
+                execution_policy=turn_activity_context.get("execution_policy"),
+                output_mode=turn_activity_context.get("output_mode"),
+            ),
+            status="success",
+            payload={
+                "attachments": len(attachment_metas),
+                "expects_tools": expects_tools,
+                "collaboration_mode": collaboration_mode,
+                **turn_activity_context,
+            },
+        )
+        emit_runtime_activity(
+            "activity.started",
             "tool_decision",
-            "Determining whether the turn should stay direct or enter the tool loop.",
+            self._activity_detail(
+                task_type=turn_activity_context.get("task_type"),
+                tool_count=len(runnable_tools),
+                expects_tools=expects_tools,
+                output_mode=turn_activity_context.get("output_mode"),
+            )
+            or "Determining whether the turn should stay direct or enter the tool loop.",
             payload={
                 "tool_count": len(runnable_tools),
                 "expects_tools": expects_tools,
                 "inline_document": inline_document,
+                **turn_activity_context,
             },
         )
 
@@ -2453,6 +2675,7 @@ class VintageProgrammerRuntime:
                     stage="initial_model_response",
                     model=requested_model,
                     tool_round=0,
+                    answer_context=turn_activity_context,
                 ),
             )
             self._emit_trace(
@@ -2482,6 +2705,7 @@ class VintageProgrammerRuntime:
             halt_for_user_input = False
             turn_started_at = time.monotonic()
             round_idx = 0
+            tool_decision_recorded = False
             tool_call_count = 0
             same_tool_repeat_count = 0
             last_tool_name = ""
@@ -2575,6 +2799,7 @@ class VintageProgrammerRuntime:
                                     stage="repair_invalid_final_guard",
                                     model=effective_model,
                                     tool_round=round_idx,
+                                    answer_context=turn_activity_context,
                                 ),
                             )
                             self._set_tools_runtime_context(
@@ -2640,6 +2865,7 @@ class VintageProgrammerRuntime:
                                 stage="repair_act_now",
                                 model=effective_model,
                                 tool_round=round_idx,
+                                answer_context=turn_activity_context,
                             ),
                         )
                         self._set_tools_runtime_context(
@@ -2698,6 +2924,7 @@ class VintageProgrammerRuntime:
                                 stage="image_rescue_response",
                                 model=effective_model,
                                 tool_round=round_idx + 1,
+                                answer_context=turn_activity_context,
                             ),
                         )
                         self._set_tools_runtime_context(
@@ -2723,17 +2950,44 @@ class VintageProgrammerRuntime:
                     no_tool_response_kind = "direct_answer" if ai_text else "empty_response"
                     if self._looks_like_plan_only_response(ai_text):
                         no_tool_response_kind = "plan_only"
-                    emit_runtime_activity(
-                        "activity.done",
-                        "tool_decision",
-                        "The model returned a no-tool response; runtime guards will decide whether it can be used directly.",
-                        status="success" if no_tool_response_kind == "direct_answer" else "running",
-                        payload={
-                            "tool_count": 0,
-                            "response_kind": no_tool_response_kind,
-                            "answer_preview": safe_preview(ai_text, limit=240),
-                        },
-                    )
+                    if not tool_decision_recorded:
+                        emit_runtime_activity(
+                            "activity.done",
+                            "tool_decision",
+                            self._activity_detail(
+                                task_type=turn_activity_context.get("task_type"),
+                                tool_decision="no_tool_needed",
+                                response_kind=no_tool_response_kind,
+                                output_mode=turn_activity_context.get("output_mode"),
+                            ),
+                            status="success" if no_tool_response_kind == "direct_answer" else "running",
+                            payload={
+                                "tool_count": 0,
+                                "tool_decision": "no_tool_needed",
+                                "response_kind": no_tool_response_kind,
+                                "answer_preview": safe_preview(ai_text, limit=240),
+                                **turn_activity_context,
+                            },
+                        )
+                        tool_decision_recorded = True
+                    elif round_idx > 0:
+                        emit_runtime_activity(
+                            "activity.delta",
+                            "answer_generation",
+                            self._activity_detail(
+                                task_type=turn_activity_context.get("task_type"),
+                                tool_decision="final_answer_after_tools",
+                                response_kind=no_tool_response_kind,
+                                output_mode=turn_activity_context.get("output_mode"),
+                            ),
+                            payload={
+                                "tool_count": 0,
+                                "tool_decision": "final_answer_after_tools",
+                                "response_kind": no_tool_response_kind,
+                                "answer_preview": safe_preview(ai_text, limit=240),
+                                **turn_activity_context,
+                            },
+                        )
                     break
 
                 messages.append(ai_msg)
@@ -2741,6 +2995,28 @@ class VintageProgrammerRuntime:
                 round_success = False
                 round_signature_parts: list[dict[str, Any]] = []
                 stop_after_tools = False
+                if not tool_decision_recorded:
+                    emit_runtime_activity(
+                        "activity.done",
+                        "tool_decision",
+                        self._activity_detail(
+                            task_type=turn_activity_context.get("task_type"),
+                            tool_decision="tool_loop",
+                            tool_count=len(tool_calls[:8]),
+                            output_mode=turn_activity_context.get("output_mode"),
+                        ),
+                        status="success",
+                        payload={
+                            "tool_decision": "tool_loop",
+                            "tool_count": len(tool_calls[:8]),
+                            "tool_names": [
+                                self._normalize_tool_name(str(call.get("name") or "").strip())
+                                for call in tool_calls[:8]
+                            ],
+                            **turn_activity_context,
+                        },
+                    )
+                    tool_decision_recorded = True
                 emit_runtime_activity(
                     "activity.delta",
                     "tool_execution",
@@ -2751,6 +3027,7 @@ class VintageProgrammerRuntime:
                             for call in tool_calls[:8]
                         ],
                         "tool_count": len(tool_calls[:8]),
+                        **turn_activity_context,
                     },
                 )
                 for call_idx, call in enumerate(tool_calls[:8], start=1):
@@ -2991,6 +3268,7 @@ class VintageProgrammerRuntime:
                     payload={
                         "completed_tool_calls": len(round_signature_parts),
                         "successful_tool_calls": sum(1 for item in round_signature_parts if str(item.get("status") or "") == "ok"),
+                        **turn_activity_context,
                     },
                 )
 
@@ -3066,6 +3344,7 @@ class VintageProgrammerRuntime:
                         stage="post_tool_response",
                         model=effective_model,
                         tool_round=round_idx,
+                        answer_context=turn_activity_context,
                     ),
                 )
                 self._emit_trace(
@@ -3133,6 +3412,11 @@ class VintageProgrammerRuntime:
             notes.append("strict_agentic_blocked_after_steer")
         else:
             turn_status = "completed"
+        revision_summary = self._build_revision_summary(
+            prompt_message=prompt_message,
+            raw_text=raw_text,
+            activity_context=turn_activity_context,
+        )
         answer_stream = self._answer_stream_diagnostics(answer_stream_state)
         if raw_text and (turn_status not in {"blocked", "cancelled"} or answer_stream_state.get("item_started")):
             answer_stream = self._finalize_answer_stream(
@@ -3143,6 +3427,8 @@ class VintageProgrammerRuntime:
                 trace_events=trace_events,
                 answer_stream_state=answer_stream_state,
                 final_text=raw_text,
+                answer_context=turn_activity_context,
+                revision_summary=revision_summary,
             )
         if answer_stream.get("streamed"):
             notes.append(f"answer_stream_deltas:{int(answer_stream.get('delta_count') or 0)}")
