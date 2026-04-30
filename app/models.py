@@ -50,6 +50,39 @@ class ToolEvent(BaseModel):
     module_group: str = ""
 
 
+class ModelTurnProposal(BaseModel):
+    intent: str = ""
+    task_type: str = "standard"
+    output_mode: str = "direct_answer"
+    tool_decision: str = "no_tool_needed"
+    needs_tools: bool = False
+    response_kind: str = "direct_answer"
+    user_stage: str = ""
+    summary: str = ""
+    proposed_tools: list[str] = Field(default_factory=list)
+    change_summary_requested: bool = False
+    source: str = "model"
+
+
+class ValidatedTurnPlan(BaseModel):
+    status: str = "valid"
+    source: str = "model"
+    intent: str = ""
+    task_type: str = "standard"
+    output_mode: str = "direct_answer"
+    tool_decision: str = "no_tool_needed"
+    needs_tools: bool = False
+    response_kind: str = "direct_answer"
+    user_stage: str = ""
+    summary: str = ""
+    proposed_tools: list[str] = Field(default_factory=list)
+    approved_tools: list[str] = Field(default_factory=list)
+    blocked_tools: list[str] = Field(default_factory=list)
+    adjustments: list[str] = Field(default_factory=list)
+    change_summary_requested: bool = False
+    validation: dict[str, Any] = Field(default_factory=dict)
+
+
 class TraceEventPayload(BaseModel):
     id: str = ""
     run_id: str = ""
