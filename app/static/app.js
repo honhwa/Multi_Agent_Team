@@ -670,6 +670,46 @@ function activityStageStatusFromTrace(trace) {
 function buildActivityFlowStages(activity, locale) {
   const item = normalizeMessageActivity(activity || {});
   const traces = item.trace_events.filter((trace) => trace.visible !== false);
+  const labelForTrace = (trace, stageKey) => {
+    const entry = trace && typeof trace === "object" ? trace : {};
+    const payload = entry.payload && typeof entry.payload === "object" ? entry.payload : {};
+    const validatedNextStep = payload.validated_next_step && typeof payload.validated_next_step === "object"
+      ? payload.validated_next_step
+      : {};
+    const executionEntry = payload.execution_trace_entry && typeof payload.execution_trace_entry === "object"
+      ? payload.execution_trace_entry
+      : {};
+    const guardResult = payload.guard_result && typeof payload.guard_result === "object" ? payload.guard_result : {};
+    const actionType = String(
+      executionEntry.action_type
+      || validatedNextStep.action_type
+      || "",
+    ).trim();
+    const guardStatus = String(guardResult.status || "").trim();
+    const type = String(entry.type || "").trim();
+    const stageStatus = activityStageStatusFromTrace(entry);
+    if (stageKey === "high_level_proposal") {
+      return translateUi(locale, "activity.status.request_understood");
+    }
+    if (stageKey === "step_validation") {
+      if (guardStatus === "normalized") return translateUi(locale, "activity.status.tool_guard_normalized");
+      if (guardStatus === "rejected" || stageStatus === "blocked") return translateUi(locale, "activity.status.tool_guard_rejected");
+      if (actionType === "tool_call") return translateUi(locale, "activity.status.tool_guard_pending");
+      if (actionType === "direct_answer") return translateUi(locale, "activity.status.direct_answer_no_tool");
+      if (actionType === "ask_user") return translateUi(locale, "labels.pending_input");
+    }
+    if (stageKey === "execution") {
+      if (type === "answer.delta") return translateUi(locale, "activity.status.answer_streaming");
+      if (type === "answer.done" || type === "answer.finished") return translateUi(locale, "activity.status.answer_ready");
+      if (actionType === "tool_call") {
+        if (guardStatus === "rejected" || stageStatus === "blocked") return translateUi(locale, "activity.status.tool_guard_rejected");
+        if (stageStatus === "completed" || stageStatus === "success") return translateUi(locale, "activity.status.tool_completed");
+        return translateUi(locale, "activity.status.tool_running");
+      }
+      if (actionType === "direct_answer") return translateUi(locale, "activity.status.answer_generating");
+    }
+    return translateUiOrFallback(locale, `activity.stage.${stageKey}`, stageKey);
+  };
   const collectStages = (allowLegacy) => {
     const stages = new Map();
     traces.forEach((trace) => {
@@ -677,7 +717,7 @@ function buildActivityFlowStages(activity, locale) {
       if (!stageKey) return;
       stages.set(stageKey, {
         key: stageKey,
-        label: translateUiOrFallback(locale, `activity.stage.${stageKey}`, stageKey),
+        label: labelForTrace(trace, stageKey),
         status: activityStageStatusFromTrace(trace),
       });
     });
@@ -3312,9 +3352,13 @@ function App() {
   const renderToolAuditDetails = (source) => {
     const item = source && typeof source === "object" ? source : {};
     const rawArguments = hasDisplayValue(item.raw_arguments) ? item.raw_arguments : item.input;
+    const normalizedArguments = hasDisplayValue(item.normalized_arguments) ? item.normalized_arguments : item.input;
     const validation = item.schema_validation && typeof item.schema_validation === "object" ? item.schema_validation : {};
     const sections = [
+      renderDetailBlock(t("activity.raw_tool_call"), item.raw_tool_call),
       renderDetailBlock(t("activity.raw_arguments"), rawArguments),
+      renderDetailBlock(t("activity.normalized_arguments"), normalizedArguments),
+      renderDetailBlock(t("activity.guard_result"), item.guard_result),
       renderDetailBlock(t("activity.arguments_preview"), item.arguments_preview),
       renderDetailBlock(t("activity.preview_error"), item.preview_error),
       renderDetailBlock(
