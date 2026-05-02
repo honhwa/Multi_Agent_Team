@@ -21,6 +21,9 @@ REQUIRED_CORE_KEYS = (
     "settings.response_style",
     "buttons.save",
     "tabs.settings",
+    "activity.progress_title",
+    "activity.debug_details",
+    "activity.raw_events",
     "activity.high_level_proposal",
     "activity.validated_next_step",
     "activity.execution_trace",
@@ -29,6 +32,11 @@ REQUIRED_CORE_KEYS = (
     "activity.normalized_arguments",
     "activity.guard_result",
     "activity.observation_summary",
+    "activity.progress.read",
+    "activity.progress.search",
+    "activity.progress.execute_command",
+    "activity.progress.apply_patch",
+    "activity.progress.use_tool",
     "activity.stage.high_level_proposal",
     "activity.stage.step_validation",
     "activity.stage.execution",
@@ -119,8 +127,13 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
     required_script_tokens = (
         "function activityStageKeyFromTrace(",
         "function buildActivityFlowStages(",
+        "function buildActivityProjection(",
+        "function buildToolProgressGroups(",
+        "function toolCallIdentityFromSource(",
         "function latestRevisionSummary(",
         "renderExecutionTraceDetails(",
+        "plan_explanation",
+        "tool_items",
         "activity.status.request_understood",
         "activity.status.tool_guard_pending",
         "high_level_proposal",
@@ -130,13 +143,17 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
         "guard_result",
         "normalized_arguments",
         "runtime_hint",
-        'className="activity-flow-summary"',
-        'className="activity-flow-stage',
+        'className="activity-progress"',
+        'className="activity-debug-drawer"',
     )
     for token in required_script_tokens:
         assert token in script, token
 
     required_style_tokens = (
+        ".activity-progress",
+        ".activity-progress-item",
+        ".activity-debug-drawer",
+        "@keyframes activity-progress-pulse",
         ".activity-flow-summary",
         ".activity-flow-stages",
         ".activity-flow-stage",
@@ -144,3 +161,17 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
     )
     for token in required_style_tokens:
         assert token in styles, token
+
+
+def test_plan_updates_and_tool_items_are_projected_into_message_activity() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    required_tokens = (
+        'tool_items: [item]',
+        "plan_explanation: explanation",
+        'summary>${t("activity.debug_details")}</summary>',
+        'summary>${t("activity.raw_events")}</summary>',
+        'summary>${t("run.recent_tools")}</summary>',
+    )
+    for token in required_tokens:
+        assert token in script, token
